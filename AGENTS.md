@@ -31,8 +31,26 @@
 
 ## 提交与 PR 规范
 
-- 目前仓库尚无 Git 提交历史。建议使用 Conventional Commits（如 `feat:`、`fix:`、`test:`、`docs:`）并以祈使语气书写。
+- 使用 Conventional Commits（如 `feat:`、`fix:`、`test:`、`docs:`）并以祈使语气书写；可参考现有提交历史（`git log`）。
 - PR 需说明：改了什么、为什么改、如何验证（附上测试命令），如涉及需求文档请链接对应章节。
+
+## 改动提交流程（自动提交）
+
+- 每次完成代码改动后，先运行相关测试与构建验证（见「构建、测试与开发命令」），确保无问题、无回归。
+- 改动验证通过后，**先等待用户明确确认**，确认后再自动执行提交，不要擅自提交未确认的改动。
+- 提交信息使用 Conventional Commits（如 `feat:`、`fix:`、`test:`、`docs:`），祈使语气，必要时附简短正文说明改动原因与验证方式。
+- 提交范围遵循 `.gitignore`，禁止混入构建产物、本地配置或凭据。
+- 提交后同步推送到远程（本仓库 `origin` 指向 `git@gitee.com:princess-zp/dataBasePro.git`，默认分支 `main`）。
+
+## 打包、安装与启动流程（用户确认后执行）
+
+本机为 Apple Silicon（M1），目标平台为 `darwin/arm64`。仅在**用户明确确认后**执行以下步骤：
+
+1. 打包：`wails build --platform darwin/arm64 -o my-db-client.app`，产物位于 `build/bin/my-db-client.app`（gitignored）。
+2. 安装：将产物复制到 `/Applications/my-db-client.app`；若已存在旧版本，先移除旧目录再复制。
+3. 启动：`open /Applications/my-db-client.app`。
+
+打包前先通过测试与构建验证（见「构建、测试与开发命令」）；产物为 ad-hoc 自签名，未公证。
 
 ## 安全与配置要点
 
