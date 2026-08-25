@@ -46,11 +46,14 @@
 
 本机为 Apple Silicon（M1），目标平台为 `darwin/arm64`。仅在**用户明确确认后**执行以下步骤：
 
-1. 打包：`wails build --platform darwin/arm64 -o my-db-client.app`，产物位于 `build/bin/my-db-client.app`（gitignored）。
-2. 安装：将产物复制到 `/Applications/my-db-client.app`；若已存在旧版本，先移除旧目录再复制。
-3. 启动：`open /Applications/my-db-client.app`。
+1. 打包：`wails build --platform darwin/arm64`（`wails.json` 的 `outputfilename` 已设为 `dataBasePro`，无需 `-o`；若用 `-o` 勿带 `.app` 后缀，否则与 Wails 自动追加的 `.app` 撞名导致打包失败），产物位于 `build/bin/dataBasePro.app`（gitignored）。
+2. 安装：将产物复制到 `/Applications/dataBasePro.app`；若已存在旧版本，先移除旧目录再复制。
+3. 启动：`open /Applications/dataBasePro.app`。
+4. 清理：安装后删除构建残留 `build/bin/dataBasePro.app`，避免 Spotlight 搜索出现两个同名应用。
 
 打包前先通过测试与构建验证（见「构建、测试与开发命令」）；产物为 ad-hoc 自签名，未公证。
+
+注意：`wails build` 会清空 `frontend/dist`（vite `emptyOutDir`），连带删除被跟踪的 `frontend/dist/.gitkeep`；提交前需恢复：`touch frontend/dist/.gitkeep`。
 
 ## 安全与配置要点
 

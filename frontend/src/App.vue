@@ -24,7 +24,5 @@ async function removeConnection(id: string): Promise<void> {
 </template>
 
 <style>
-html, body, #app { height: 100%; margin: 0; }
-body { background: #0e141b; }
-[data-theme='light'] body { background: #eef2f6; }
+.app-root { height: 100vh; }
 </style>

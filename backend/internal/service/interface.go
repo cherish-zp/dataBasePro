@@ -5,7 +5,7 @@ package service
 import (
 	"context"
 
-	"my-db-client/backend/internal/model"
+	"dataBasePro/backend/internal/model"
 )
 
 // DataSource is the unified interface for any connectable data source,

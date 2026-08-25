@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"my-db-client/backend/internal/model"
+	"dataBasePro/backend/internal/model"
 )
 
 func newTestStore(t *testing.T) *Store {

@@ -52,7 +52,7 @@ function openSql(): void {
 <template>
   <div class="layout" data-test="layout">
     <header class="topbar">
-      <div class="brand">🪐 DB Client</div>
+      <div class="brand">🪐 dataBasePro</div>
       <div class="spacer"></div>
       <button class="btn ghost" type="button" data-test="btn-sql" :disabled="!activeTopic" @click="openSql">查询控制台</button>
       <button class="btn ghost" type="button" data-test="btn-producer" :disabled="!activeTopic" @click="openProducer">生产消息</button>
@@ -129,36 +129,76 @@ function openSql(): void {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: #0e141b;
-  color: #d6dee8;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font);
 }
 .topbar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
-  border-bottom: 1px solid #2a3542;
-  background: #121a24;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.72);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  z-index: 10;
 }
-.brand { font-weight: 700; font-size: 15px; }
+.brand { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
 .spacer { flex: 1; }
-.btn { border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; border: 1px solid transparent; }
+.btn {
+  border-radius: 7px;
+  padding: 6px 13px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn.primary { background: #1f6feb; color: #fff; }
-.btn.ghost { background: transparent; color: #c3ccd6; border-color: #33404f; }
+.btn.primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(0, 113, 227, 0.3);
+}
+.btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn.ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.btn.ghost:hover:not(:disabled) { background: var(--bg-hover); }
 .body { flex: 1; display: flex; min-height: 0; }
-.sidebar { width: 280px; border-right: 1px solid #2a3542; overflow: auto; background: #121a24; }
+.sidebar {
+  width: 272px;
+  border-right: 1px solid var(--border);
+  overflow: auto;
+  background: var(--sidebar-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
 .workspace { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.tabbar { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid #2a3542; background: #121a24; }
+.tabbar { display: flex; align-items: flex-end; gap: 4px; padding: 8px 12px 0; }
 .tab {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 10px; border-radius: 6px 6px 0 0;
-  cursor: pointer; font-size: 13px; color: #9aa7b5;
+  padding: 6px 12px;
+  border-radius: 9px 9px 0 0;
+  cursor: pointer; font-size: 13px; color: var(--text-secondary);
   border: 1px solid transparent; border-bottom: none; max-width: 200px;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.tab.active { background: #1b2430; color: #d6dee8; border-color: #2a3542; }
+.tab:hover { background: var(--bg-hover); color: var(--text); }
+.tab.active {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-color: var(--border);
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.04);
+}
 .tab-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tab-close { background: none; border: none; color: #7a8698; cursor: pointer; font-size: 12px; }
+.tab-close {
+  background: none; border: none; color: var(--text-tertiary);
+  cursor: pointer; font-size: 12px; border-radius: 4px; line-height: 1;
+  padding: 1px 3px;
+}
+.tab-close:hover { color: var(--danger); }
 .workspace-body { flex: 1; min-height: 0; overflow: auto; }
 </style>

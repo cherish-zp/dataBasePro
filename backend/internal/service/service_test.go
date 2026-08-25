@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"my-db-client/backend/internal/model"
-	"my-db-client/backend/internal/store"
+	"dataBasePro/backend/internal/model"
+	"dataBasePro/backend/internal/store"
 )
 
 // fakeKafka implements KafkaDataSource for service-layer tests.

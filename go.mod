@@ -1,4 +1,4 @@
-module my-db-client
+module dataBasePro
 
 go 1.27.0
 

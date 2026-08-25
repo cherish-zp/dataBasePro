@@ -1,9 +1,84 @@
-/* Global styles for the DB client. */
+/* Apple-style design system for the DB client. */
+:root {
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  --bg: #f5f5f7;
+  --bg-elevated: #ffffff;
+  --bg-subtle: #f0f0f2;
+  --bg-hover: #f2f2f4;
+  --bg-active: #e8e8ec;
+
+  --sidebar-bg: rgba(250, 250, 252, 0.62);
+  --glass-blur: saturate(180%) blur(24px);
+
+  --border: #e6e6ea;
+  --border-strong: #d9d9de;
+
+  --text: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-tertiary: #aeaeb2;
+
+  --accent: #0071e3;
+  --accent-hover: #0077ed;
+  --accent-soft: rgba(0, 113, 227, 0.1);
+
+  --danger: #ff3b30;
+  --danger-soft: rgba(255, 59, 48, 0.1);
+  --warn: #d97706;
+  --warn-soft: rgba(255, 149, 0, 0.14);
+  --ok: #248a3d;
+  --ok-soft: rgba(52, 199, 89, 0.14);
+  --info: #0a84ff;
+  --info-soft: rgba(10, 132, 255, 0.12);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08), 0 14px 40px rgba(0, 0, 0, 0.1);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+}
+
+[data-theme="dark"] {
+  --bg: #0e141b;
+  --bg-elevated: #1b2430;
+  --bg-subtle: #121a24;
+  --bg-hover: #232f3d;
+  --bg-active: #2a3542;
+  --sidebar-bg: rgba(18, 26, 36, 0.62);
+  --border: #2a3542;
+  --border-strong: #33404f;
+  --text: #e6e6ec;
+  --text-secondary: #9aa7b5;
+  --text-tertiary: #7a8698;
+  --accent: #1f6feb;
+  --accent-hover: #3b82f6;
+  --accent-soft: rgba(31, 111, 235, 0.18);
+  --danger: #ff8f8a;
+  --danger-soft: rgba(248, 81, 73, 0.18);
+  --warn: #e3b341;
+  --warn-soft: rgba(210, 153, 34, 0.18);
+  --ok: #56d364;
+  --ok-soft: rgba(63, 185, 80, 0.18);
+  --info: #6ea8fe;
+  --info-soft: rgba(110, 168, 254, 0.16);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.5), 0 14px 40px rgba(0, 0, 0, 0.5);
+}
+
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; }
 body {
-  background: #0e141b;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background:
+    radial-gradient(1100px 520px at 8% -10%, rgba(0, 113, 227, 0.06), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(10, 132, 255, 0.04), transparent 55%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--font);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  transition: background-color 0.25s ease, color 0.25s ease;
 }
-[data-theme='light'] body { background: #eef2f6; }
+
+button { font-family: inherit; }
+input, select, textarea { font-family: inherit; }

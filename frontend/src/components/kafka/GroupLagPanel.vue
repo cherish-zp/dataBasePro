@@ -32,12 +32,12 @@ defineProps<{ rows: PartitionLag[]; loading?: boolean }>()
 </template>
 
 <style scoped>
-.lag-panel { margin-top: 14px; }
-.lag-header { font-weight: 600; margin-bottom: 6px; color: #c3ccd6; }
+.lag-panel { margin-top: 14px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+.lag-header { font-weight: 600; margin-bottom: 0; color: var(--text); padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.table th { text-align: left; padding: 8px 12px; color: #9aa7b5; font-weight: 600; border-bottom: 1px solid #2a3542; }
-.table td { padding: 6px 12px; border-bottom: 1px solid #222c38; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.lag-high { color: #e3b341; font-weight: 600; }
-.empty { text-align: center; color: #7a8698; padding: 20px; }
+.table th { text-align: left; padding: 8px 12px; color: var(--text-secondary); font-weight: 600; border-bottom: 1px solid var(--border); background: var(--bg-subtle); }
+.table td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
+.mono { font-family: var(--mono); }
+.lag-high { color: var(--warn); font-weight: 600; }
+.empty { text-align: center; color: var(--text-tertiary); padding: 20px; }
 </style>

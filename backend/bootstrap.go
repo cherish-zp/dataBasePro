@@ -3,10 +3,10 @@ package backend
 import (
 	"context"
 
-	"my-db-client/backend/internal/kafka"
-	"my-db-client/backend/internal/model"
-	"my-db-client/backend/internal/service"
-	"my-db-client/backend/internal/store"
+	"dataBasePro/backend/internal/kafka"
+	"dataBasePro/backend/internal/model"
+	"dataBasePro/backend/internal/service"
+	"dataBasePro/backend/internal/store"
 )
 
 // NewDefaultApp wires the store, service and app together using the default

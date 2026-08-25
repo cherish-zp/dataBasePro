@@ -20,10 +20,10 @@ describe('SettingsPanel', () => {
     expect(wrapper.find('[data-test="settings-panel"]').exists()).toBe(false)
   })
 
-  it('defaults to dark theme and applies it on mount', () => {
+  it('defaults to light theme and applies it on mount', () => {
     mountPanel()
-    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
-    expect(localStorage.getItem(KEY)).toBe('dark')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+    expect(localStorage.getItem(KEY)).toBe('light')
   })
 
   it('switching to light persists and applies the theme', async () => {

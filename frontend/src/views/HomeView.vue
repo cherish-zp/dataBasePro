@@ -19,14 +19,20 @@ const emit = defineEmits<{ (e: 'new'): void }>()
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0e141b;
-  color: #d6dee8;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: var(--text);
+  font-family: var(--font);
 }
-.card { text-align: center; max-width: 460px; padding: 24px; }
-.logo { font-size: 56px; margin-bottom: 12px; }
-.title { font-size: 22px; margin: 0 0 10px; }
-.desc { color: #9aa7b5; font-size: 14px; line-height: 1.6; margin: 0 0 20px; }
-.btn { border-radius: 8px; padding: 10px 22px; font-size: 14px; cursor: pointer; border: 1px solid transparent; }
-.btn.primary { background: #1f6feb; color: #fff; }
+.card {
+  text-align: center; max-width: 460px; padding: 36px 40px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+.logo { font-size: 54px; margin-bottom: 14px; }
+.title { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 12px; }
+.desc { color: var(--text-secondary); font-size: 14px; line-height: 1.65; margin: 0 0 24px; }
+.btn { border-radius: 9px; padding: 10px 24px; font-size: 14px; cursor: pointer; border: 1px solid transparent; transition: background 0.15s ease; }
+.btn.primary { background: var(--accent); color: #fff; box-shadow: 0 1px 2px rgba(0, 113, 227, 0.3); }
+.btn.primary:hover { background: var(--accent-hover); }
 </style>

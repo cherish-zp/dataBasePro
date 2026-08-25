@@ -11,8 +11,8 @@ import (
 	"context"
 	"time"
 
-	"my-db-client/backend/internal/model"
-	"my-db-client/backend/internal/service"
+	"dataBasePro/backend/internal/model"
+	"dataBasePro/backend/internal/service"
 )
 
 // methodTimeout bounds each individual frontend call.

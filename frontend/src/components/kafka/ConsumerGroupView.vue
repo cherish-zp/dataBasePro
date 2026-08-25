@@ -104,16 +104,23 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-.group-view { padding: 14px; color: #d6dee8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+.group-view { padding: 16px; color: var(--text); font-family: var(--font); }
 .toolbar { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
-.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #9aa7b5; }
-.input { background: #121a24; border: 1px solid #2a3542; color: #d6dee8; border-radius: 6px; padding: 6px 8px; font-size: 13px; min-width: 160px; }
-.btn { border-radius: 6px; padding: 6px 14px; font-size: 13px; cursor: pointer; border: 1px solid transparent; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.input {
+  background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text);
+  border-radius: 7px; padding: 6px 9px; font-size: 13px; min-width: 160px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.input:focus { outline: none; border-color: var(--accent); background: var(--bg-elevated); box-shadow: 0 0 0 3px var(--accent-soft); }
+.btn { border-radius: 7px; padding: 6px 14px; font-size: 13px; cursor: pointer; border: 1px solid transparent; transition: background 0.15s ease, opacity 0.15s ease; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn.ghost { background: transparent; color: #c3ccd6; border-color: #33404f; }
-.btn.danger { background: #d2992222; color: #e3b341; border: 1px solid #d2992255; }
-.msg { padding: 8px 10px; font-size: 13px; margin-top: 8px; }
-.msg.err { background: #f8514922; color: #ff8f8a; }
-.reset-panel { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-top: 16px; padding-top: 12px; border-top: 1px solid #2a3542; }
-.reset-title { font-weight: 600; font-size: 13px; color: #c3ccd6; padding-bottom: 6px; }
+.btn.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }
+.btn.ghost:hover:not(:disabled) { background: var(--bg-hover); }
+.btn.danger { background: var(--warn-soft); color: var(--warn); border: 1px solid transparent; }
+.btn.danger:hover:not(:disabled) { background: rgba(217, 119, 6, 0.2); }
+.msg { padding: 8px 10px; font-size: 13px; margin-top: 8px; border-radius: 7px; }
+.msg.err { background: var(--danger-soft); color: var(--danger); }
+.reset-panel { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.reset-title { font-weight: 600; font-size: 13px; color: var(--text); padding-bottom: 6px; }
 </style>

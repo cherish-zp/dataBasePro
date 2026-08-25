@@ -95,21 +95,29 @@ async function load(connId: string): Promise<void> {
 </template>
 
 <style scoped>
-.tree { padding: 8px; font-size: 13px; color: #c3ccd6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-.tree-new { width: 100%; box-sizing: border-box; background: #1f6feb; color: #fff; border: none; border-radius: 6px; padding: 8px; cursor: pointer; margin-bottom: 8px; font-size: 13px; }
-.tree-empty { color: #7a8698; padding: 8px; }
+.tree { padding: 8px; font-size: 13px; color: var(--text); font-family: var(--font); }
+.tree-new {
+  width: 100%; box-sizing: border-box;
+  background: var(--accent); color: #fff; border: none;
+  border-radius: 8px; padding: 8px; cursor: pointer; margin-bottom: 10px; font-size: 13px;
+  box-shadow: 0 1px 2px rgba(0, 113, 227, 0.3);
+  transition: background 0.15s ease;
+}
+.tree-new:hover { background: var(--accent-hover); }
+.tree-empty { color: var(--text-tertiary); padding: 10px 8px; }
 .conn { margin-bottom: 2px; }
-.conn-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
-.conn-row:hover { background: #232f3d; }
-.caret { width: 14px; color: #9aa7b5; }
-.conn-name { font-weight: 600; flex: 1; }
-.conn-type { font-size: 11px; color: #6ea8fe; background: #1f6feb22; padding: 1px 6px; border-radius: 4px; }
-.conn-delete { background: none; border: none; color: #7a8698; cursor: pointer; }
-.conn-children { margin-left: 18px; border-left: 1px solid #2a3542; padding-left: 8px; }
-.group-label { font-size: 11px; color: #7a8698; text-transform: uppercase; letter-spacing: 0.04em; margin: 6px 0 2px; }
-.leaf { padding: 3px 6px; border-radius: 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.leaf:hover { background: #232f3d; color: #fff; }
-.leaf.muted { color: #7a8698; cursor: default; }
-.conn-loading { color: #9aa7b5; padding: 4px; }
-.conn-error { color: #f85149; padding: 4px; }
+.conn-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 8px; cursor: pointer; transition: background 0.12s ease; }
+.conn-row:hover { background: var(--bg-hover); }
+.caret { width: 14px; color: var(--text-tertiary); font-size: 10px; }
+.conn-name { font-weight: 600; flex: 1; color: var(--text); }
+.conn-type { font-size: 11px; color: var(--info); background: var(--info-soft); padding: 1px 6px; border-radius: 5px; }
+.conn-delete { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; }
+.conn-delete:hover { color: var(--danger); background: var(--danger-soft); }
+.conn-children { margin-left: 16px; border-left: 1px solid var(--border); padding-left: 8px; }
+.group-label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; margin: 8px 0 3px; }
+.leaf { padding: 4px 7px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background 0.12s ease, color 0.12s ease; }
+.leaf:hover { background: var(--bg-hover); color: var(--text); }
+.leaf.muted { color: var(--text-tertiary); cursor: default; }
+.conn-loading { color: var(--text-secondary); padding: 5px; }
+.conn-error { color: var(--danger); padding: 5px; }
 </style>

@@ -14,7 +14,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"my-db-client/backend/internal/model"
+	"dataBasePro/backend/internal/model"
 )
 
 var ErrNotFound = errors.New("record not found")

@@ -7,7 +7,7 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kadm"
 
-	"my-db-client/backend/internal/model"
+	"dataBasePro/backend/internal/model"
 )
 
 // ListTopics returns all topics with their partition metadata, sorted by name.
