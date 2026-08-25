@@ -1,0 +1,90 @@
+// Thin wrapper around the generated Wails bindings so stores/components can be
+// tested by swapping the Api implementation via setApi().
+import * as App from '../../wailsjs/go/backend/App'
+import type {
+  Connection,
+  KafkaConfig,
+  Topic,
+  ConsumerGroup,
+  Message,
+  ConsumeRequest,
+  ResetOffsetRequest,
+  ProduceRequest,
+} from './types'
+
+export interface Api {
+  createConnection(conn: Connection): Promise<Connection>
+  listConnections(): Promise<Connection[]>
+  getConnection(id: string): Promise<Connection>
+  deleteConnection(id: string): Promise<void>
+  testConnection(cfg: KafkaConfig): Promise<void>
+  connect(id: string): Promise<void>
+  disconnect(id: string): Promise<void>
+  listTopics(id: string): Promise<Topic[]>
+  listConsumerGroups(id: string): Promise<ConsumerGroup[]>
+  consumeMessages(req: ConsumeRequest): Promise<Message[]>
+  consumeMessagesByTimestamp(req: ConsumeRequest): Promise<Message[]>
+  getPartitionLag(id: string, topic: string, group: string): Promise<Record<number, number>>
+  resetConsumerGroupOffset(req: ResetOffsetRequest): Promise<void>
+  produceMessage(req: ProduceRequest): Promise<void>
+}
+
+// The Wails binding generator models Go `[]byte` fields (Message.Key/Value,
+// Header.Value) as `number[]` and injects `convertValues` helpers into model
+// classes, which don't match our domain types. Over JSON the transport
+// actually delivers strings for those fields, so we cast at this adapter
+// boundary and keep our own `types.ts` as the app-wide source of truth.
+export class WailsApi implements Api {
+  createConnection(conn: Connection): Promise<Connection> {
+    return App.CreateConnection(conn as unknown as never) as unknown as Promise<Connection>
+  }
+  listConnections(): Promise<Connection[]> {
+    return App.ListConnections() as unknown as Promise<Connection[]>
+  }
+  getConnection(id: string): Promise<Connection> {
+    return App.GetConnection(id) as unknown as Promise<Connection>
+  }
+  deleteConnection(id: string): Promise<void> {
+    return App.DeleteConnection(id)
+  }
+  testConnection(cfg: KafkaConfig): Promise<void> {
+    return App.TestConnection(cfg as unknown as never) as unknown as Promise<void>
+  }
+  connect(id: string): Promise<void> {
+    return App.Connect(id)
+  }
+  disconnect(id: string): Promise<void> {
+    return App.Disconnect(id)
+  }
+  listTopics(id: string): Promise<Topic[]> {
+    return App.ListTopics(id) as unknown as Promise<Topic[]>
+  }
+  listConsumerGroups(id: string): Promise<ConsumerGroup[]> {
+    return App.ListConsumerGroups(id) as unknown as Promise<ConsumerGroup[]>
+  }
+  consumeMessages(req: ConsumeRequest): Promise<Message[]> {
+    return App.ConsumeMessages(req) as unknown as Promise<Message[]>
+  }
+  consumeMessagesByTimestamp(req: ConsumeRequest): Promise<Message[]> {
+    return App.ConsumeMessagesByTimestamp(req) as unknown as Promise<Message[]>
+  }
+  getPartitionLag(id: string, topic: string, group: string): Promise<Record<number, number>> {
+    return App.GetPartitionLag(id, topic, group)
+  }
+  resetConsumerGroupOffset(req: ResetOffsetRequest): Promise<void> {
+    return App.ResetConsumerGroupOffset(req)
+  }
+  produceMessage(req: ProduceRequest): Promise<void> {
+    return App.ProduceMessage(req)
+  }
+}
+
+let current: Api = new WailsApi()
+
+export function getApi(): Api {
+  return current
+}
+
+export function setApi(api: Api): void {
+  current = api
+}

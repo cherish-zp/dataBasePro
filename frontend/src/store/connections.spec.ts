@@ -1,0 +1,89 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
+import { setApi } from '@/api/client'
+import type { Api } from '@/api/client'
+import type { Connection } from '@/api/types'
+import { useConnectionsStore } from './connections'
+
+function fakeApi(overrides: Partial<Api> = {}): Api {
+  return {
+    listConnections: vi.fn(async () => []),
+    createConnection: vi.fn(async (c: Connection) => c),
+    deleteConnection: vi.fn(async () => {}),
+    testConnection: vi.fn(async () => {}),
+    connect: vi.fn(async () => {}),
+    disconnect: vi.fn(async () => {}),
+    getConnection: vi.fn(async () => ({}) as Connection),
+    listTopics: vi.fn(async () => []),
+    listConsumerGroups: vi.fn(async () => []),
+    consumeMessages: vi.fn(async () => []),
+    consumeMessagesByTimestamp: vi.fn(async () => []),
+    getPartitionLag: vi.fn(async () => ({})),
+    resetConsumerGroupOffset: vi.fn(async () => {}),
+    produceMessage: vi.fn(async () => {}),
+    ...overrides,
+  }
+}
+
+const conn = (id: string, name = 'local'): Connection => ({
+  id, name, type: 'kafka',
+  config: { bootstrap_servers: ['localhost:9092'] },
+  created_at: 1, updated_at: 1,
+})
+
+describe('connections store', () => {
+  let api: Api
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    api = fakeApi()
+    setApi(api)
+  })
+
+  it('loads connections from the api', async () => {
+    ;(api.listConnections as ReturnType<typeof vi.fn>).mockResolvedValue([conn('a'), conn('b')])
+    const store = useConnectionsStore()
+    await store.load()
+    expect(store.connections).toHaveLength(2)
+    expect(store.loading).toBe(false)
+  })
+
+  it('exposes errors from load', async () => {
+    ;(api.listConnections as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    const store = useConnectionsStore()
+    await store.load()
+    expect(store.error).toBe('boom')
+    expect(store.connections).toHaveLength(0)
+  })
+
+  it('create appends the created connection', async () => {
+    const store = useConnectionsStore()
+    const created = await store.create({ name: 'new', type: 'kafka', config: { bootstrap_servers: ['h:1'] } })
+    expect(created.id).toBe('')
+    expect(store.connections).toHaveLength(1)
+    expect(api.createConnection).toHaveBeenCalled()
+  })
+
+  it('remove filters the list and calls the api', async () => {
+    ;(api.listConnections as ReturnType<typeof vi.fn>).mockResolvedValue([conn('a'), conn('b')])
+    const store = useConnectionsStore()
+    await store.load()
+    await store.remove('a')
+    expect(api.deleteConnection).toHaveBeenCalledWith('a')
+    expect(store.connections.map((c) => c.id)).toEqual(['b'])
+  })
+
+  it('connect and disconnect delegate to the api', async () => {
+    const store = useConnectionsStore()
+    await store.connect('a')
+    await store.disconnect('a')
+    expect(api.connect).toHaveBeenCalledWith('a')
+    expect(api.disconnect).toHaveBeenCalledWith('a')
+  })
+
+  it('testConnection delegates with the config', async () => {
+    const store = useConnectionsStore()
+    const cfg = { bootstrap_servers: ['localhost:9092'] }
+    await store.testConnection(cfg)
+    expect(api.testConnection).toHaveBeenCalledWith(cfg)
+  })
+})

@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Local editor/agent config
+.claude/
+
+# Go build artifacts
+*.exe
+*.test
+*.out
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/*
+!frontend/dist/.gitkeep
+
+# Wails build output
+build/bin/
+
+# Local database & secrets
+*.db
+*.db-journal

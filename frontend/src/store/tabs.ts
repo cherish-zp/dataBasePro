@@ -1,0 +1,76 @@
+import { defineStore } from 'pinia'
+import { ref } from 'vue'
+
+export type TabKind = 'topic' | 'group'
+
+export interface Tab {
+  id: string
+  kind: TabKind
+  title: string
+  connectionId: string
+  topic?: string
+  group?: string
+  partitions?: number[]
+}
+
+export const useTabsStore = defineStore('tabs', () => {
+  const openTabs = ref<Tab[]>([])
+  const activeTabId = ref<string | null>(null)
+
+  function openTopic(connectionId: string, topic: string, partitions: number[] = []): Tab {
+    const existing = openTabs.value.find(
+      (t) => t.kind === 'topic' && t.connectionId === connectionId && t.topic === topic,
+    )
+    if (existing) {
+      existing.partitions = partitions
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id: `topic:${connectionId}:${topic}`,
+      kind: 'topic',
+      title: topic,
+      connectionId,
+      topic,
+      partitions,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  function openGroup(connectionId: string, group: string): Tab {
+    const existing = openTabs.value.find(
+      (t) => t.kind === 'group' && t.connectionId === connectionId && t.group === group,
+    )
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id: `group:${connectionId}:${group}`,
+      kind: 'group',
+      title: group,
+      connectionId,
+      group,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  function closeTab(id: string): void {
+    const idx = openTabs.value.findIndex((t) => t.id === id)
+    if (idx < 0) return
+    openTabs.value.splice(idx, 1)
+    if (activeTabId.value === id) {
+      activeTabId.value = openTabs.value[idx]?.id ?? openTabs.value[idx - 1]?.id ?? null
+    }
+  }
+
+  function setActive(id: string): void {
+    if (openTabs.value.some((t) => t.id === id)) activeTabId.value = id
+  }
+
+  return { openTabs, activeTabId, openTopic, openGroup, closeTab, setActive }
+})
