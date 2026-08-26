@@ -34,26 +34,24 @@
 - 使用 Conventional Commits（如 `feat:`、`fix:`、`test:`、`docs:`）并以祈使语气书写；可参考现有提交历史（`git log`）。
 - PR 需说明：改了什么、为什么改、如何验证（附上测试命令），如涉及需求文档请链接对应章节。
 
-## 改动提交流程（自动提交）
+## 改动后工作流（打包验证 → 用户确认 → 提交推送）
 
-- 每次完成代码改动后，先运行相关测试与构建验证（见「构建、测试与开发命令」），确保无问题、无回归。
-- 改动验证通过后，**先等待用户明确确认**，确认后再自动执行提交，不要擅自提交未确认的改动。
-- 提交信息使用 Conventional Commits（如 `feat:`、`fix:`、`test:`、`docs:`），祈使语气，必要时附简短正文说明改动原因与验证方式。
+每次完成代码改动后，先运行相关测试与构建验证（见「构建、测试与开发命令」），确保无问题、无回归，然后直接依次执行：**打包 → 安装替换 → 启动 → 清理残留**：
+
+1. 打包：`wails build --platform darwin/arm64`（`wails.json` 的 `outputfilename` 已设为 `dataBasePro`，无需 `-o`；若用 `-o` 勿带 `.app` 后缀，否则与 Wails 自动追加的 `.app` 撞名导致打包失败），产物位于 `build/bin/dataBasePro.app`（gitignored）。
+2. 安装替换：将产物复制到 `/Applications/dataBasePro.app`；若已存在旧版本，先移除旧目录再复制。
+3. 启动：`open /Applications/dataBasePro.app`。
+4. 清理残留：安装后删除构建残留 `build/bin/dataBasePro.app`，避免 Spotlight 搜索出现两个同名应用。
+
+打包/安装/启动/清理**不需要等待确认**，代码验证通过后即可执行；但**提交与推送必须等待用户明确确认**（确认应用可用、无问题）后再执行，不要擅自提交未确认的改动：
+
+- 提交信息使用 Conventional Commits（如 `feat:`、`fix:`、`test:`、`docs:`）并以祈使语气书写，必要时附简短正文说明改动原因与验证方式。
 - 提交范围遵循 `.gitignore`，禁止混入构建产物、本地配置或凭据。
 - 提交后同步推送到远程（本仓库 `origin` 指向 `git@gitee.com:princess-zp/dataBasePro.git`，默认分支 `main`）。
 
-## 打包、安装与启动流程（用户确认后执行）
+本机为 Apple Silicon（M1），目标平台为 `darwin/arm64`；产物为 ad-hoc 自签名，未公证。
 
-本机为 Apple Silicon（M1），目标平台为 `darwin/arm64`。仅在**用户明确确认后**执行以下步骤：
-
-1. 打包：`wails build --platform darwin/arm64`（`wails.json` 的 `outputfilename` 已设为 `dataBasePro`，无需 `-o`；若用 `-o` 勿带 `.app` 后缀，否则与 Wails 自动追加的 `.app` 撞名导致打包失败），产物位于 `build/bin/dataBasePro.app`（gitignored）。
-2. 安装：将产物复制到 `/Applications/dataBasePro.app`；若已存在旧版本，先移除旧目录再复制。
-3. 启动：`open /Applications/dataBasePro.app`。
-4. 清理：安装后删除构建残留 `build/bin/dataBasePro.app`，避免 Spotlight 搜索出现两个同名应用。
-
-打包前先通过测试与构建验证（见「构建、测试与开发命令」）；产物为 ad-hoc 自签名，未公证。
-
-注意：`wails build` 会清空 `frontend/dist`（vite `emptyOutDir`），连带删除被跟踪的 `frontend/dist/.gitkeep`；提交前需恢复：`touch frontend/dist/.gitkeep`。
+注意：`wails build` 会清空 `frontend/dist`（vite `emptyOutDir`），连带删除被跟踪的 `frontend/dist/.gitkeep`；打包后需恢复：`touch frontend/dist/.gitkeep`。
 
 ## 安全与配置要点
 
