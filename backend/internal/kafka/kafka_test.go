@@ -449,3 +449,47 @@ func TestConsumeMessagesNoOffsetsReturnsSlice(t *testing.T) {
 		t.Fatalf("empty messages must serialize to [] over JSON, got %s", b)
 	}
 }
+
+func TestCreateTopic(t *testing.T) {
+	c := newCluster(t, 1, "existing")
+	cl := newKafkaClient(t, c)
+
+	if err := cl.CreateTopic(context.Background(), "brand-new", 2, 1); err != nil {
+		t.Fatalf("CreateTopic: %v", err)
+	}
+	topics, err := cl.ListTopics(context.Background())
+	if err != nil {
+		t.Fatalf("ListTopics: %v", err)
+	}
+	var created *model.Topic
+	for _, tp := range topics {
+		if tp.Name == "brand-new" {
+			created = tp
+			break
+		}
+	}
+	if created == nil {
+		t.Fatalf("created topic not found in ListTopics: %+v", topics)
+	}
+	if len(created.Partitions) != 2 {
+		t.Fatalf("expected created topic to have 2 partitions, got %d", len(created.Partitions))
+	}
+}
+
+func TestDeleteTopic(t *testing.T) {
+	c := newCluster(t, 1, "t1", "t2")
+	cl := newKafkaClient(t, c)
+
+	if err := cl.DeleteTopic(context.Background(), "t1"); err != nil {
+		t.Fatalf("DeleteTopic: %v", err)
+	}
+	topics, err := cl.ListTopics(context.Background())
+	if err != nil {
+		t.Fatalf("ListTopics: %v", err)
+	}
+	for _, tp := range topics {
+		if tp.Name == "t1" {
+			t.Fatalf("topic t1 should have been deleted, still present: %+v", topics)
+		}
+	}
+}

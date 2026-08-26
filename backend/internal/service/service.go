@@ -98,6 +98,24 @@ func (s *Service) DeleteConnection(ctx context.Context, id string) error {
 	return s.store.DeleteConnection(id)
 }
 
+// CreateTopic creates a topic on the connection's cluster.
+func (s *Service) CreateTopic(ctx context.Context, id, name string, partitions int32, replicationFactor int16) error {
+	d, err := s.kafka(ctx, id)
+	if err != nil {
+		return err
+	}
+	return d.CreateTopic(ctx, name, partitions, replicationFactor)
+}
+
+// DeleteTopic removes a topic from the connection's cluster.
+func (s *Service) DeleteTopic(ctx context.Context, id, name string) error {
+	d, err := s.kafka(ctx, id)
+	if err != nil {
+		return err
+	}
+	return d.DeleteTopic(ctx, name)
+}
+
 // ListTopics lists topics on the connection, auto-connecting if needed.
 func (s *Service) ListTopics(ctx context.Context, id string) ([]*model.Topic, error) {
 	kds, err := s.kafka(ctx, id)

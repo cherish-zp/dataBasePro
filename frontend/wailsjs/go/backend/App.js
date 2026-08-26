@@ -18,8 +18,16 @@ export function CreateConnection(arg1) {
   return window['go']['backend']['App']['CreateConnection'](arg1);
 }
 
+export function CreateTopic(arg1) {
+  return window['go']['backend']['App']['CreateTopic'](arg1);
+}
+
 export function DeleteConnection(arg1) {
   return window['go']['backend']['App']['DeleteConnection'](arg1);
+}
+
+export function DeleteTopic(arg1) {
+  return window['go']['backend']['App']['DeleteTopic'](arg1);
 }
 
 export function Disconnect(arg1) {

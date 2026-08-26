@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 
@@ -31,6 +32,35 @@ func (c *Client) ListTopics(ctx context.Context) ([]*model.Topic, error) {
 	}
 	sort.Slice(topics, func(i, j int) bool { return topics[i].Name < topics[j].Name })
 	return topics, nil
+}
+
+// CreateTopic creates a topic with the requested partition count and
+// replication factor.
+func (c *Client) CreateTopic(ctx context.Context, name string, partitions int32, replicationFactor int16) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	resp, err := c.admin.CreateTopic(ctx, partitions, replicationFactor, nil, name)
+	if err != nil {
+		return fmt.Errorf("create topic: %w", err)
+	}
+	if resp.Err != nil {
+		return fmt.Errorf("create topic %q: %w", name, resp.Err)
+	}
+	return nil
+}
+
+// DeleteTopic removes a topic from the cluster.
+func (c *Client) DeleteTopic(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	resp, err := c.admin.DeleteTopic(ctx, name)
+	if err != nil {
+		return fmt.Errorf("delete topic: %w", err)
+	}
+	if resp.Err != nil {
+		return fmt.Errorf("delete topic %q: %w", name, resp.Err)
+	}
+	return nil
 }
 
 // ListConsumerGroups returns all consumer groups together with their per

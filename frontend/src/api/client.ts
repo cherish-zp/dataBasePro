@@ -10,6 +10,8 @@ import type {
   ConsumeRequest,
   ResetOffsetRequest,
   ProduceRequest,
+  CreateTopicRequest,
+  DeleteTopicRequest,
 } from './types'
 
 export interface Api {
@@ -22,6 +24,8 @@ export interface Api {
   disconnect(id: string): Promise<void>
   listTopics(id: string): Promise<Topic[]>
   listConsumerGroups(id: string): Promise<ConsumerGroup[]>
+  createTopic(req: CreateTopicRequest): Promise<void>
+  deleteTopic(req: DeleteTopicRequest): Promise<void>
   consumeMessages(req: ConsumeRequest): Promise<Message[]>
   consumeMessagesByTimestamp(req: ConsumeRequest): Promise<Message[]>
   getPartitionLag(id: string, topic: string, group: string): Promise<Record<number, number>>
@@ -61,6 +65,12 @@ export class WailsApi implements Api {
   }
   listConsumerGroups(id: string): Promise<ConsumerGroup[]> {
     return App.ListConsumerGroups(id) as unknown as Promise<ConsumerGroup[]>
+  }
+  createTopic(req: CreateTopicRequest): Promise<void> {
+    return App.CreateTopic(req) as unknown as Promise<void>
+  }
+  deleteTopic(req: DeleteTopicRequest): Promise<void> {
+    return App.DeleteTopic(req) as unknown as Promise<void>
   }
   consumeMessages(req: ConsumeRequest): Promise<Message[]> {
     return App.ConsumeMessages(req) as unknown as Promise<Message[]>

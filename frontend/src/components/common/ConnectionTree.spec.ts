@@ -20,6 +20,8 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     consumeMessagesByTimestamp: vi.fn(async () => []),
     getPartitionLag: vi.fn(async () => ({})),
     resetConsumerGroupOffset: vi.fn(async () => {}),
+    createTopic: vi.fn(async () => {}),
+    deleteTopic: vi.fn(async () => {}),
     produceMessage: vi.fn(async () => {}),
     ...overrides,
   }
@@ -64,7 +66,7 @@ describe('ConnectionTree', () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="tree-loading"]').exists()).toBe(false)
     })
-    expect(wrapper.findAll('[data-test="topic-node"]').map((n) => n.text())).toEqual(['user-log'])
+    expect(wrapper.findAll('[data-test="topic-name"]').map((n) => n.text())).toEqual(['user-log'])
     expect(wrapper.findAll('[data-test="group-node"]').map((n) => n.text())).toEqual(['grp-1'])
     expect(api.listTopics).toHaveBeenCalledWith('a')
   })
@@ -113,9 +115,23 @@ describe('ConnectionTree', () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
     await expand(wrapper)
     await wrapper.find('[data-test="topic-search"]').setValue('usr')
-    expect(wrapper.findAll('[data-test="topic-node"]').map((n) => n.text())).toEqual(['user-log', 'user-events'])
+    expect(wrapper.findAll('[data-test="topic-name"]').map((n) => n.text())).toEqual(['user-log', 'user-events'])
     await wrapper.find('[data-test="topic-search"]').setValue('od')
-    expect(wrapper.findAll('[data-test="topic-node"]').map((n) => n.text())).toEqual(['order-db'])
+    expect(wrapper.findAll('[data-test="topic-name"]').map((n) => n.text())).toEqual(['order-db'])
+  })
+
+  it('excludes far-apart subsequence matches and ranks the substring match first', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'activeInfoResult', partitions: [] },
+      { name: 'ods_illegal_tyqresult', partitions: [] },
+      { name: 'aaa_test_bbb', partitions: [] },
+      { name: 'test_01', partitions: [] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="topic-search"]').setValue('test')
+    expect(wrapper.findAll('[data-test="topic-name"]').map((n) => n.text())).toEqual(['test_01', 'aaa_test_bbb'])
   })
 
   it('shows a no-match message when search has no results', async () => {
@@ -128,7 +144,7 @@ describe('ConnectionTree', () => {
     expect(wrapper.find('[data-test="topic-empty"]').text()).toBe('无匹配 Topic')
     await wrapper.find('[data-test="topic-search"]').setValue('')
     await vi.waitFor(() => {
-      expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(1)
+      expect(wrapper.findAll('[data-test="topic-name"]')).toHaveLength(1)
     })
   })
 
@@ -154,6 +170,159 @@ describe('ConnectionTree', () => {
     })
     await wrapper.find('[data-test="group-node"]').trigger('dblclick')
     expect(wrapper.emitted('open-group')?.[0]).toEqual(['a', 'grp-1'])
+  })
+
+  it('opens and closes the topic creation form from the Topics header', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    expect(wrapper.find('[data-test="create-form"]').exists()).toBe(false)
+    await wrapper.find('[data-test="btn-create-object"]').trigger('click')
+    expect(wrapper.find('[data-test="create-form"]').exists()).toBe(true)
+    await wrapper.find('[data-test="btn-create-cancel"]').trigger('click')
+    expect(wrapper.find('[data-test="create-form"]').exists()).toBe(false)
+  })
+
+  it('opens the create form when clicking anywhere on the Topics header row', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    expect(wrapper.find('[data-test="create-form"]').exists()).toBe(false)
+    const header = wrapper.find('[data-test="object-group"]')
+    expect(header.attributes('role')).toBe('button')
+    await header.trigger('click')
+    expect(wrapper.find('[data-test="create-form"]').exists()).toBe(true)
+  })
+
+  it('toggles the create form off when the Topics header row is clicked again', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="object-group"]').trigger('click')
+    expect(wrapper.find('[data-test="create-form"]').exists()).toBe(true)
+    await wrapper.find('[data-test="object-group"]').trigger('click')
+    expect(wrapper.find('[data-test="create-form"]').exists()).toBe(false)
+  })
+
+  it('renders the create form directly under the Topics header so it stays visible with many topics', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'aaa', partitions: [] },
+      { name: 'bbb', partitions: [] },
+      { name: 'ccc', partitions: [] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="btn-create-object"]').trigger('click')
+    const form = wrapper.find('[data-test="create-form"]').element
+    const topics = wrapper.findAll('[data-test="topic-node"]').map((n) => n.element)
+    expect(topics.length).toBe(3)
+    for (const t of topics) {
+      // The form must precede every topic node, not be buried at the bottom of the list.
+      expect(form.compareDocumentPosition(t) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+  })
+
+  it('keeps the topic name input case-sensitive (no autocapitalize on macOS WebKit)', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="btn-create-object"]').trigger('click')
+    const input = wrapper.find('[data-test="create-name"]')
+    expect(input.attributes('autocapitalize')).toBe('off')
+    expect(input.attributes('autocorrect')).toBe('off')
+    expect(input.attributes('autocomplete')).toBe('off')
+    expect(input.attributes('spellcheck')).toBe('false')
+  })
+
+  it('keeps the fuzzy topic search input case-sensitive (no autocapitalize)', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    const search = wrapper.find('[data-test="topic-search"]')
+    expect(search.attributes('autocapitalize')).toBe('off')
+    expect(search.attributes('autocorrect')).toBe('off')
+    expect(search.attributes('autocomplete')).toBe('off')
+    expect(search.attributes('spellcheck')).toBe('false')
+  })
+
+  it('creates a topic and reloads the topic list', async () => {
+    const listTopics = api.listTopics as ReturnType<typeof vi.fn>
+    listTopics
+      .mockResolvedValueOnce([{ name: 'user-log', partitions: [] }])
+      .mockResolvedValueOnce([
+        { name: 'user-log', partitions: [] },
+        { name: 'brand-new', partitions: [] },
+      ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.createTopic as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="btn-create-object"]').trigger('click')
+    await wrapper.find('[data-test="create-name"]').setValue('brand-new')
+    await wrapper.find('[data-test="create-partitions"]').setValue(3)
+    await wrapper.find('[data-test="create-replication"]').setValue(1)
+    await wrapper.find('[data-test="btn-create-submit"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.createTopic).toHaveBeenCalledWith({
+        connection_id: 'a',
+        topic: 'brand-new',
+        partitions: 3,
+        replication_factor: 1,
+      })
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="topic-name"]').map((n) => n.text())).toContain('brand-new')
+    })
+    expect(wrapper.find('[data-test="create-form"]').exists()).toBe(false)
+  })
+
+  it('rejects an empty topic name without calling the api', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="btn-create-object"]').trigger('click')
+    await wrapper.find('[data-test="btn-create-submit"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="create-error"]').text()).toContain('不能为空')
+    })
+    expect(api.createTopic).not.toHaveBeenCalled()
+  })
+
+  it('deletes a topic after confirmation and reloads', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    ;(api.listTopics as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([{ name: 'user-log', partitions: [] }])
+      .mockResolvedValueOnce([])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.deleteTopic as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="btn-delete-topic"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.deleteTopic).toHaveBeenCalledWith({ connection_id: 'a', topic: 'user-log' })
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(0)
+    })
+    confirmSpy.mockRestore()
+  })
+
+  it('skips deletion when confirmation is declined', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="btn-delete-topic"]').trigger('click')
+    expect(api.deleteTopic).not.toHaveBeenCalled()
+    confirmSpy.mockRestore()
   })
 
   it('emits delete and new', async () => {

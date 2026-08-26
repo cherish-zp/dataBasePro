@@ -71,6 +71,18 @@ export interface ConsumerGroup {
 
 export type ResetOffsetMode = 'earliest' | 'latest' | 'timestamp'
 
+export interface CreateTopicRequest {
+  connection_id: string
+  topic: string
+  partitions: number
+  replication_factor: number
+}
+
+export interface DeleteTopicRequest {
+  connection_id: string
+  topic: string
+}
+
 export interface ConsumeRequest {
   connection_id: string
   topic: string

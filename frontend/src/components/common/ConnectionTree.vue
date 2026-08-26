@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
 import type { Connection, Topic, ConsumerGroup } from '@/api/types'
-import { fuzzyMatch } from '@/utils/fuzzy'
+import { fuzzyScore } from '@/utils/fuzzy'
 
 const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
@@ -21,6 +21,34 @@ const TYPE_META: Record<string, { label: string; icon: string }> = {
 
 function typeMeta(conn: Connection): { label: string; icon: string } {
   return TYPE_META[conn.type] ?? { label: conn.type, icon: '📦' }
+}
+
+// An "object collection" groups the objects a data source exposes (topics,
+// consumers, tables, indices...). Each collection can optionally offer create
+// actions, so adding MySQL tables later is a matter of declaring a new entry
+// here and a create/delete branch in the dispatch functions below.
+type ObjectKind = 'topic' | 'table' | 'group'
+interface ObjectCollection {
+  key: string
+  label: string
+  icon: string
+  kind: ObjectKind
+  creatable: boolean
+  emptyText: string
+}
+
+const COLLECTIONS_BY_TYPE: Record<string, ObjectCollection[]> = {
+  kafka: [
+    { key: 'topics', label: 'Topics', icon: '📋', kind: 'topic', creatable: true, emptyText: '（无主题）' },
+    { key: 'consumers', label: 'Consumers', icon: '👥', kind: 'group', creatable: false, emptyText: '（无消费组）' },
+  ],
+  // Future data sources plug in here, e.g.:
+  // mysql: [{ key: 'tables', label: 'Tables', icon: '🗄️', kind: 'table', creatable: true, emptyText: '（无表）' }],
+  // es: [{ key: 'indices', label: 'Indices', icon: '🔎', kind: 'index', creatable: true, emptyText: '（无索引）' }],
+}
+
+function collectionsOf(type: string): ObjectCollection[] {
+  return COLLECTIONS_BY_TYPE[type] ?? []
 }
 
 const expanded = ref<Record<string, boolean>>({})
@@ -68,7 +96,78 @@ function filteredTopics(connId: string): Topic[] {
   const q = (searchByConn.value[connId] ?? '').trim()
   const list = topicsByConn.value[connId] ?? []
   if (!q) return list
-  return list.filter((t) => fuzzyMatch(q, t.name))
+  return list
+    .map((t) => ({ t, score: fuzzyScore(q, t.name) }))
+    .filter((x) => x.score !== Infinity)
+    .sort((a, b) => a.score - b.score)
+    .map((x) => x.t)
+}
+
+const createMeta = ref<{ connId: string; kind: ObjectKind } | null>(null)
+const createForm = reactive({ name: '', partitions: 1, replication: 1 })
+const creating = ref(false)
+const createError = ref<string | null>(null)
+
+function isCreatingFor(connId: string, kind: ObjectKind): boolean {
+  return createMeta.value?.connId === connId && createMeta.value?.kind === kind
+}
+
+function openCreate(conn: Connection, col: ObjectCollection): void {
+  createMeta.value = { connId: conn.id, kind: col.kind }
+  createForm.name = ''
+  createForm.partitions = 1
+  createForm.replication = 1
+  createError.value = null
+}
+
+function toggleCreate(conn: Connection, col: ObjectCollection): void {
+  if (isCreatingFor(conn.id, col.kind)) {
+    closeCreate()
+  } else {
+    openCreate(conn, col)
+  }
+}
+
+function closeCreate(): void {
+  createMeta.value = null
+}
+
+async function submitCreate(conn: Connection): Promise<void> {
+  const name = createForm.name.trim()
+  if (!name) {
+    createError.value = '名称不能为空'
+    return
+  }
+  creating.value = true
+  createError.value = null
+  try {
+    const kind = createMeta.value?.kind
+    if (kind === 'topic') {
+      await getApi().createTopic({
+        connection_id: conn.id,
+        topic: name,
+        partitions: Math.max(1, createForm.partitions || 1),
+        replication_factor: Math.max(1, createForm.replication || 1),
+      })
+      // future: if (kind === 'table') await getApi().createTable({ ... })
+    }
+    await load(conn.id)
+    closeCreate()
+  } catch (e) {
+    createError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    creating.value = false
+  }
+}
+
+async function confirmDeleteTopic(conn: Connection, name: string): Promise<void> {
+  if (!window.confirm(`确认删除 Topic「${name}」？此操作不可恢复。`)) return
+  try {
+    await getApi().deleteTopic({ connection_id: conn.id, topic: name })
+    await load(conn.id)
+  } catch (e) {
+    errorByConn.value[conn.id] = e instanceof Error ? e.message : String(e)
+  }
 }
 </script>
 
@@ -92,40 +191,103 @@ function filteredTopics(connId: string): Topic[] {
         <div v-if="loadingByConn[conn.id]" class="conn-loading" data-test="tree-loading">加载中…</div>
         <div v-else-if="errorByConn[conn.id]" class="conn-error" data-test="tree-error">{{ errorByConn[conn.id] }}</div>
         <template v-else>
-          <div class="topic-search">
-            <input
-              v-model="searchByConn[conn.id]"
-              class="search-input"
-              type="search"
-              data-test="topic-search"
-              placeholder="🔍 模糊搜索 Topic…"
-            />
-          </div>
-          <div class="group-label">📋 Topics</div>
-          <div
-            v-for="t in filteredTopics(conn.id)"
-            :key="t.name"
-            class="leaf"
-            data-test="topic-node"
-            :title="`${t.name} (${t.partitions.length} 分区)`"
-            @dblclick="emit('open-topic', conn.id, t.name, t.partitions.map((p) => p.id))"
-          >
-            {{ t.name }}
-          </div>
-          <div v-if="filteredTopics(conn.id).length === 0" class="leaf muted" data-test="topic-empty">
-            {{ hasSearch(conn.id) ? '无匹配 Topic' : '（无主题）' }}
-          </div>
-          <div class="group-label">👥 Consumers</div>
-          <div
-            v-for="g in groupsByConn[conn.id] || []"
-            :key="g.name"
-            class="leaf"
-            data-test="group-node"
-            @dblclick="emit('open-group', conn.id, g.name)"
-          >
-            {{ g.name }}
-          </div>
-          <div v-if="(groupsByConn[conn.id] || []).length === 0" class="leaf muted">（无消费组）</div>
+          <template v-for="col in collectionsOf(conn.type)" :key="col.key">
+            <component
+              :is="col.creatable ? 'button' : 'div'"
+              class="group-label"
+              :class="{ clickable: col.creatable }"
+              data-test="object-group"
+              :type="col.creatable ? 'button' : undefined"
+              :role="col.creatable ? 'button' : undefined"
+              :aria-label="col.creatable ? `新建 ${col.label}` : undefined"
+              :title="col.creatable ? '新建' : undefined"
+              @click="col.creatable ? toggleCreate(conn, col) : undefined"
+            >
+              <span class="group-title">{{ col.icon }} {{ col.label }}</span>
+              <span v-if="col.creatable" class="group-add" data-test="btn-create-object" aria-hidden="true">＋</span>
+            </component>
+
+            <div v-if="col.kind === 'topic' && isCreatingFor(conn.id, 'topic')" class="create-form" data-test="create-form">
+              <input
+                v-model="createForm.name"
+                class="input"
+                type="text"
+                data-test="create-name"
+                placeholder="Topic 名称"
+                autocapitalize="off"
+                autocorrect="off"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <div class="create-row">
+                <label class="create-field">
+                  分区
+                  <input v-model.number="createForm.partitions" class="input num" type="number" min="1" data-test="create-partitions" />
+                </label>
+                <label class="create-field">
+                  副本
+                  <input v-model.number="createForm.replication" class="input num" type="number" min="1" data-test="create-replication" />
+                </label>
+              </div>
+              <div v-if="createError" class="create-error" data-test="create-error">{{ createError }}</div>
+              <div class="create-actions">
+                <button class="btn primary" type="button" data-test="btn-create-submit" :disabled="creating" @click="submitCreate(conn)">
+                  {{ creating ? '创建中…' : '创建' }}
+                </button>
+                <button class="btn ghost" type="button" data-test="btn-create-cancel" @click="closeCreate">取消</button>
+              </div>
+            </div>
+
+            <div v-if="col.key === 'topics'" class="topic-search">
+              <input
+                v-model="searchByConn[conn.id]"
+                class="search-input"
+                type="search"
+                data-test="topic-search"
+                placeholder="🔍 模糊搜索 Topic…"
+                autocapitalize="off"
+                autocorrect="off"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </div>
+
+            <template v-if="col.kind === 'topic'">
+              <div
+                v-for="t in filteredTopics(conn.id)"
+                :key="t.name"
+                class="leaf"
+                data-test="topic-node"
+                :title="`${t.name} (${t.partitions.length} 分区)`"
+                @dblclick="emit('open-topic', conn.id, t.name, t.partitions.map((p) => p.id))"
+              >
+                <span class="leaf-name" data-test="topic-name">{{ t.name }}</span>
+                <button
+                  class="leaf-del"
+                  type="button"
+                  data-test="btn-delete-topic"
+                  title="删除 Topic"
+                  @click.stop="confirmDeleteTopic(conn, t.name)"
+                >🗑</button>
+              </div>
+              <div v-if="filteredTopics(conn.id).length === 0" class="leaf muted" data-test="topic-empty">
+                {{ hasSearch(conn.id) ? '无匹配 Topic' : col.emptyText }}
+              </div>
+            </template>
+
+            <template v-else-if="col.kind === 'group'">
+              <div
+                v-for="g in groupsByConn[conn.id] || []"
+                :key="g.name"
+                class="leaf"
+                data-test="group-node"
+                @dblclick="emit('open-group', conn.id, g.name)"
+              >
+                <span class="leaf-name">{{ g.name }}</span>
+              </div>
+              <div v-if="(groupsByConn[conn.id] || []).length === 0" class="leaf muted">{{ col.emptyText }}</div>
+            </template>
+          </template>
         </template>
       </div>
       <div v-else-if="isExpanded(conn.id)" class="conn-children">
@@ -178,10 +340,68 @@ function filteredTopics(connId: string): Topic[] {
 }
 .search-input:focus { outline: none; border-color: var(--accent); background: var(--bg-elevated); box-shadow: 0 0 0 3px var(--accent-soft); }
 .search-input::placeholder { color: var(--text-tertiary); }
-.group-label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; margin: 8px 0 3px; }
-.leaf { padding: 4px 7px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background 0.12s ease, color 0.12s ease; }
+.group-label {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11px; color: var(--text-tertiary); text-transform: uppercase;
+  letter-spacing: 0.05em; margin: 8px 0 3px;
+  position: relative; z-index: 1; isolation: isolate;
+  width: 100%; box-sizing: border-box;
+  appearance: none; background: none; border: none; padding: 4px 6px;
+  margin: 8px -6px 3px;
+  font-family: inherit; text-align: left; line-height: inherit;
+}
+.group-label.clickable { cursor: pointer; border-radius: 6px; transition: background 0.12s ease, color 0.12s ease; }
+.group-label.clickable:hover { background: var(--bg-hover); color: var(--text); }
+.group-label.clickable:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.group-label .group-title { flex: 1; min-width: 0; }
+.group-label .group-add { margin-right: -2px; }
+.group-label.clickable:active .group-add { color: var(--accent-hover); }
+.group-add {
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--accent);
+  font-size: 17px; font-weight: 600; line-height: 1;
+  min-width: 22px; min-height: 22px; padding: 2px 4px; border-radius: 6px;
+  transition: background 0.12s ease, transform 0.12s ease;
+}
+.group-label.clickable:hover .group-add { background: var(--accent-soft); }
+.group-label.clickable:active .group-add { transform: scale(0.92); }
+.leaf {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 7px; border-radius: 6px; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background 0.12s ease, color 0.12s ease;
+}
 .leaf:hover { background: var(--bg-hover); color: var(--text); }
 .leaf.muted { color: var(--text-tertiary); cursor: default; }
+.leaf-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.leaf-del {
+  background: none; border: none; color: var(--text-tertiary); cursor: pointer;
+  border-radius: 4px; padding: 0 3px; flex: none; opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.leaf:hover .leaf-del { opacity: 1; }
+.leaf-del:hover { color: var(--danger); background: var(--danger-soft); }
+.create-form {
+  margin: 6px 0 2px; padding: 8px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--bg-subtle); display: flex; flex-direction: column; gap: 7px;
+}
+.input {
+  background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text);
+  border-radius: 7px; padding: 5px 9px; font-size: 12px; width: 100%; box-sizing: border-box;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.create-row { display: flex; gap: 8px; }
+.create-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); flex: 1; }
+.input.num { width: 100%; }
+.create-error { color: var(--danger); font-size: 12px; }
+.create-actions { display: flex; gap: 8px; }
+.btn { border-radius: 7px; padding: 4px 12px; font-size: 12px; cursor: pointer; border: 1px solid transparent; transition: background 0.15s ease, opacity 0.15s ease; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn.primary { background: var(--accent); color: #fff; }
+.btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }
+.btn.ghost:hover { background: var(--bg-hover); }
 .conn-loading { color: var(--text-secondary); padding: 5px; }
 .conn-error { color: var(--danger); padding: 5px; }
 </style>

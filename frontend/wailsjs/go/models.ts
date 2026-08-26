@@ -22,6 +22,38 @@ export namespace backend {
 	        this.limit = source["limit"];
 	    }
 	}
+	export class CreateTopicRequest {
+	    connection_id: string;
+	    topic: string;
+	    partitions: number;
+	    replication_factor: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CreateTopicRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.topic = source["topic"];
+	        this.partitions = source["partitions"];
+	        this.replication_factor = source["replication_factor"];
+	    }
+	}
+	export class DeleteTopicRequest {
+	    connection_id: string;
+	    topic: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeleteTopicRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.topic = source["topic"];
+	    }
+	}
 	export class ProduceRequest {
 	    connection_id: string;
 	    topic: string;

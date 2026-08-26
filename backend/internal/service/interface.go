@@ -21,6 +21,8 @@ type DataSource interface {
 type KafkaDataSource interface {
 	DataSource
 	ListTopics(ctx context.Context) ([]*model.Topic, error)
+	CreateTopic(ctx context.Context, name string, partitions int32, replicationFactor int16) error
+	DeleteTopic(ctx context.Context, name string) error
 	ListConsumerGroups(ctx context.Context) ([]*model.ConsumerGroup, error)
 	ConsumeMessages(ctx context.Context, topic string, partition int32, offset int64, limit int) ([]*model.Message, error)
 	ConsumeMessagesByTimestamp(ctx context.Context, topic string, partition int32, timestampMS int64, limit int) ([]*model.Message, error)

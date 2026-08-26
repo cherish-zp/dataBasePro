@@ -54,6 +54,20 @@ type ResetOffsetRequest struct {
 	TimestampMS  int64                 `json:"timestamp_ms,omitempty"`
 }
 
+// CreateTopicRequest carries the parameters for creating a Kafka topic.
+type CreateTopicRequest struct {
+	ConnectionID      string `json:"connection_id"`
+	Topic             string `json:"topic"`
+	Partitions        int32  `json:"partitions"`
+	ReplicationFactor int16  `json:"replication_factor"`
+}
+
+// DeleteTopicRequest carries the parameters for deleting a Kafka topic.
+type DeleteTopicRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Topic        string `json:"topic"`
+}
+
 // ProduceRequest carries the parameters for publishing a record.
 type ProduceRequest struct {
 	ConnectionID string `json:"connection_id"`
@@ -61,6 +75,20 @@ type ProduceRequest struct {
 	Partition    int32  `json:"partition"`
 	Key          string `json:"key"`
 	Value        string `json:"value"`
+}
+
+// CreateTopic creates a topic on a connection's cluster.
+func (a *App) CreateTopic(req CreateTopicRequest) error {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.CreateTopic(ctx, req.ConnectionID, req.Topic, req.Partitions, req.ReplicationFactor)
+}
+
+// DeleteTopic removes a topic from a connection's cluster.
+func (a *App) DeleteTopic(req DeleteTopicRequest) error {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.DeleteTopic(ctx, req.ConnectionID, req.Topic)
 }
 
 // CreateConnection validates and saves a new connection.
