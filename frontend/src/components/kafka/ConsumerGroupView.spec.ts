@@ -41,15 +41,66 @@ function grp(): ConsumerGroup {
   }
 }
 
-function mountView(overrides: Partial<Api> = {}) {
+function mountView(overrides: Partial<Api> = {}, props: Record<string, unknown> = {}) {
   setActivePinia(createPinia())
   const api = fakeApi(overrides)
   setApi(api)
-  const wrapper = mount(ConsumerGroupView, { props: { tabId: 'tab1', connectionId: 'c' } })
+  const wrapper = mount(ConsumerGroupView, { props: { tabId: 'tab1', connectionId: 'c', ...props } })
   return { wrapper, api }
 }
 
 describe('ConsumerGroupView', () => {
+  it('shows the group opened from the sidebar and its consumed topics', async () => {
+    const gA: ConsumerGroup = { name: 'aaa', state: 'Stable', topics: { 'topicA': [] } }
+    const gB: ConsumerGroup = {
+      name: 'group_t_ds_cu_audit_log',
+      state: 'Stable',
+      topics: { 'audit-topic': [], 'sec-topic': [] },
+    }
+    const { wrapper } = mountView(
+      { listConsumerGroups: vi.fn(async () => [gA, gB]) },
+      { group: 'group_t_ds_cu_audit_log' },
+    )
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="field-group"] [data-test="search-select-value"]').text()).toBe(
+        'group_t_ds_cu_audit_log (Stable)',
+      )
+    })
+    expect(wrapper.find('[data-test="field-topic"] [data-test="search-select-value"]').text()).toBe('audit-topic')
+  })
+
+  it('filters the consumer group dropdown by fuzzy search', async () => {
+    const groups: ConsumerGroup[] = [
+      { name: 'grp-1', state: 'Stable', topics: { 'orders': [] } },
+      { name: 'group_forensics_document_wait', state: 'Empty', topics: {} },
+      { name: 'console-consumer-123', state: 'Empty', topics: {} },
+    ]
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => groups) })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]').length).toBeGreaterThanOrEqual(0)
+    })
+    await wrapper.find('[data-test="field-group"] [data-test="search-select-trigger"]').trigger('click')
+    await wrapper.find('[data-test="field-group"] [data-test="search-select-input"]').setValue('grp')
+    const labels = wrapper.findAll('[data-test="field-group"] [data-test="search-select-option"]').map((n) => n.text())
+    expect(labels).toEqual(['grp-1 (Stable)', 'group_forensics_document_wait (Empty)'])
+  })
+
+  it('filters the topic dropdown by fuzzy search', async () => {
+    const g: ConsumerGroup = {
+      name: 'grp-1',
+      state: 'Stable',
+      topics: { 'orders': [], 'order-events': [], 'users': [] },
+    }
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [g]) })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="field-topic"] [data-test="search-select-value"]').text()).toBe('orders')
+    })
+    await wrapper.find('[data-test="field-topic"] [data-test="search-select-trigger"]').trigger('click')
+    await wrapper.find('[data-test="field-topic"] [data-test="search-select-input"]').setValue('ord')
+    const labels = wrapper.findAll('[data-test="field-topic"] [data-test="search-select-option"]').map((n) => n.text())
+    expect(labels).toEqual(['orders', 'order-events'])
+  })
+
   it('loads groups and renders the lag table for the first topic', async () => {
     const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]) })
     await vi.waitFor(() => {

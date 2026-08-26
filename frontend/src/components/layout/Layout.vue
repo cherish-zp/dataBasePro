@@ -97,7 +97,7 @@ function openSql(): void {
             />
           </template>
           <template v-else-if="active.kind === 'group'">
-            <ConsumerGroupView :tab-id="active.id" :connection-id="active.connectionId" />
+            <ConsumerGroupView :tab-id="active.id" :connection-id="active.connectionId" :group="active.group ?? ''" />
           </template>
         </div>
       </main>

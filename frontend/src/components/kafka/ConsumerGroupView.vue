@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useGroupsStore } from '@/store/groups'
 import type { ResetOffsetMode } from '@/api/types'
+import SearchSelect, { type SelectOption } from '@/components/common/SearchSelect.vue'
 import GroupLagPanel from './GroupLagPanel.vue'
 
-const props = defineProps<{ tabId: string; connectionId: string }>()
+const props = defineProps<{ tabId: string; connectionId: string; group?: string }>()
 
 const store = useGroupsStore()
 const st = computed(() => store.stateFor(props.tabId))
 
-const selectedGroup = ref<string | null>(null)
+const selectedGroup = ref<string | null>(props.group ?? null)
 const selectedTopic = ref<string | null>(null)
 const resetMode = ref<ResetOffsetMode>('latest')
 const timestampMs = ref<number | null>(null)
@@ -18,6 +19,8 @@ const groups = computed(() => st.value.groups)
 const group = computed(() => groups.value.find((g) => g.name === selectedGroup.value) ?? null)
 const topics = computed(() => Object.keys(group.value?.topics ?? {}))
 const lags = computed(() => (selectedTopic.value ? group.value?.topics[selectedTopic.value] ?? [] : []))
+const groupOptions = computed<SelectOption[]>(() => groups.value.map((g) => ({ value: g.name, label: `${g.name} (${g.state})` })))
+const topicOptions = computed<SelectOption[]>(() => topics.value.map((t) => ({ value: t, label: t })))
 
 function pickGroup(name: string): void {
   selectedGroup.value = name
@@ -26,16 +29,22 @@ function pickGroup(name: string): void {
   selectedTopic.value = ts[0] ?? null
 }
 
-function pickTopic(name: string): void {
-  selectedTopic.value = name
-}
-
 async function refresh(): Promise<void> {
   await store.load(props.tabId, props.connectionId)
   if (selectedGroup.value == null && groups.value.length > 0) {
     pickGroup(groups.value[0].name)
+  } else if (selectedGroup.value != null) {
+    const g = groups.value.find((x) => x.name === selectedGroup.value)
+    const ts = g ? Object.keys(g.topics ?? {}) : []
+    if (selectedTopic.value == null || (ts.length > 0 && !ts.includes(selectedTopic.value))) {
+      selectedTopic.value = ts[0] ?? null
+    }
   }
 }
+
+watch(selectedGroup, (name) => {
+  if (name) pickGroup(name)
+})
 
 async function reset(): Promise<void> {
   if (!selectedGroup.value || !selectedTopic.value) return
@@ -55,17 +64,13 @@ onMounted(refresh)
 <template>
   <div class="group-view" data-test="group-view">
     <div class="toolbar">
-      <label class="field">
+      <label class="field" data-test="field-group">
         消费组
-        <select v-model="selectedGroup" data-test="select-group" class="input" @change="selectedGroup && pickGroup(selectedGroup)">
-          <option v-for="g in groups" :key="g.name" :value="g.name">{{ g.name }} ({{ g.state }})</option>
-        </select>
+        <SearchSelect v-model="selectedGroup" :options="groupOptions" placeholder="选择消费组" />
       </label>
-      <label class="field">
+      <label class="field" data-test="field-topic">
         Topic
-        <select v-model="selectedTopic" data-test="select-topic" class="input" @change="selectedTopic && pickTopic(selectedTopic)">
-          <option v-for="t in topics" :key="t" :value="t">{{ t }}</option>
-        </select>
+        <SearchSelect v-model="selectedTopic" :options="topicOptions" placeholder="选择 Topic" />
       </label>
       <button class="btn ghost" type="button" data-test="btn-refresh" :disabled="st.loading" @click="refresh">
         {{ st.loading ? '加载中…' : '刷新' }}
