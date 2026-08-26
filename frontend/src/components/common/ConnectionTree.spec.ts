@@ -25,8 +25,8 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
   }
 }
 
-const conn = (id: string): Connection => ({
-  id, name: `conn-${id}`, type: 'kafka',
+const conn = (id: string, type: Connection['type'] = 'kafka'): Connection => ({
+  id, name: `conn-${id}`, type,
   config: { bootstrap_servers: ['h:1'] }, created_at: 1, updated_at: 1,
 })
 
@@ -44,10 +44,11 @@ describe('ConnectionTree', () => {
     setApi(api)
   })
 
-  it('renders connection names and the new button', () => {
-    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b')] } })
+  it('renders connection names, friendly type labels and the new button', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), { ...conn('m'), type: 'mysql' }] } })
     expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(2)
     expect(wrapper.find('[data-test="tree-empty"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="conn-type"]').map((n) => n.text())).toEqual(['Kafka', 'MySQL'])
   })
 
   it('shows an empty state when there are no connections', () => {
@@ -66,6 +67,69 @@ describe('ConnectionTree', () => {
     expect(wrapper.findAll('[data-test="topic-node"]').map((n) => n.text())).toEqual(['user-log'])
     expect(wrapper.findAll('[data-test="group-node"]').map((n) => n.text())).toEqual(['grp-1'])
     expect(api.listTopics).toHaveBeenCalledWith('a')
+  })
+
+  it('expands by clicking anywhere on the connection row (name)', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    expect(wrapper.find('[data-test="conn-caret"]').classes()).not.toContain('open')
+    await wrapper.find('[data-test="conn-name"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="topic-node"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="conn-caret"]').classes()).toContain('open')
+  })
+
+  it('delete button does not collapse the row', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await wrapper.find('[data-test="conn-name"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="topic-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="btn-delete"]').trigger('click')
+    expect(wrapper.emitted('delete')?.[0]).toEqual(['a'])
+    expect(wrapper.find('[data-test="conn-caret"]').classes()).toContain('open')
+  })
+
+  it('shows an unsupported message for non-kafka types', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('m', 'mysql')] } })
+    await wrapper.find('[data-test="conn-name"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="type-unsupported"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="type-unsupported"]').text()).toContain('MySQL')
+  })
+
+  it('filters topics with fuzzy search', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'user-log', partitions: [] },
+      { name: 'order-db', partitions: [] },
+      { name: 'user-events', partitions: [] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="topic-search"]').setValue('usr')
+    expect(wrapper.findAll('[data-test="topic-node"]').map((n) => n.text())).toEqual(['user-log', 'user-events'])
+    await wrapper.find('[data-test="topic-search"]').setValue('od')
+    expect(wrapper.findAll('[data-test="topic-node"]').map((n) => n.text())).toEqual(['order-db'])
+  })
+
+  it('shows a no-match message when search has no results', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="topic-search"]').setValue('zzz')
+    expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="topic-empty"]').text()).toBe('无匹配 Topic')
+    await wrapper.find('[data-test="topic-search"]').setValue('')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(1)
+    })
   })
 
   it('emits open-topic on topic double click', async () => {
