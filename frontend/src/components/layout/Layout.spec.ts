@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Connection } from '@/api/types'
 import Layout from './Layout.vue'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
+import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
   return {
@@ -108,23 +110,40 @@ describe('Layout', () => {
     expect(wrapper.find('[data-test="settings-panel"]').exists()).toBe(false)
   })
 
-  it('disables producer/sql buttons without an active topic tab', () => {
+  it('keeps the top bar general (brand + settings, no connection/kafka actions)', () => {
     const { wrapper } = mountLayout([conn('a')])
-    expect((wrapper.find('[data-test="btn-producer"]').element as HTMLButtonElement).disabled).toBe(true)
-    expect((wrapper.find('[data-test="btn-sql"]').element as HTMLButtonElement).disabled).toBe(true)
+    const topbar = wrapper.find('[data-test="topbar"]')
+    expect(topbar.find('[data-test="brand"]').text()).toContain('dataBasePro')
+    expect(topbar.find('[data-test="btn-settings"]').exists()).toBe(true)
+    expect(topbar.find('[data-test="btn-new"]').exists()).toBe(false)
+    expect(topbar.find('[data-test="btn-sql"]').exists()).toBe(false)
+    expect(topbar.find('[data-test="btn-producer"]').exists()).toBe(false)
   })
 
-  it('opens producer and sql panels when a topic tab is active', async () => {
+  it('opens the producer panel from the message browser toolbar', async () => {
     const { wrapper } = mountLayout([conn('a')])
     emitTree(wrapper, 'open-topic', 'a', 'orders', [0, 1])
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="message-browser"]').exists()).toBe(true)
     })
-    await wrapper.find('[data-test="btn-producer"]').trigger('click')
+    await wrapper.findComponent(MessageBrowser).vm.$emit('open-producer')
     expect(wrapper.find('[data-test="producer-panel"]').exists()).toBe(true)
     await wrapper.find('[data-test="modal-close"]').trigger('click')
-    await wrapper.find('[data-test="btn-sql"]').trigger('click')
-    expect(wrapper.find('[data-test="sql-console"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="producer-panel"]').exists()).toBe(false)
+  })
+
+  it('opens the sql console as a full tab from the message browser toolbar', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 'orders', [0, 1])
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="message-browser"]').exists()).toBe(true)
+    })
+    await wrapper.findComponent(MessageBrowser).vm.$emit('open-sql')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="sql-console"]').exists()).toBe(true)
+    })
+    const tabs = wrapper.findAll('[data-test="tab"]')
+    expect(tabs.some((t) => t.text().includes('SQL'))).toBe(true)
   })
 
   it('closes tabs of a deleted connection and emits delete', async () => {
@@ -145,5 +164,48 @@ describe('Layout', () => {
     const { wrapper } = mountLayout([conn('a')])
     emitTree(wrapper, 'new')
     expect(wrapper.emitted('new')).toBeTruthy()
+  })
+  it('renders a draggable divider between the sidebar and the workspace', () => {
+    const { wrapper } = mountLayout([conn('a')])
+    const resizer = wrapper.find('[data-test="sidebar-resizer"]')
+    expect(resizer.exists()).toBe(true)
+    expect(resizer.classes()).toContain('sidebar-resizer')
+    expect(wrapper.find('[data-test="sidebar"]').attributes('style')).toContain('336px')
+  })
+
+  it('widens the sidebar when the divider is dragged to the right', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    const resizer = wrapper.find('[data-test="sidebar-resizer"]')
+    await resizer.trigger('mousedown', { clientX: 0 })
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 100 }))
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+    const style = wrapper.find('[data-test="sidebar"]').attributes('style') ?? ''
+    expect(style).toContain('436px')
+  })
+
+  it('clamps the sidebar width within minimum and maximum bounds', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    const resizer = wrapper.find('[data-test="sidebar-resizer"]')
+    await resizer.trigger('mousedown', { clientX: 300 })
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: -5000 }))
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+    expect(wrapper.find('[data-test="sidebar"]').attributes('style')).toContain('200px')
+    await resizer.trigger('mousedown', { clientX: 0 })
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 100000 }))
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+    expect(wrapper.find('[data-test="sidebar"]').attributes('style')).toContain('640px')
+  })
+
+  it('marks the layout as resizing while dragging and clears it on release', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    const resizer = wrapper.find('[data-test="sidebar-resizer"]')
+    await resizer.trigger('mousedown', { clientX: 0 })
+    expect(wrapper.classes()).toContain('resizing')
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+    expect(wrapper.classes()).not.toContain('resizing')
   })
 })

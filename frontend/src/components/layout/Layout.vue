@@ -19,8 +19,35 @@ const emit = defineEmits<{
 const tabs = useTabsStore()
 
 const showProducer = ref(false)
-const showSql = ref(false)
 const showSettings = ref(false)
+
+// Sidebar can be resized by dragging the divider so long topic/consumer names
+// stay readable. Width is clamped between MIN_SIDEBAR and MAX_SIDEBAR.
+const MIN_SIDEBAR = 200
+const MAX_SIDEBAR = 640
+const sidebarWidth = ref(336)
+const resizing = ref(false)
+let dragStartX = 0
+let dragStartWidth = 0
+
+function startResize(e: MouseEvent): void {
+  resizing.value = true
+  dragStartX = e.clientX
+  dragStartWidth = sidebarWidth.value
+  window.addEventListener('mousemove', onResize)
+  window.addEventListener('mouseup', endResize)
+}
+
+function onResize(e: MouseEvent): void {
+  const width = dragStartWidth + (e.clientX - dragStartX)
+  sidebarWidth.value = Math.min(MAX_SIDEBAR, Math.max(MIN_SIDEBAR, width))
+}
+
+function endResize(): void {
+  resizing.value = false
+  window.removeEventListener('mousemove', onResize)
+  window.removeEventListener('mouseup', endResize)
+}
 
 const active = computed<Tab | null>(() => tabs.openTabs.find((t) => t.id === tabs.activeTabId) ?? null)
 const activeTopic = computed<Tab | null>(() => (active.value?.kind === 'topic' ? active.value : null))
@@ -40,28 +67,27 @@ function removeConnection(id: string): void {
   emit('delete-connection', id)
 }
 
-function openProducer(): void {
-  if (activeTopic.value) showProducer.value = true
+function openProducerPanel(): void {
+  showProducer.value = true
 }
 
-function openSql(): void {
-  if (activeTopic.value) showSql.value = true
+function openSqlTab(): void {
+  if (activeTopic.value) {
+    tabs.openSql(activeTopic.value.connectionId, activeTopic.value.topic ?? '', activeTopic.value.partitions ?? [])
+  }
 }
 </script>
 
 <template>
-  <div class="layout" data-test="layout">
-    <header class="topbar">
-      <div class="brand">🪐 dataBasePro</div>
+  <div class="layout" :class="{ resizing }" data-test="layout">
+    <header class="topbar" data-test="topbar">
+      <div class="brand" data-test="brand">🪐 dataBasePro</div>
       <div class="spacer"></div>
-      <button class="btn ghost" type="button" data-test="btn-sql" :disabled="!activeTopic" @click="openSql">查询控制台</button>
-      <button class="btn ghost" type="button" data-test="btn-producer" :disabled="!activeTopic" @click="openProducer">生产消息</button>
       <button class="btn ghost" type="button" data-test="btn-settings" @click="showSettings = true">设置</button>
-      <button class="btn primary" type="button" data-test="btn-new" @click="emit('new')">＋ 新建连接</button>
     </header>
 
     <div class="body">
-      <aside class="sidebar">
+      <aside class="sidebar" :style="{ width: `${sidebarWidth}px` }" data-test="sidebar">
         <ConnectionTree
           :connections="props.connections"
           @open-topic="openTopic"
@@ -70,6 +96,13 @@ function openSql(): void {
           @new="emit('new')"
         />
       </aside>
+
+      <div
+        class="sidebar-resizer"
+        data-test="sidebar-resizer"
+        title="拖动调整侧边栏宽度"
+        @mousedown.prevent="startResize"
+      ></div>
 
       <main class="workspace">
         <div v-if="tabs.openTabs.length" class="tabbar">
@@ -94,10 +127,20 @@ function openSql(): void {
               :connection-id="active.connectionId"
               :topic="active.topic ?? ''"
               :partitions="active.partitions ?? []"
+              @open-sql="openSqlTab"
+              @open-producer="openProducerPanel"
             />
           </template>
           <template v-else-if="active.kind === 'group'">
             <ConsumerGroupView :tab-id="active.id" :connection-id="active.connectionId" :group="active.group ?? ''" />
+          </template>
+          <template v-else-if="active.kind === 'sql'">
+            <SqlConsole
+              :tab-id="active.id"
+              :connection-id="active.connectionId"
+              :topic="active.topic ?? ''"
+              :partitions="active.partitions ?? []"
+            />
           </template>
         </div>
       </main>
@@ -110,15 +153,6 @@ function openSql(): void {
       :topic="activeTopic.topic ?? ''"
       :partitions="activeTopic.partitions ?? []"
       @close="showProducer = false"
-    />
-    <SqlConsole
-      v-if="activeTopic"
-      :show="showSql"
-      :tab-id="activeTopic.id"
-      :connection-id="activeTopic.connectionId"
-      :topic="activeTopic.topic ?? ''"
-      :partitions="activeTopic.partitions ?? []"
-      @close="showSql = false"
     />
     <SettingsPanel :show="showSettings" @close="showSettings = false" />
   </div>
@@ -169,12 +203,31 @@ function openSql(): void {
 .btn.ghost:hover:not(:disabled) { background: var(--bg-hover); }
 .body { flex: 1; display: flex; min-height: 0; }
 .sidebar {
-  width: 272px;
-  border-right: 1px solid var(--border);
+  width: 336px;
+  border-right: none;
   overflow: auto;
   background: var(--sidebar-bg);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
+  flex: none;
+}
+.sidebar-resizer {
+  width: 5px;
+  flex: none;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s ease;
+  position: relative;
+  z-index: 5;
+}
+.sidebar-resizer:hover,
+.layout.resizing .sidebar-resizer {
+  background: var(--accent-soft);
+}
+.layout.resizing {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .workspace { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .tabbar { display: flex; align-items: flex-end; gap: 4px; padding: 8px 12px 0; }

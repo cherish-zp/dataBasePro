@@ -52,6 +52,24 @@ describe('tabs store', () => {
     store.setActive('nope')
     expect(store.activeTabId).toBe(b.id)
   })
+
+  it('opens a sql console tab for a topic and activates it', () => {
+    const store = useTabsStore()
+    const tab = store.openSql('conn-1', 'orders', [0, 1])
+    expect(tab.kind).toBe('sql')
+    expect(tab.topic).toBe('orders')
+    expect(tab.partitions).toEqual([0, 1])
+    expect(store.activeTabId).toBe(tab.id)
+  })
+
+  it('dedupes an already open sql console tab', () => {
+    const store = useTabsStore()
+    store.openSql('conn-1', 'orders')
+    const second = store.openSql('conn-1', 'orders')
+    expect(store.openTabs).toHaveLength(1)
+    expect(second.id).toBe(store.openTabs[0].id)
+    expect(store.activeTabId).toBe(second.id)
+  })
 })
 
   it('stores partition metadata on topic tabs', () => {

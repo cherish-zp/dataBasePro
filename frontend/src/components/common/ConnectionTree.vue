@@ -58,6 +58,7 @@ const loadingByConn = ref<Record<string, boolean>>({})
 const errorByConn = ref<Record<string, string>>({})
 const searchByConn = ref<Record<string, string>>({})
 const groupSearchByConn = ref<Record<string, string>>({})
+const activeSectionByConn = ref<Record<string, string>>({})
 
 function isExpanded(id: string): boolean {
   return !!expanded.value[id]
@@ -117,6 +118,25 @@ function filteredGroups(connId: string): ConsumerGroup[] {
     .filter((x) => x.score !== Infinity)
     .sort((a, b) => a.score - b.score)
     .map((x) => x.g)
+}
+
+// activeSection returns the currently selected object collection for a
+// connection, defaulting to its first collection (Topics for Kafka).
+function activeSection(connId: string, cols: ObjectCollection[]): string {
+  return activeSectionByConn.value[connId] ?? cols[0]?.key ?? ''
+}
+
+// objectCount returns the total item count for a collection, used by the
+// segmented control badges so users can see how full each section is.
+function objectCount(connId: string, col: ObjectCollection): number {
+  switch (col.kind) {
+    case 'topic':
+      return (topicsByConn.value[connId] ?? []).length
+    case 'group':
+      return (groupsByConn.value[connId] ?? []).length
+    default:
+      return 0
+  }
 }
 
 const createMeta = ref<{ connId: string; kind: ObjectKind } | null>(null)
@@ -207,7 +227,26 @@ async function confirmDeleteTopic(conn: Connection, name: string): Promise<void>
         <div v-if="loadingByConn[conn.id]" class="conn-loading" data-test="tree-loading">加载中…</div>
         <div v-else-if="errorByConn[conn.id]" class="conn-error" data-test="tree-error">{{ errorByConn[conn.id] }}</div>
         <template v-else>
+          <div class="segmented" data-test="section-tabs" role="tablist">
+            <button
+              v-for="col in collectionsOf(conn.type)"
+              :key="col.key"
+              type="button"
+              class="segmented-btn"
+              :class="{ active: activeSection(conn.id, collectionsOf(conn.type)) === col.key }"
+              :data-test="`section-tab-${col.key}`"
+              role="tab"
+              :aria-selected="activeSection(conn.id, collectionsOf(conn.type)) === col.key"
+              @click="activeSectionByConn[conn.id] = col.key"
+            >
+              <span class="segmented-icon">{{ col.icon }}</span>
+              <span class="segmented-label">{{ col.label }}</span>
+              <span class="segmented-count">{{ objectCount(conn.id, col) }}</span>
+            </button>
+          </div>
+
           <template v-for="col in collectionsOf(conn.type)" :key="col.key">
+            <template v-if="activeSection(conn.id, collectionsOf(conn.type)) === col.key">
             <component
               :is="col.creatable ? 'button' : 'div'"
               class="group-label"
@@ -318,6 +357,7 @@ async function confirmDeleteTopic(conn: Connection, name: string): Promise<void>
               <div v-if="filteredGroups(conn.id).length === 0" class="leaf muted" data-test="group-empty">
                 {{ hasGroupSearch(conn.id) ? '无匹配 Consumer' : col.emptyText }}
               </div>
+            </template>
             </template>
           </template>
         </template>
@@ -434,6 +474,30 @@ async function confirmDeleteTopic(conn: Connection, name: string): Promise<void>
 .btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
 .btn.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }
 .btn.ghost:hover { background: var(--bg-hover); }
+.segmented {
+  display: flex; gap: 2px; margin: 6px 0 8px; padding: 3px;
+  background: var(--bg-subtle); border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.segmented-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px;
+  border: none; background: transparent; color: var(--text-secondary);
+  font-size: 12px; font-weight: 500; padding: 5px 8px; border-radius: 7px;
+  cursor: pointer; transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  min-width: 0;
+}
+.segmented-btn:hover { color: var(--text); }
+.segmented-btn.active {
+  background: var(--bg-elevated); color: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.segmented-icon { flex: none; }
+.segmented-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.segmented-count {
+  flex: none; font-size: 11px; color: var(--text-tertiary);
+  background: var(--bg-hover); border-radius: 99px; padding: 0 6px; line-height: 16px;
+}
+.segmented-btn.active .segmented-count { color: var(--accent); }
 .conn-loading { color: var(--text-secondary); padding: 5px; }
 .conn-error { color: var(--danger); padding: 5px; }
 </style>

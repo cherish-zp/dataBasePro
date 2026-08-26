@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type TabKind = 'topic' | 'group'
+export type TabKind = 'topic' | 'group' | 'sql'
 
 export interface Tab {
   id: string
@@ -30,6 +30,27 @@ export const useTabsStore = defineStore('tabs', () => {
       id: `topic:${connectionId}:${topic}`,
       kind: 'topic',
       title: topic,
+      connectionId,
+      topic,
+      partitions,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  function openSql(connectionId: string, topic: string, partitions: number[] = []): Tab {
+    const id = `sql:${connectionId}:${topic}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      existing.partitions = partitions
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'sql',
+      title: `SQL · ${topic}`,
       connectionId,
       topic,
       partitions,
@@ -72,5 +93,5 @@ export const useTabsStore = defineStore('tabs', () => {
     if (openTabs.value.some((t) => t.id === id)) activeTabId.value = id
   }
 
-  return { openTabs, activeTabId, openTopic, openGroup, closeTab, setActive }
+  return { openTabs, activeTabId, openTopic, openSql, openGroup, closeTab, setActive }
 })

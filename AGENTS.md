@@ -36,14 +36,15 @@
 
 ## 改动后工作流（打包验证 → 用户确认 → 提交推送）
 
-每次完成代码改动后，先运行相关测试与构建验证（见「构建、测试与开发命令」），确保无问题、无回归，然后直接依次执行：**打包 → 安装替换 → 启动 → 清理残留**：
+每次完成代码改动后，先运行相关测试与构建验证（见「构建、测试与开发命令」），确保无问题、无回归，然后直接依次执行：**打包 → 关闭旧程序 → 安装替换 → 启动 → 清理残留**：
 
 1. 打包：`wails build --platform darwin/arm64`（`wails.json` 的 `outputfilename` 已设为 `dataBasePro`，无需 `-o`；若用 `-o` 勿带 `.app` 后缀，否则与 Wails 自动追加的 `.app` 撞名导致打包失败），产物位于 `build/bin/dataBasePro.app`（gitignored）。
-2. 安装替换：将产物复制到 `/Applications/dataBasePro.app`；若已存在旧版本，先移除旧目录再复制。
-3. 启动：`open /Applications/dataBasePro.app`。
-4. 清理残留：安装后删除构建残留 `build/bin/dataBasePro.app`，避免 Spotlight 搜索出现两个同名应用。
+2. 关闭旧程序：若旧版本仍在运行，必须先退出，否则 `open` 只会唤起已运行的实例、不会真正重启。用 `osascript -e 'quit app "dataBasePro"'`（优雅退出）或 `pkill -x dataBasePro`（强杀兜底）结束进程；结束后再用 `pgrep -x dataBasePro` 确认无残留进程。
+3. 安装替换：将产物复制到 `/Applications/dataBasePro.app`；若已存在旧版本，先移除旧目录再复制。
+4. 启动：`open /Applications/dataBasePro.app`。
+5. 清理残留：安装后删除构建残留 `build/bin/dataBasePro.app`，避免 Spotlight 搜索出现两个同名应用。
 
-打包/安装/启动/清理**不需要等待确认**，代码验证通过后即可执行；但**提交与推送必须等待用户明确确认**（确认应用可用、无问题）后再执行，不要擅自提交未确认的改动：
+打包/关闭/安装/启动/清理**不需要等待确认**，代码验证通过后即可执行；但**提交与推送必须等待用户明确确认**（确认应用可用、无问题）后再执行，不要擅自提交未确认的改动：
 
 - 提交信息使用 Conventional Commits（如 `feat:`、`fix:`、`test:`、`docs:`）并以祈使语气书写，必要时附简短正文说明改动原因与验证方式。
 - 提交范围遵循 `.gitignore`，禁止混入构建产物、本地配置或凭据。

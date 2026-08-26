@@ -6,7 +6,7 @@ describe('HomeView', () => {
   it('renders a welcome message', () => {
     const wrapper = mount(HomeView)
     expect(wrapper.find('[data-test="home-view"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="home-title"]').text()).toContain('Kafka')
+    expect(wrapper.find('[data-test="home-title"]').text()).toContain('多数据源')
   })
 
   it('emits new when the CTA is clicked', async () => {

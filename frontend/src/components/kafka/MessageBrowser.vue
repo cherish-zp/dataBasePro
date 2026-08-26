@@ -8,6 +8,7 @@ import { formatTime, displayValue } from '@/utils/format'
 import MessageDetailDrawer from './MessageDetailDrawer.vue'
 
 const props = defineProps<{ tabId: string; connectionId: string; topic: string; partitions: number[] }>()
+const emit = defineEmits<{ (e: 'open-sql'): void; (e: 'open-producer'): void }>()
 
 const store = useBrowseStore()
 const st = computed(() => store.stateFor(props.tabId))
@@ -92,6 +93,10 @@ onMounted(runQuery)
       <button class="btn primary" type="button" data-test="btn-query" :disabled="st.loading" @click="runQuery">
         {{ st.loading ? '查询中…' : '查询' }}
       </button>
+      <div class="filter-actions">
+        <button class="btn ghost" type="button" data-test="btn-open-sql" @click="emit('open-sql')">查询控制台</button>
+        <button class="btn ghost" type="button" data-test="btn-open-producer" @click="emit('open-producer')">生产消息</button>
+      </div>
     </div>
 
     <div v-if="st.error" class="msg err" data-test="browse-error">{{ st.error }}</div>
@@ -150,6 +155,7 @@ onMounted(runQuery)
 .browser { display: flex; flex-direction: column; height: 100%; font-family: var(--font); color: var(--text); }
 .filter-bar { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
 .filter-item { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.filter-actions { margin-left: auto; display: flex; gap: 8px; align-items: flex-end; }
 .input {
   background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text);
   border-radius: 7px; padding: 6px 9px; font-size: 13px;

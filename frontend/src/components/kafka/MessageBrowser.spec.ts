@@ -139,4 +139,17 @@ describe('MessageBrowser', () => {
       )
     })
   })
+  it('renders contextual query and producer toolbar buttons', () => {
+    const { wrapper } = mountBrowser()
+    expect(wrapper.find('[data-test="btn-open-sql"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="btn-open-producer"]').exists()).toBe(true)
+  })
+
+  it('emits open-sql and open-producer from the toolbar', async () => {
+    const { wrapper } = mountBrowser()
+    await wrapper.find('[data-test="btn-open-sql"]').trigger('click')
+    expect(wrapper.emitted('open-sql')).toBeTruthy()
+    await wrapper.find('[data-test="btn-open-producer"]').trigger('click')
+    expect(wrapper.emitted('open-producer')).toBeTruthy()
+  })
 })

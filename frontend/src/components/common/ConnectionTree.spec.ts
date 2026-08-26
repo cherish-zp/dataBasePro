@@ -41,6 +41,10 @@ async function expand(wrapper: VueWrapper, index = 0): Promise<void> {
   })
 }
 
+async function switchSection(wrapper: VueWrapper, key: string): Promise<void> {
+  await wrapper.find(`[data-test="section-tab-${key}"]`).trigger('click')
+}
+
 describe('ConnectionTree', () => {
   let api: Api
   beforeEach(() => {
@@ -69,6 +73,7 @@ describe('ConnectionTree', () => {
       expect(wrapper.find('[data-test="tree-loading"]').exists()).toBe(false)
     })
     expect(wrapper.findAll('[data-test="topic-name"]').map((n) => n.text())).toEqual(['user-log'])
+    await switchSection(wrapper, 'consumers')
     expect(wrapper.findAll('[data-test="group-node"]').map((n) => n.text())).toEqual(['grp-1'])
     expect(api.listTopics).toHaveBeenCalledWith('a')
   })
@@ -131,6 +136,7 @@ describe('ConnectionTree', () => {
     ])
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
     await expand(wrapper)
+    await switchSection(wrapper, 'consumers')
     expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(3)
     await wrapper.find('[data-test="group-search"]').setValue('grp')
     expect(wrapper.findAll('[data-test="group-node"]').map((n) => n.text())).toEqual(['grp-1', 'group_forensics_document_wait'])
@@ -145,6 +151,7 @@ describe('ConnectionTree', () => {
     ])
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
     await expand(wrapper)
+    await switchSection(wrapper, 'consumers')
     await wrapper.find('[data-test="group-search"]').setValue('zzz')
     expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(0)
     expect(wrapper.find('[data-test="group-empty"]').text()).toBe('无匹配 Consumer')
@@ -155,6 +162,7 @@ describe('ConnectionTree', () => {
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
     await expand(wrapper)
+    await switchSection(wrapper, 'consumers')
     const search = wrapper.find('[data-test="group-search"]')
     expect(search.attributes('autocapitalize')).toBe('off')
     expect(search.attributes('autocorrect')).toBe('off')
@@ -207,6 +215,10 @@ describe('ConnectionTree', () => {
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'grp-1', state: 'Empty', topics: {} }])
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
     await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="tree-loading"]').exists()).toBe(false)
+    })
+    await switchSection(wrapper, 'consumers')
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="group-node"]').length).toBe(1)
     })
@@ -373,5 +385,40 @@ describe('ConnectionTree', () => {
     expect(wrapper.emitted('delete')?.[0]).toEqual(['a'])
     await wrapper.find('[data-test="btn-new"]').trigger('click')
     expect(wrapper.emitted('new')).toBeTruthy()
+  })
+  it('shows a segmented control with counts after expanding', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'user-log', partitions: [] },
+      { name: 'order-db', partitions: [] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'grp-1', state: 'Stable', topics: {} },
+      { name: 'grp-2', state: 'Stable', topics: {} },
+      { name: 'grp-3', state: 'Empty', topics: {} },
+    ])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    const topicsTab = wrapper.find('[data-test="section-tab-topics"]')
+    const consumersTab = wrapper.find('[data-test="section-tab-consumers"]')
+    expect(topicsTab.find('.segmented-label').text()).toBe('Topics')
+    expect(topicsTab.find('.segmented-count').text()).toBe('2')
+    expect(consumersTab.find('.segmented-label').text()).toBe('Consumers')
+    expect(consumersTab.find('.segmented-count').text()).toBe('3')
+  })
+
+  it('defaults to the topics section and switches to consumers', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'grp-1', state: 'Stable', topics: {} }])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(1)
+    expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(0)
+    await switchSection(wrapper, 'consumers')
+    expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(1)
+    expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="section-tab-consumers"]').classes()).toContain('active')
+    await switchSection(wrapper, 'topics')
+    expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(1)
+    expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(0)
   })
 })

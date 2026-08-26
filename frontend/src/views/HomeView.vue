@@ -6,8 +6,8 @@ const emit = defineEmits<{ (e: 'new'): void }>()
   <div class="home" data-test="home-view">
     <div class="card">
       <div class="logo">🪐</div>
-      <h1 class="title" data-test="home-title">Kafka 多数据源管理客户端</h1>
-      <p class="desc">在左侧数据源树中展开连接，双击 Topic 浏览消息，双击 Consumer Group 查看 Lag 监控。</p>
+      <h1 class="title" data-test="home-title">多数据源数据库管理客户端</h1>
+      <p class="desc">在左侧数据源树中展开连接，双击对象即可浏览。当前支持 Kafka，后续将扩展 MySQL、Elasticsearch 等数据源。</p>
       <button class="btn primary" type="button" data-test="home-new" @click="emit('new')">＋ 新建连接</button>
     </div>
   </div>

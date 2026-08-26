@@ -39,16 +39,29 @@ function mountConsole(overrides: Partial<Api> = {}) {
   const api = fakeApi(overrides)
   setApi(api)
   const wrapper = mount(SqlConsole, {
-    props: { show: true, tabId: 'tab1', connectionId: 'c', topic: 'orders', partitions: [0, 1] },
+    props: { tabId: 'tab1', connectionId: 'c', topic: 'orders', partitions: [0, 1] },
   })
   return { wrapper, api }
 }
 
 describe('SqlConsole', () => {
-  it('renders nothing when hidden', () => {
-    setActivePinia(createPinia())
-    const wrapper = mount(SqlConsole, { props: { show: false, tabId: 't', connectionId: 'c', topic: 't', partitions: [] } })
-    expect(wrapper.find('[data-test="sql-console"]').exists()).toBe(false)
+  it('renders the console as a full page', () => {
+    const { wrapper } = mountConsole()
+    expect(wrapper.find('[data-test="sql-console"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="modal-backdrop"]').exists()).toBe(false)
+  })
+
+  it('omits the engine selector because the engine is fixed to the source', () => {
+    const { wrapper } = mountConsole()
+    expect(wrapper.find('[data-test="select-engine"]').exists()).toBe(false)
+  })
+
+  it('stretches the sql editor across the toolbar next to the run button', () => {
+    const { wrapper } = mountConsole()
+    const toolbar = wrapper.find('[data-test="sql-toolbar"]')
+    expect(toolbar.find('[data-test="input-sql"]').exists()).toBe(true)
+    expect(toolbar.find('[data-test="btn-run"]').exists()).toBe(true)
+    expect(toolbar.find('[data-test="sql-field"]').classes()).toContain('grow')
   })
 
   it('prefills the query with the current topic', () => {
@@ -92,13 +105,6 @@ describe('SqlConsole', () => {
     expect(wrapper.find('[data-test="sql-error"]').exists()).toBe(true)
   })
 
-  it('shows an unsupported message for other engines', async () => {
-    const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="select-engine"]').setValue('mysql')
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[data-test="sql-error"]').text()).toContain('暂未支持')
-  })
 
   it('surfaces backend errors', async () => {
     const { wrapper } = mountConsole({
@@ -111,11 +117,5 @@ describe('SqlConsole', () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="sql-error"]').text()).toContain('cluster down')
     })
-  })
-
-  it('emits close', async () => {
-    const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="modal-close"]').trigger('click')
-    expect(wrapper.emitted('close')).toBeTruthy()
   })
 })
