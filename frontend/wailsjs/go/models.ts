@@ -1,5 +1,21 @@
 export namespace backend {
 	
+	export class ActiveMembersRequest {
+	    connection_id: string;
+	    group: string;
+	    topic: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ActiveMembersRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.group = source["group"];
+	        this.topic = source["topic"];
+	    }
+	}
 	export class ConsumeRequest {
 	    connection_id: string;
 	    topic: string;
@@ -99,6 +115,48 @@ export namespace backend {
 
 export namespace model {
 	
+	export class ActiveConsumer {
+	    member_id: string;
+	    client_id: string;
+	    client_host: string;
+	    partitions: number[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ActiveConsumer(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.member_id = source["member_id"];
+	        this.client_id = source["client_id"];
+	        this.client_host = source["client_host"];
+	        this.partitions = source["partitions"];
+	    }
+	}
+	export class ActiveProducer {
+	    topic: string;
+	    partition: number;
+	    producer_id: number;
+	    producer_epoch: number;
+	    last_sequence: number;
+	    last_timestamp: number;
+	    leader: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ActiveProducer(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.topic = source["topic"];
+	        this.partition = source["partition"];
+	        this.producer_id = source["producer_id"];
+	        this.producer_epoch = source["producer_epoch"];
+	        this.last_sequence = source["last_sequence"];
+	        this.last_timestamp = source["last_timestamp"];
+	        this.leader = source["leader"];
+	    }
+	}
 	export class TLSConfig {
 	    enabled: boolean;
 	    ca_cert?: string;
@@ -319,6 +377,9 @@ export namespace model {
 	    current_offset: number;
 	    log_end_offset: number;
 	    lag: number;
+	    member_id?: string;
+	    client_id?: string;
+	    client_host?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new PartitionLag(source);
@@ -330,6 +391,9 @@ export namespace model {
 	        this.current_offset = source["current_offset"];
 	        this.log_end_offset = source["log_end_offset"];
 	        this.lag = source["lag"];
+	        this.member_id = source["member_id"];
+	        this.client_id = source["client_id"];
+	        this.client_host = source["client_host"];
 	    }
 	}
 	

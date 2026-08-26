@@ -14,6 +14,9 @@ defineProps<{ rows: PartitionLag[]; loading?: boolean }>()
           <th>Current Offset</th>
           <th>Log End Offset</th>
           <th>Lag</th>
+          <th>Host</th>
+          <th>Consumer ID</th>
+          <th>Client ID</th>
         </tr>
       </thead>
       <tbody>
@@ -22,9 +25,12 @@ defineProps<{ rows: PartitionLag[]; loading?: boolean }>()
           <td class="mono">{{ l.current_offset }}</td>
           <td class="mono">{{ l.log_end_offset }}</td>
           <td class="mono" :class="{ 'lag-high': l.lag > 0 }" data-test="lag-value">{{ l.lag }}</td>
+          <td data-test="lag-client-host">{{ l.client_host || '—' }}</td>
+          <td class="mono" data-test="lag-member-id">{{ l.member_id || '—' }}</td>
+          <td class="mono" data-test="lag-client-id">{{ l.client_id || '—' }}</td>
         </tr>
         <tr v-if="rows.length === 0 && !loading">
-          <td colspan="4" class="empty" data-test="lag-empty">暂无 lag 数据</td>
+          <td colspan="7" class="empty" data-test="lag-empty">暂无 lag 数据</td>
         </tr>
       </tbody>
     </table>

@@ -27,6 +27,8 @@ type KafkaDataSource interface {
 	ConsumeMessages(ctx context.Context, topic string, partition int32, offset int64, limit int) ([]*model.Message, error)
 	ConsumeMessagesByTimestamp(ctx context.Context, topic string, partition int32, timestampMS int64, limit int) ([]*model.Message, error)
 	GetPartitionLag(ctx context.Context, topic string, group string) (map[int32]int64, error)
+	ListActiveProducers(ctx context.Context, topic string) ([]*model.ActiveProducer, error)
+	ListActiveConsumers(ctx context.Context, group, topic string) ([]*model.ActiveConsumer, error)
 	ResetConsumerGroupOffset(ctx context.Context, group, topic string, mode model.ResetOffsetMode, timestampMS int64) error
 	ProduceMessage(ctx context.Context, topic string, partition int32, key, value []byte) error
 }

@@ -42,6 +42,14 @@ export function GetPartitionLag(arg1, arg2, arg3) {
   return window['go']['backend']['App']['GetPartitionLag'](arg1, arg2, arg3);
 }
 
+export function ListActiveConsumers(arg1) {
+  return window['go']['backend']['App']['ListActiveConsumers'](arg1);
+}
+
+export function ListActiveProducers(arg1) {
+  return window['go']['backend']['App']['ListActiveProducers'](arg1);
+}
+
 export function ListConnections() {
   return window['go']['backend']['App']['ListConnections']();
 }

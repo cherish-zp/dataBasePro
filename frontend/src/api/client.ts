@@ -12,7 +12,10 @@ import type {
   ProduceRequest,
   CreateTopicRequest,
   DeleteTopicRequest,
-} from './types'
+  ActiveMembersRequest,
+  ActiveProducer,
+  ActiveConsumer,
+} from './types' 
 
 export interface Api {
   createConnection(conn: Connection): Promise<Connection>
@@ -29,6 +32,8 @@ export interface Api {
   consumeMessages(req: ConsumeRequest): Promise<Message[]>
   consumeMessagesByTimestamp(req: ConsumeRequest): Promise<Message[]>
   getPartitionLag(id: string, topic: string, group: string): Promise<Record<number, number>>
+  listActiveProducers(req: ActiveMembersRequest): Promise<ActiveProducer[]>
+  listActiveConsumers(req: ActiveMembersRequest): Promise<ActiveConsumer[]>
   resetConsumerGroupOffset(req: ResetOffsetRequest): Promise<void>
   produceMessage(req: ProduceRequest): Promise<void>
 }
@@ -80,6 +85,12 @@ export class WailsApi implements Api {
   }
   getPartitionLag(id: string, topic: string, group: string): Promise<Record<number, number>> {
     return App.GetPartitionLag(id, topic, group)
+  }
+  listActiveProducers(req: ActiveMembersRequest): Promise<ActiveProducer[]> {
+    return App.ListActiveProducers(req) as unknown as Promise<ActiveProducer[]>
+  }
+  listActiveConsumers(req: ActiveMembersRequest): Promise<ActiveConsumer[]> {
+    return App.ListActiveConsumers(req) as unknown as Promise<ActiveConsumer[]>
   }
   resetConsumerGroupOffset(req: ResetOffsetRequest): Promise<void> {
     return App.ResetConsumerGroupOffset(req)

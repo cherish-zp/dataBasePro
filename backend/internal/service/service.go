@@ -161,6 +161,24 @@ func (s *Service) GetPartitionLag(ctx context.Context, id, topic, group string) 
 	return kds.GetPartitionLag(ctx, topic, group)
 }
 
+// ListActiveProducers returns the active producers for a topic on the connection.
+func (s *Service) ListActiveProducers(ctx context.Context, id, topic string) ([]*model.ActiveProducer, error) {
+	kds, err := s.kafka(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return kds.ListActiveProducers(ctx, topic)
+}
+
+// ListActiveConsumers returns the group members assigned to a topic.
+func (s *Service) ListActiveConsumers(ctx context.Context, id, group, topic string) ([]*model.ActiveConsumer, error) {
+	kds, err := s.kafka(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return kds.ListActiveConsumers(ctx, group, topic)
+}
+
 // ResetConsumerGroupOffset resets a consumer group offset.
 func (s *Service) ResetConsumerGroupOffset(ctx context.Context, id, group, topic string, mode model.ResetOffsetMode, timestampMS int64) error {
 	kds, err := s.kafka(ctx, id)

@@ -17,6 +17,8 @@ type fakeKafka struct {
 	msgs       []*model.Message
 	lag        map[int32]int64
 	group      []*model.ConsumerGroup
+	producers  []*model.ActiveProducer
+	consumers  []*model.ActiveConsumer
 	resetCalls []model.ResetOffsetMode
 }
 
@@ -41,6 +43,12 @@ func (f *fakeKafka) ResetConsumerGroupOffset(_ context.Context, _, _ string, mod
 }
 func (f *fakeKafka) ProduceMessage(_ context.Context, _ string, _ int32, _, _ []byte) error {
 	return nil
+}
+func (f *fakeKafka) ListActiveProducers(context.Context, string) ([]*model.ActiveProducer, error) {
+	return f.producers, nil
+}
+func (f *fakeKafka) ListActiveConsumers(context.Context, string, string) ([]*model.ActiveConsumer, error) {
+	return f.consumers, nil
 }
 
 type fakeFactory struct {
@@ -274,5 +282,43 @@ func TestProduceMessageDelegates(t *testing.T) {
 	c, _ := svc.CreateConnection(ctx, sampleConn())
 	if err := svc.ProduceMessage(ctx, c.ID, "t1", 0, []byte("k"), []byte("v")); err != nil {
 		t.Fatalf("ProduceMessage: %v", err)
+	}
+}
+
+func TestListActiveProducers(t *testing.T) {
+	svc, f := newTestService(t)
+	ctx := context.Background()
+	c, err := svc.CreateConnection(ctx, sampleConn())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	f.k.producers = []*model.ActiveProducer{
+		{Topic: "t1", Partition: 0, ProducerID: 101, ProducerEpoch: 2, LastSequence: 9, LastTimestamp: 1700000000000, Leader: 1},
+	}
+	got, err := svc.ListActiveProducers(ctx, c.ID, "t1")
+	if err != nil {
+		t.Fatalf("ListActiveProducers: %v", err)
+	}
+	if len(got) != 1 || got[0].ProducerID != 101 || got[0].Topic != "t1" {
+		t.Fatalf("unexpected producers: %+v", got)
+	}
+}
+
+func TestListActiveConsumers(t *testing.T) {
+	svc, f := newTestService(t)
+	ctx := context.Background()
+	c, err := svc.CreateConnection(ctx, sampleConn())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	f.k.consumers = []*model.ActiveConsumer{
+		{MemberID: "m-1", ClientID: "c-1", ClientHost: "10.0.0.1", Partitions: []int32{0, 1}},
+	}
+	got, err := svc.ListActiveConsumers(ctx, c.ID, "grp", "t1")
+	if err != nil {
+		t.Fatalf("ListActiveConsumers: %v", err)
+	}
+	if len(got) != 1 || got[0].MemberID != "m-1" || len(got[0].Partitions) != 2 {
+		t.Fatalf("unexpected consumers: %+v", got)
 	}
 }

@@ -20,6 +20,8 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     consumeMessages: vi.fn(async () => []),
     consumeMessagesByTimestamp: vi.fn(async () => []),
     getPartitionLag: vi.fn(async () => ({})),
+    listActiveProducers: vi.fn(async () => []),
+    listActiveConsumers: vi.fn(async () => []),
     resetConsumerGroupOffset: vi.fn(async () => {}),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
@@ -148,3 +150,39 @@ describe('ConsumerGroupView', () => {
     })
   })
 })
+
+  it('renders active producers and merges consumers into the lag table', async () => {
+    const listActiveProducers = vi.fn(async () => [
+      { topic: 'orders', partition: 0, producer_id: 101, producer_epoch: 2, last_sequence: 9, last_timestamp: 1700000000000, leader: 1 },
+    ])
+    const g: ConsumerGroup = {
+      name: 'grp-1',
+      state: 'Stable',
+      topics: {
+        'orders': [
+          { partition: 0, current_offset: 10, log_end_offset: 20, lag: 10, member_id: 'm-1', client_id: 'c-1', client_host: '10.0.0.1' },
+        ],
+      },
+    }
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [g]), listActiveProducers })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="producer-row"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="producer-row"]').text()).toContain('101')
+    expect(wrapper.find('[data-test="lag-member-id"]').text()).toBe('m-1')
+    expect(wrapper.find('[data-test="lag-client-id"]').text()).toBe('c-1')
+    expect(wrapper.find('[data-test="lag-client-host"]').text()).toBe('10.0.0.1')
+    expect(listActiveProducers).toHaveBeenCalledWith({ connection_id: 'c', group: 'grp-1', topic: 'orders' })
+  })
+
+  it('shows an unsupported note in the producers panel instead of a global error', async () => {
+    const listActiveProducers = vi.fn(async () => {
+      throw new Error('request DescribeProducers has 3 separate shard errors, first: broker is too old')
+    })
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), listActiveProducers })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="producers-note"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="producers-note"]').text()).toContain('不支持')
+    expect(wrapper.find('[data-test="group-error"]').exists()).toBe(false)
+  })

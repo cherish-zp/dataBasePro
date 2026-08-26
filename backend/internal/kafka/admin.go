@@ -2,11 +2,13 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
 
 	"dataBasePro/backend/internal/model"
 )
@@ -90,19 +92,31 @@ func (c *Client) ListConsumerGroups(ctx context.Context) ([]*model.ConsumerGroup
 		if dgl, ok := lags[name]; ok {
 			cg.State = dgl.State
 			for topic, partitions := range dgl.Lag {
-				for p, m := range partitions {
-					cg.Topics[topic] = append(cg.Topics[topic], model.PartitionLag{
-						Partition: p,
-						Current:   m.Commit.At,
-						LogEnd:    m.End.Offset,
-						Lag:       m.Lag,
-					})
+				for _, m := range partitions {
+					cg.Topics[topic] = append(cg.Topics[topic], mapPartitionLag(m))
 				}
 			}
 		}
 		groups = append(groups, cg)
 	}
 	return groups, nil
+}
+
+// mapPartitionLag converts a kadm per-partition lag into model form, carrying
+// the group member that is consuming the partition when the group is active.
+func mapPartitionLag(m kadm.GroupMemberLag) model.PartitionLag {
+	pl := model.PartitionLag{
+		Partition: m.Partition,
+		Current:   m.Commit.At,
+		LogEnd:    m.End.Offset,
+		Lag:       m.Lag,
+	}
+	if m.Member != nil {
+		pl.MemberID = m.Member.MemberID
+		pl.ClientID = m.Member.ClientID
+		pl.ClientHost = m.Member.ClientHost
+	}
+	return pl
 }
 
 // GetPartitionLag returns the lag per partition for a group on a topic.
@@ -159,4 +173,90 @@ func (c *Client) ResetConsumerGroupOffset(ctx context.Context, group, topic stri
 		return fmt.Errorf("commit reset offsets: %w", err)
 	}
 	return nil
+}
+
+// ListActiveProducers returns the producers currently producing to a topic.
+func (c *Client) ListActiveProducers(ctx context.Context, topic string) ([]*model.ActiveProducer, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	producers, err := c.admin.DescribeProducers(ctx, kadm.TopicsSet{topic: {}})
+	if err != nil {
+		return nil, fmt.Errorf("describe producers for topic %q: %w", topic, err)
+	}
+	return mapActiveProducers(producers.SortedProducers()), nil
+}
+
+// mapActiveProducers converts kadm described producers into model form.
+func mapActiveProducers(ps []kadm.DescribedProducer) []*model.ActiveProducer {
+	out := make([]*model.ActiveProducer, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, &model.ActiveProducer{
+			Topic:         p.Topic,
+			Partition:     p.Partition,
+			ProducerID:    p.ProducerID,
+			ProducerEpoch: p.ProducerEpoch,
+			LastSequence:  p.LastSequence,
+			LastTimestamp: p.LastTimestamp,
+			Leader:        p.Leader,
+		})
+	}
+	return out
+}
+
+// ListActiveConsumers returns the members of a group that are assigned
+// partitions of the given topic.
+func (c *Client) ListActiveConsumers(ctx context.Context, group, topic string) ([]*model.ActiveConsumer, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	groups, err := c.admin.DescribeGroups(ctx, group)
+	if err != nil {
+		return nil, fmt.Errorf("describe group %q: %w", group, err)
+	}
+	dg, ok := groups[group]
+	if !ok {
+		return []*model.ActiveConsumer{}, nil
+	}
+	if dg.Err != nil && !errors.Is(dg.Err, kerr.GroupIDNotFound) {
+		return nil, fmt.Errorf("describe group %q: %w", group, dg.Err)
+	}
+	members := make([]consumerAssignment, 0, len(dg.Members))
+	for _, m := range dg.Members {
+		ca := consumerAssignment{MemberID: m.MemberID, ClientID: m.ClientID, ClientHost: m.ClientHost}
+		if a, ok := m.Assigned.AsConsumer(); ok {
+			topics := map[string][]int32{}
+			for _, t := range a.Topics {
+				topics[t.Topic] = append([]int32(nil), t.Partitions...)
+			}
+			ca.topics = topics
+		}
+		members = append(members, ca)
+	}
+	return mapActiveConsumers(members, topic), nil
+}
+
+// consumerAssignment carries the fields of a group member needed to filter by
+// topic, decoupled from kadm so the mapping can be unit-tested.
+type consumerAssignment struct {
+	MemberID   string
+	ClientID   string
+	ClientHost string
+	topics     map[string][]int32
+}
+
+// mapActiveConsumers keeps only members assigned to the given topic.
+func mapActiveConsumers(members []consumerAssignment, topic string) []*model.ActiveConsumer {
+	var out []*model.ActiveConsumer
+	for _, m := range members {
+		parts, ok := m.topics[topic]
+		if !ok || len(parts) == 0 {
+			continue
+		}
+		out = append(out, &model.ActiveConsumer{
+			MemberID:   m.MemberID,
+			ClientID:   m.ClientID,
+			ClientHost: m.ClientHost,
+			Partitions: parts,
+		})
+	}
+	return out
 }

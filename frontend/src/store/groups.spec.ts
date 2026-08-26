@@ -19,6 +19,8 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     consumeMessages: vi.fn(async () => []),
     consumeMessagesByTimestamp: vi.fn(async () => []),
     getPartitionLag: vi.fn(async () => ({})),
+    listActiveProducers: vi.fn(async () => []),
+    listActiveConsumers: vi.fn(async () => []),
     resetConsumerGroupOffset: vi.fn(async () => {}),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
@@ -82,5 +84,35 @@ describe('groups store', () => {
     expect(store.stateFor('tab1').error).toBe('denied')
     store.clear('tab1')
     expect(store.stateFor('tab1').groups).toHaveLength(0)
+  })
+
+  it('loadActiveProducers fetches producers for the topic', async () => {
+    const listActiveProducers = vi.fn(async () => [
+      { topic: 't1', partition: 0, producer_id: 101, producer_epoch: 2, last_sequence: 9, last_timestamp: 1700000000000, leader: 1 },
+    ])
+    setApi(fakeApi({ listActiveProducers }))
+    const store = useGroupsStore()
+    await store.loadActiveProducers('tab1', 'conn-1', 'g1', 't1')
+    expect(listActiveProducers).toHaveBeenCalledWith({ connection_id: 'conn-1', group: 'g1', topic: 't1' })
+    expect(store.stateFor('tab1').producers).toHaveLength(1)
+  })
+
+  it('loadActiveProducers clears the list when group or topic is missing', async () => {
+    const store = useGroupsStore()
+    store.stateFor('tab1').producers = [{ topic: 't1', partition: 0, producer_id: 1, producer_epoch: 0, last_sequence: 0, last_timestamp: 0, leader: 0 }]
+    await store.loadActiveProducers('tab1', 'conn-1', '', '')
+    expect(store.stateFor('tab1').producers).toHaveLength(0)
+  })
+
+  it('loadActiveProducers degrades gracefully when the broker does not support the query', async () => {
+    const listActiveProducers = vi.fn(async () => {
+      throw new Error('describe producers for topic "t1": request DescribeProducers has 3 separate shard errors, first: broker is too old; the broker has already indicated it will not know how to handle the request')
+    })
+    setApi(fakeApi({ listActiveProducers }))
+    const store = useGroupsStore()
+    await store.loadActiveProducers('tab1', 'conn-1', 'g1', 't1')
+    expect(store.stateFor('tab1').producers).toHaveLength(0)
+    expect(store.stateFor('tab1').producersNote).toContain('不支持')
+    expect(store.stateFor('tab1').error).toBeNull()
   })
 })

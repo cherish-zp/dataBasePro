@@ -44,12 +44,16 @@ type ConsumerGroup struct {
 	Topics map[string][]PartitionLag `json:"topics"`
 }
 
-// PartitionLag holds current/end offsets and the computed lag for one partition.
+// PartitionLag holds current/end offsets and the computed lag for one partition,
+// together with the group member consuming it (empty when the group is Empty).
 type PartitionLag struct {
-	Partition int32 `json:"partition"`
-	Current   int64 `json:"current_offset"`
-	LogEnd    int64 `json:"log_end_offset"`
-	Lag       int64 `json:"lag"`
+	Partition  int32  `json:"partition"`
+	Current    int64  `json:"current_offset"`
+	LogEnd     int64  `json:"log_end_offset"`
+	Lag        int64  `json:"lag"`
+	MemberID   string `json:"member_id,omitempty"`
+	ClientID   string `json:"client_id,omitempty"`
+	ClientHost string `json:"client_host,omitempty"`
 }
 
 // ResetOffsetMode selects how a consumer group offset is reset.
@@ -60,3 +64,22 @@ const (
 	ResetOffsetLatest   ResetOffsetMode = "latest"
 	ResetOffsetTime     ResetOffsetMode = "timestamp"
 )
+
+// ActiveProducer is a producer currently producing to a topic (KIP-664).
+type ActiveProducer struct {
+	Topic         string `json:"topic"`
+	Partition     int32  `json:"partition"`
+	ProducerID    int64  `json:"producer_id"`
+	ProducerEpoch int16  `json:"producer_epoch"`
+	LastSequence  int32  `json:"last_sequence"`
+	LastTimestamp int64  `json:"last_timestamp"` // unix milliseconds
+	Leader        int32  `json:"leader"`
+}
+
+// ActiveConsumer is a group member currently assigned partitions of a topic.
+type ActiveConsumer struct {
+	MemberID   string  `json:"member_id"`
+	ClientID   string  `json:"client_id"`
+	ClientHost string  `json:"client_host"`
+	Partitions []int32 `json:"partitions"`
+}

@@ -61,6 +61,9 @@ export interface PartitionLag {
   current_offset: number
   log_end_offset: number
   lag: number
+  member_id?: string
+  client_id?: string
+  client_host?: string
 }
 
 export interface ConsumerGroup {
@@ -111,3 +114,26 @@ export interface ProduceRequest {
 // Offset sentinels matching model.OffsetEarliest / OffsetLatest.
 export const OffsetEarliest = -2
 export const OffsetLatest = -1
+
+export interface ActiveProducer {
+  topic: string
+  partition: number
+  producer_id: number
+  producer_epoch: number
+  last_sequence: number
+  last_timestamp: number
+  leader: number
+}
+
+export interface ActiveConsumer {
+  member_id: string
+  client_id: string
+  client_host: string
+  partitions: number[]
+}
+
+export interface ActiveMembersRequest {
+  connection_id: string
+  group: string
+  topic: string
+}

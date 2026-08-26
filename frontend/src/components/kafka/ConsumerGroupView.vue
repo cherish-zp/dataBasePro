@@ -4,6 +4,7 @@ import { useGroupsStore } from '@/store/groups'
 import type { ResetOffsetMode } from '@/api/types'
 import SearchSelect, { type SelectOption } from '@/components/common/SearchSelect.vue'
 import GroupLagPanel from './GroupLagPanel.vue'
+import ActiveProducersPanel from './ActiveProducersPanel.vue'
 
 const props = defineProps<{ tabId: string; connectionId: string; group?: string }>()
 
@@ -19,6 +20,9 @@ const groups = computed(() => st.value.groups)
 const group = computed(() => groups.value.find((g) => g.name === selectedGroup.value) ?? null)
 const topics = computed(() => Object.keys(group.value?.topics ?? {}))
 const lags = computed(() => (selectedTopic.value ? group.value?.topics[selectedTopic.value] ?? [] : []))
+const producers = computed(() => st.value.producers)
+const producersNote = computed(() => st.value.producersNote)
+const membersLoading = computed(() => st.value.membersLoading)
 const groupOptions = computed<SelectOption[]>(() => groups.value.map((g) => ({ value: g.name, label: `${g.name} (${g.state})` })))
 const topicOptions = computed<SelectOption[]>(() => topics.value.map((t) => ({ value: t, label: t })))
 
@@ -27,6 +31,10 @@ function pickGroup(name: string): void {
   const g = groups.value.find((x) => x.name === name)
   const ts = g ? Object.keys(g.topics ?? {}) : []
   selectedTopic.value = ts[0] ?? null
+}
+
+async function syncMembers(): Promise<void> {
+  await store.loadActiveProducers(props.tabId, props.connectionId, selectedGroup.value ?? '', selectedTopic.value ?? '')
 }
 
 async function refresh(): Promise<void> {
@@ -40,11 +48,14 @@ async function refresh(): Promise<void> {
       selectedTopic.value = ts[0] ?? null
     }
   }
+  await syncMembers()
 }
 
 watch(selectedGroup, (name) => {
   if (name) pickGroup(name)
 })
+
+watch([selectedGroup, selectedTopic], syncMembers)
 
 async function reset(): Promise<void> {
   if (!selectedGroup.value || !selectedTopic.value) return
@@ -80,6 +91,8 @@ onMounted(refresh)
     <div v-if="st.error" class="msg err" data-test="group-error">{{ st.error }}</div>
 
     <GroupLagPanel :rows="lags" :loading="st.loading" />
+
+    <ActiveProducersPanel :producers="producers" :note="producersNote" :loading="membersLoading" />
 
     <div class="reset-panel" data-test="reset-panel">
       <span class="reset-title">重置 Offset</span>

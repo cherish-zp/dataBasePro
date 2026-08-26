@@ -45,6 +45,14 @@ type ConsumeRequest struct {
 	Limit        int    `json:"limit"`
 }
 
+// ActiveMembersRequest carries the parameters for listing active producers or
+// consumers on a topic for a consumer group.
+type ActiveMembersRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Group        string `json:"group"`
+	Topic        string `json:"topic"`
+}
+
 // ResetOffsetRequest carries the parameters for resetting a group offset.
 type ResetOffsetRequest struct {
 	ConnectionID string                `json:"connection_id"`
@@ -173,6 +181,20 @@ func (a *App) GetPartitionLag(id, topic, group string) (map[int32]int64, error) 
 	ctx, cancel := a.newContext()
 	defer cancel()
 	return a.svc.GetPartitionLag(ctx, id, topic, group)
+}
+
+// ListActiveProducers returns the producers currently producing to a topic.
+func (a *App) ListActiveProducers(req ActiveMembersRequest) ([]*model.ActiveProducer, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.ListActiveProducers(ctx, req.ConnectionID, req.Topic)
+}
+
+// ListActiveConsumers returns the group members assigned to a topic.
+func (a *App) ListActiveConsumers(req ActiveMembersRequest) ([]*model.ActiveConsumer, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.ListActiveConsumers(ctx, req.ConnectionID, req.Group, req.Topic)
 }
 
 // ResetConsumerGroupOffset resets a consumer group offset.

@@ -23,6 +23,10 @@ export function GetConnection(arg1:string):Promise<model.Connection>;
 
 export function GetPartitionLag(arg1:string,arg2:string,arg3:string):Promise<Record<number, number>>;
 
+export function ListActiveConsumers(arg1:backend.ActiveMembersRequest):Promise<Array<model.ActiveConsumer>>;
+
+export function ListActiveProducers(arg1:backend.ActiveMembersRequest):Promise<Array<model.ActiveProducer>>;
+
 export function ListConnections():Promise<Array<model.Connection>>;
 
 export function ListConsumerGroups(arg1:string):Promise<Array<model.ConsumerGroup>>;
