@@ -24,6 +24,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     resetConsumerGroupOffset: vi.fn(async () => {}),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
+    deleteConsumerGroup: vi.fn(async () => {}),
     produceMessage: vi.fn(async () => {}),
     ...overrides,
   }
@@ -43,6 +44,15 @@ async function expand(wrapper: VueWrapper, index = 0): Promise<void> {
 
 async function switchSection(wrapper: VueWrapper, key: string): Promise<void> {
   await wrapper.find(`[data-test="section-tab-${key}"]`).trigger('click')
+}
+
+// The ConfirmDialog teleports to <body>, so it is queried on document.body
+// rather than inside the tree wrapper.
+function confirmDialog(): HTMLElement | null {
+  return document.body.querySelector('[data-test="confirm-dialog"]')
+}
+function clickConfirmDialog(testId: string): void {
+  document.body.querySelector(`[data-test="${testId}"]`)?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 }
 
 describe('ConnectionTree', () => {
@@ -74,7 +84,7 @@ describe('ConnectionTree', () => {
     })
     expect(wrapper.findAll('[data-test="topic-name"]').map((n) => n.text())).toEqual(['user-log'])
     await switchSection(wrapper, 'consumers')
-    expect(wrapper.findAll('[data-test="group-node"]').map((n) => n.text())).toEqual(['grp-1'])
+    expect(wrapper.findAll('[data-test="group-node"] .leaf-name').map((n) => n.text())).toEqual(['grp-1'])
     expect(api.listTopics).toHaveBeenCalledWith('a')
   })
 
@@ -139,9 +149,9 @@ describe('ConnectionTree', () => {
     await switchSection(wrapper, 'consumers')
     expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(3)
     await wrapper.find('[data-test="group-search"]').setValue('grp')
-    expect(wrapper.findAll('[data-test="group-node"]').map((n) => n.text())).toEqual(['grp-1', 'group_forensics_document_wait'])
+    expect(wrapper.findAll('[data-test="group-node"] .leaf-name').map((n) => n.text())).toEqual(['grp-1', 'group_forensics_document_wait'])
     await wrapper.find('[data-test="group-search"]').setValue('grp-1')
-    expect(wrapper.findAll('[data-test="group-node"]').map((n) => n.text())).toEqual(['grp-1'])
+    expect(wrapper.findAll('[data-test="group-node"] .leaf-name').map((n) => n.text())).toEqual(['grp-1'])
   })
 
   it('shows a no-match message when the consumer group search has no results', async () => {
@@ -350,7 +360,6 @@ describe('ConnectionTree', () => {
   })
 
   it('deletes a topic after confirmation and reloads', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     ;(api.listTopics as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce([{ name: 'user-log', partitions: [] }])
       .mockResolvedValueOnce([])
@@ -359,24 +368,73 @@ describe('ConnectionTree', () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
     await expand(wrapper)
     await wrapper.find('[data-test="btn-delete-topic"]').trigger('click')
+    expect(confirmDialog()).not.toBeNull()
+    expect(confirmDialog()?.textContent).toContain('user-log')
+    clickConfirmDialog('confirm-dialog-ok')
     await vi.waitFor(() => {
       expect(api.deleteTopic).toHaveBeenCalledWith({ connection_id: 'a', topic: 'user-log' })
     })
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(0)
     })
-    confirmSpy.mockRestore()
   })
 
-  it('skips deletion when confirmation is declined', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('teleports the delete confirmation to body so it escapes the sidebar', async () => {
     ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
     await expand(wrapper)
     await wrapper.find('[data-test="btn-delete-topic"]').trigger('click')
+    const inBody = document.body.querySelector('[data-test="confirm-dialog"]')
+    expect(inBody).not.toBeNull()
+    expect(inBody?.textContent).toContain('user-log')
+  })
+
+  it('skips deletion when confirmation is declined', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="btn-delete-topic"]').trigger('click')
+    expect(confirmDialog()).not.toBeNull()
+    clickConfirmDialog('confirm-dialog-cancel')
     expect(api.deleteTopic).not.toHaveBeenCalled()
-    confirmSpy.mockRestore()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).toBeNull()
+    })
+  })
+
+  it('deletes a consumer group after confirmation and reloads', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([{ name: 'grp-1', state: 'Empty', topics: {} }])
+      .mockResolvedValueOnce([])
+    ;(api.deleteConsumerGroup as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await switchSection(wrapper, 'consumers')
+    expect(wrapper.find('[data-test="btn-delete-group"]').exists()).toBe(true)
+    await wrapper.find('[data-test="btn-delete-group"]').trigger('click')
+    expect(confirmDialog()?.textContent).toContain('grp-1')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(api.deleteConsumerGroup).toHaveBeenCalledWith({ connection_id: 'a', group: 'grp-1' })
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(0)
+    })
+  })
+
+  it('shows a delete button for each consumer group', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'grp-1', state: 'Stable', topics: {} },
+      { name: 'grp-2', state: 'Stable', topics: {} },
+    ])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await switchSection(wrapper, 'consumers')
+    expect(wrapper.findAll('[data-test="btn-delete-group"]')).toHaveLength(2)
   })
 
   it('emits delete and new', async () => {

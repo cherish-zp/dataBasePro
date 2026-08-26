@@ -493,3 +493,33 @@ func TestDeleteTopic(t *testing.T) {
 		}
 	}
 }
+
+func TestDeleteConsumerGroup(t *testing.T) {
+	c := newCluster(t, 1, "t1")
+	seedMessages(t, c, "t1", 0, 10, 0)
+	// A real consumer creates the group and commits offsets, leaving it Empty.
+	consumeWithGroup(t, c, "grp-1", "t1", 4)
+	cl := newKafkaClient(t, c)
+
+	ctx := context.Background()
+	groups, err := cl.ListConsumerGroups(ctx)
+	if err != nil {
+		t.Fatalf("ListConsumerGroups: %v", err)
+	}
+	if len(groups) != 1 || groups[0].Name != "grp-1" {
+		t.Fatalf("expected group grp-1 to exist before deletion, got %+v", groups)
+	}
+
+	if err := cl.DeleteConsumerGroup(ctx, "grp-1"); err != nil {
+		t.Fatalf("DeleteConsumerGroup: %v", err)
+	}
+	after, err := cl.ListConsumerGroups(ctx)
+	if err != nil {
+		t.Fatalf("ListConsumerGroups after delete: %v", err)
+	}
+	for _, g := range after {
+		if g.Name == "grp-1" {
+			t.Fatalf("group grp-1 should have been deleted, still present: %+v", after)
+		}
+	}
+}

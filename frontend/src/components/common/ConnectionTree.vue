@@ -3,6 +3,7 @@ import { reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
 import type { Connection, Topic, ConsumerGroup } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
+import ConfirmDialog from './ConfirmDialog.vue'
 
 const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
@@ -196,13 +197,30 @@ async function submitCreate(conn: Connection): Promise<void> {
   }
 }
 
-async function confirmDeleteTopic(conn: Connection, name: string): Promise<void> {
-  if (!window.confirm(`确认删除 Topic「${name}」？此操作不可恢复。`)) return
+// confirm holds the pending destructive action. The dialog is rendered by
+// Wails (window.confirm is silently unsupported in WKWebView and always
+// returns false), so deletion is confirmed in-app instead.
+const confirm = ref<{ connId: string; kind: ObjectKind; name: string } | null>(null)
+
+function askDelete(conn: Connection, kind: ObjectKind, name: string): void {
+  confirm.value = { connId: conn.id, kind, name }
+}
+
+async function executeDelete(): Promise<void> {
+  const pending = confirm.value
+  if (!pending) return
+  confirm.value = null
+  const conn = props.connections.find((c) => c.id === pending.connId)
+  if (!conn) return
   try {
-    await getApi().deleteTopic({ connection_id: conn.id, topic: name })
-    await load(conn.id)
+    if (pending.kind === 'topic') {
+      await getApi().deleteTopic({ connection_id: pending.connId, topic: pending.name })
+    } else if (pending.kind === 'group') {
+      await getApi().deleteConsumerGroup({ connection_id: pending.connId, group: pending.name })
+    }
+    await load(pending.connId)
   } catch (e) {
-    errorByConn.value[conn.id] = e instanceof Error ? e.message : String(e)
+    errorByConn.value[pending.connId] = e instanceof Error ? e.message : String(e)
   }
 }
 </script>
@@ -336,7 +354,7 @@ async function confirmDeleteTopic(conn: Connection, name: string): Promise<void>
                   type="button"
                   data-test="btn-delete-topic"
                   title="删除 Topic"
-                  @click.stop="confirmDeleteTopic(conn, t.name)"
+                  @click.stop="askDelete(conn, 'topic', t.name)"
                 >🗑</button>
               </div>
               <div v-if="filteredTopics(conn.id).length === 0" class="leaf muted" data-test="topic-empty">
@@ -353,6 +371,13 @@ async function confirmDeleteTopic(conn: Connection, name: string): Promise<void>
                 @dblclick="emit('open-group', conn.id, g.name)"
               >
                 <span class="leaf-name">{{ g.name }}</span>
+                <button
+                  class="leaf-del"
+                  type="button"
+                  data-test="btn-delete-group"
+                  title="删除 Consumer Group"
+                  @click.stop="askDelete(conn, 'group', g.name)"
+                >🗑</button>
               </div>
               <div v-if="filteredGroups(conn.id).length === 0" class="leaf muted" data-test="group-empty">
                 {{ hasGroupSearch(conn.id) ? '无匹配 Consumer' : col.emptyText }}
@@ -366,6 +391,13 @@ async function confirmDeleteTopic(conn: Connection, name: string): Promise<void>
         <div class="leaf muted" data-test="type-unsupported">{{ typeMeta(conn).label }} 类型暂未支持</div>
       </div>
     </div>
+    <ConfirmDialog
+      :show="!!confirm"
+      :message="confirm ? `确认删除 ${confirm.kind === 'topic' ? 'Topic' : 'Consumer Group'}「${confirm.name}」？此操作不可恢复。` : ''"
+      :confirm-text="confirm ? `删除 ${confirm.kind === 'topic' ? 'Topic' : '消费组'}` : '删除'"
+      @confirm="executeDelete"
+      @cancel="confirm = null"
+    />
   </div>
 </template>
 

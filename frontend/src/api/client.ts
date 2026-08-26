@@ -12,6 +12,7 @@ import type {
   ProduceRequest,
   CreateTopicRequest,
   DeleteTopicRequest,
+  DeleteConsumerGroupRequest,
   ActiveMembersRequest,
   ActiveProducer,
   ActiveConsumer,
@@ -29,6 +30,7 @@ export interface Api {
   listConsumerGroups(id: string): Promise<ConsumerGroup[]>
   createTopic(req: CreateTopicRequest): Promise<void>
   deleteTopic(req: DeleteTopicRequest): Promise<void>
+  deleteConsumerGroup(req: DeleteConsumerGroupRequest): Promise<void>
   consumeMessages(req: ConsumeRequest): Promise<Message[]>
   consumeMessagesByTimestamp(req: ConsumeRequest): Promise<Message[]>
   getPartitionLag(id: string, topic: string, group: string): Promise<Record<number, number>>
@@ -76,6 +78,9 @@ export class WailsApi implements Api {
   }
   deleteTopic(req: DeleteTopicRequest): Promise<void> {
     return App.DeleteTopic(req) as unknown as Promise<void>
+  }
+  deleteConsumerGroup(req: DeleteConsumerGroupRequest): Promise<void> {
+    return App.DeleteConsumerGroup(req) as unknown as Promise<void>
   }
   consumeMessages(req: ConsumeRequest): Promise<Message[]> {
     return App.ConsumeMessages(req) as unknown as Promise<Message[]>

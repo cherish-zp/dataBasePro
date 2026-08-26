@@ -86,6 +86,11 @@ export interface DeleteTopicRequest {
   topic: string
 }
 
+export interface DeleteConsumerGroupRequest {
+  connection_id: string
+  group: string
+}
+
 export interface ConsumeRequest {
   connection_id: string
   topic: string

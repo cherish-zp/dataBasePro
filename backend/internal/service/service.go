@@ -116,6 +116,15 @@ func (s *Service) DeleteTopic(ctx context.Context, id, name string) error {
 	return d.DeleteTopic(ctx, name)
 }
 
+// DeleteConsumerGroup removes an empty consumer group from the connection's cluster.
+func (s *Service) DeleteConsumerGroup(ctx context.Context, id, name string) error {
+	d, err := s.kafka(ctx, id)
+	if err != nil {
+		return err
+	}
+	return d.DeleteConsumerGroup(ctx, name)
+}
+
 // ListTopics lists topics on the connection, auto-connecting if needed.
 func (s *Service) ListTopics(ctx context.Context, id string) ([]*model.Topic, error) {
 	kds, err := s.kafka(ctx, id)

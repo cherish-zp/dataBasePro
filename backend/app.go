@@ -76,6 +76,12 @@ type DeleteTopicRequest struct {
 	Topic        string `json:"topic"`
 }
 
+// DeleteConsumerGroupRequest carries the parameters for deleting a consumer group.
+type DeleteConsumerGroupRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Group        string `json:"group"`
+}
+
 // ProduceRequest carries the parameters for publishing a record.
 type ProduceRequest struct {
 	ConnectionID string `json:"connection_id"`
@@ -97,6 +103,13 @@ func (a *App) DeleteTopic(req DeleteTopicRequest) error {
 	ctx, cancel := a.newContext()
 	defer cancel()
 	return a.svc.DeleteTopic(ctx, req.ConnectionID, req.Topic)
+}
+
+// DeleteConsumerGroup removes a consumer group from a connection's cluster.
+func (a *App) DeleteConsumerGroup(req DeleteConsumerGroupRequest) error {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.DeleteConsumerGroup(ctx, req.ConnectionID, req.Group)
 }
 
 // CreateConnection validates and saves a new connection.

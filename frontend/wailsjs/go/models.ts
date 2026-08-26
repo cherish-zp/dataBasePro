@@ -56,6 +56,20 @@ export namespace backend {
 	        this.replication_factor = source["replication_factor"];
 	    }
 	}
+	export class DeleteConsumerGroupRequest {
+	    connection_id: string;
+	    group: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeleteConsumerGroupRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.group = source["group"];
+	    }
+	}
 	export class DeleteTopicRequest {
 	    connection_id: string;
 	    topic: string;

@@ -15,6 +15,8 @@ export function CreateTopic(arg1:backend.CreateTopicRequest):Promise<void>;
 
 export function DeleteConnection(arg1:string):Promise<void>;
 
+export function DeleteConsumerGroup(arg1:backend.DeleteConsumerGroupRequest):Promise<void>;
+
 export function DeleteTopic(arg1:backend.DeleteTopicRequest):Promise<void>;
 
 export function Disconnect(arg1:string):Promise<void>;

@@ -25,6 +25,7 @@ type fakeKafka struct {
 func (f *fakeKafka) ListTopics(context.Context) ([]*model.Topic, error) { return f.topics, nil }
 func (f *fakeKafka) CreateTopic(context.Context, string, int32, int16) error { return nil }
 func (f *fakeKafka) DeleteTopic(context.Context, string) error { return nil }
+func (f *fakeKafka) DeleteConsumerGroup(context.Context, string) error { return nil }
 func (f *fakeKafka) ListConsumerGroups(context.Context) ([]*model.ConsumerGroup, error) {
 	return f.group, nil
 }

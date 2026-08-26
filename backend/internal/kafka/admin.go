@@ -65,6 +65,21 @@ func (c *Client) DeleteTopic(ctx context.Context, name string) error {
 	return nil
 }
 
+// DeleteConsumerGroup removes an empty consumer group from the cluster.
+// Groups with live members cannot be deleted and surface the broker error.
+func (c *Client) DeleteConsumerGroup(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	resp, err := c.admin.DeleteGroup(ctx, name)
+	if err != nil {
+		return fmt.Errorf("delete consumer group: %w", err)
+	}
+	if resp.Err != nil {
+		return fmt.Errorf("delete consumer group %q: %w", name, resp.Err)
+	}
+	return nil
+}
+
 // ListConsumerGroups returns all consumer groups together with their per
 // topic/partition lag, sorted by name.
 func (c *Client) ListConsumerGroups(ctx context.Context) ([]*model.ConsumerGroup, error) {

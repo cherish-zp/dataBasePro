@@ -26,6 +26,10 @@ export function DeleteConnection(arg1) {
   return window['go']['backend']['App']['DeleteConnection'](arg1);
 }
 
+export function DeleteConsumerGroup(arg1) {
+  return window['go']['backend']['App']['DeleteConsumerGroup'](arg1);
+}
+
 export function DeleteTopic(arg1) {
   return window['go']['backend']['App']['DeleteTopic'](arg1);
 }
