@@ -294,11 +294,11 @@ func toMessage(r *kgo.Record) *model.Message {
 		Partition: r.Partition,
 		Offset:    r.Offset,
 		Timestamp: r.Timestamp.UnixMilli(),
-		Key:       r.Key,
-		Value:     r.Value,
+		Key:       string(r.Key),
+		Value:     string(r.Value),
 	}
 	for _, h := range r.Headers {
-		m.Headers = append(m.Headers, model.Header{Key: h.Key, Value: h.Value})
+		m.Headers = append(m.Headers, model.Header{Key: h.Key, Value: string(h.Value)})
 	}
 	return m
 }

@@ -19,9 +19,9 @@ func TestMessageJSONRoundTrip(t *testing.T) {
 		Partition: 3,
 		Offset:    42,
 		Timestamp: 1700000000000,
-		Key:       []byte("key-1"),
-		Value:     []byte(`{"a":1}`),
-		Headers:   []Header{{Key: "trace", Value: []byte("abc")}},
+		Key:       "key-1",
+		Value:     `{"a":1}`,
+		Headers:   []Header{{Key: "trace", Value: "abc"}},
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -34,10 +34,10 @@ func TestMessageJSONRoundTrip(t *testing.T) {
 	if got.Partition != 3 || got.Offset != 42 || got.Timestamp != 1700000000000 {
 		t.Fatalf("scalar fields lost in round trip: %+v", got)
 	}
-	if string(got.Key) != "key-1" || string(got.Value) != `{"a":1}` {
+	if got.Key != "key-1" || got.Value != `{"a":1}` {
 		t.Fatalf("bytes fields lost in round trip: %+v", got)
 	}
-	if len(got.Headers) != 1 || got.Headers[0].Key != "trace" || string(got.Headers[0].Value) != "abc" {
+	if len(got.Headers) != 1 || got.Headers[0].Key != "trace" || got.Headers[0].Value != "abc" {
 		t.Fatalf("headers lost in round trip: %+v", got.Headers)
 	}
 }
@@ -53,5 +53,29 @@ func TestConsumerGroupHasTopics(t *testing.T) {
 	b, _ := json.Marshal(g)
 	if len(b) == 0 {
 		t.Fatal("consumer group must marshal")
+	}
+}
+
+func TestMessageJSONValueIsReadableUTF8(t *testing.T) {
+	m := Message{
+		Key:   "k-1",
+		Value: "中文消息 你好 hello 世界",
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Value != "中文消息 你好 hello 世界" {
+		t.Fatalf("value must be delivered as readable UTF-8 text (not base64), got %q", got.Value)
+	}
+	if got.Key != "k-1" {
+		t.Fatalf("key must be delivered as plain text, got %q", got.Key)
 	}
 }

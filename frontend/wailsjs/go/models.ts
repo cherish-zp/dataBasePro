@@ -211,7 +211,7 @@ export namespace model {
 	}
 	export class Header {
 	    key: string;
-	    value: number[];
+	    value: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Header(source);
@@ -228,8 +228,8 @@ export namespace model {
 	    partition: number;
 	    offset: number;
 	    timestamp: number;
-	    key: number[];
-	    value: number[];
+	    key: string;
+	    value: string;
 	    headers: Header[];
 	
 	    static createFrom(source: any = {}) {

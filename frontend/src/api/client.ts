@@ -29,11 +29,11 @@ export interface Api {
   produceMessage(req: ProduceRequest): Promise<void>
 }
 
-// The Wails binding generator models Go `[]byte` fields (Message.Key/Value,
-// Header.Value) as `number[]` and injects `convertValues` helpers into model
-// classes, which don't match our domain types. Over JSON the transport
-// actually delivers strings for those fields, so we cast at this adapter
-// boundary and keep our own `types.ts` as the app-wide source of truth.
+// The Wails binding generator models Go `[]byte` fields as `number[]`, but
+// over JSON the transport delivers them as base64 strings. The backend model
+// therefore exposes Message.Key/Value and Header.Value as `string` so the
+// wire format matches our domain types and text (e.g. UTF-8 Chinese) is
+// delivered verbatim instead of base64-encoded.
 export class WailsApi implements Api {
   createConnection(conn: Connection): Promise<Connection> {
     return App.CreateConnection(conn as unknown as never) as unknown as Promise<Connection>

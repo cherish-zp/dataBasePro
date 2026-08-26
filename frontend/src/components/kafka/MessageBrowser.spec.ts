@@ -105,6 +105,20 @@ describe('MessageBrowser', () => {
     })
   })
 
+  it('renders UTF-8 (Chinese) message values verbatim, not base64', async () => {
+    const { wrapper } = mountBrowser({
+      consumeMessages: vi.fn(async () => [
+        { ...msg(0), key: 'cn', value: '中文消息 你好 hello 世界', headers: [] },
+      ]),
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(1)
+    })
+    const row = wrapper.find('[data-test="message-row"]')
+    expect(row.text()).toContain('中文消息 你好 hello 世界')
+    expect(row.text()).not.toContain('5Lit')
+  })
+
   it('uses timestamp mode when selected', async () => {
     const { wrapper, api } = mountBrowser({
       consumeMessagesByTimestamp: vi.fn(async () => [msg(9)]),

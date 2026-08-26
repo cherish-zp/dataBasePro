@@ -26,15 +26,15 @@ type Message struct {
 	Partition int32    `json:"partition"`
 	Offset    int64    `json:"offset"`
 	Timestamp int64    `json:"timestamp"` // unix milliseconds
-	Key       []byte   `json:"key"`
-	Value     []byte   `json:"value"`
+	Key       string   `json:"key"`
+	Value     string   `json:"value"`
 	Headers   []Header `json:"headers"`
 }
 
 // Header is a Kafka record header.
 type Header struct {
 	Key   string `json:"key"`
-	Value []byte `json:"value"`
+	Value string `json:"value"`
 }
 
 // ConsumerGroup summarises a consumer group and its per-partition lag.

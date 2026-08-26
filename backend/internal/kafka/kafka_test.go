@@ -129,7 +129,7 @@ func TestConsumeMessagesFromEarliest(t *testing.T) {
 		if m.Offset != int64(i) {
 			t.Fatalf("msg %d: expected offset %d, got %d", i, i, m.Offset)
 		}
-		if string(m.Key) != fmt.Sprintf("k-%d", i) || string(m.Value) != fmt.Sprintf("v-%d", i) {
+		if m.Key != fmt.Sprintf("k-%d", i) || m.Value != fmt.Sprintf("v-%d", i) {
 			t.Fatalf("msg %d: unexpected key/value %q/%q", i, m.Key, m.Value)
 		}
 		if m.Partition != 0 {
@@ -203,7 +203,7 @@ func TestProduceMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConsumeMessages: %v", err)
 	}
-	if len(msgs) != 1 || string(msgs[0].Key) != "hello" || string(msgs[0].Value) != "world" {
+	if len(msgs) != 1 || msgs[0].Key != "hello" || msgs[0].Value != "world" {
 		t.Fatalf("produced message not visible: %+v", msgs)
 	}
 }
