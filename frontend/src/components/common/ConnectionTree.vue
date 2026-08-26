@@ -57,6 +57,7 @@ const groupsByConn = ref<Record<string, ConsumerGroup[]>>({})
 const loadingByConn = ref<Record<string, boolean>>({})
 const errorByConn = ref<Record<string, string>>({})
 const searchByConn = ref<Record<string, string>>({})
+const groupSearchByConn = ref<Record<string, string>>({})
 
 function isExpanded(id: string): boolean {
   return !!expanded.value[id]
@@ -92,6 +93,10 @@ function hasSearch(connId: string): boolean {
   return (searchByConn.value[connId] ?? '').trim().length > 0
 }
 
+function hasGroupSearch(connId: string): boolean {
+  return (groupSearchByConn.value[connId] ?? '').trim().length > 0
+}
+
 function filteredTopics(connId: string): Topic[] {
   const q = (searchByConn.value[connId] ?? '').trim()
   const list = topicsByConn.value[connId] ?? []
@@ -101,6 +106,17 @@ function filteredTopics(connId: string): Topic[] {
     .filter((x) => x.score !== Infinity)
     .sort((a, b) => a.score - b.score)
     .map((x) => x.t)
+}
+
+function filteredGroups(connId: string): ConsumerGroup[] {
+  const q = (groupSearchByConn.value[connId] ?? '').trim()
+  const list = groupsByConn.value[connId] ?? []
+  if (!q) return list
+  return list
+    .map((g) => ({ g, score: fuzzyScore(q, g.name) }))
+    .filter((x) => x.score !== Infinity)
+    .sort((a, b) => a.score - b.score)
+    .map((x) => x.g)
 }
 
 const createMeta = ref<{ connId: string; kind: ObjectKind } | null>(null)
@@ -252,6 +268,20 @@ async function confirmDeleteTopic(conn: Connection, name: string): Promise<void>
               />
             </div>
 
+            <div v-if="col.key === 'consumers'" class="topic-search">
+              <input
+                v-model="groupSearchByConn[conn.id]"
+                class="search-input"
+                type="search"
+                data-test="group-search"
+                placeholder="🔍 模糊搜索 Consumer…"
+                autocapitalize="off"
+                autocorrect="off"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </div>
+
             <template v-if="col.kind === 'topic'">
               <div
                 v-for="t in filteredTopics(conn.id)"
@@ -277,7 +307,7 @@ async function confirmDeleteTopic(conn: Connection, name: string): Promise<void>
 
             <template v-else-if="col.kind === 'group'">
               <div
-                v-for="g in groupsByConn[conn.id] || []"
+                v-for="g in filteredGroups(conn.id)"
                 :key="g.name"
                 class="leaf"
                 data-test="group-node"
@@ -285,7 +315,9 @@ async function confirmDeleteTopic(conn: Connection, name: string): Promise<void>
               >
                 <span class="leaf-name">{{ g.name }}</span>
               </div>
-              <div v-if="(groupsByConn[conn.id] || []).length === 0" class="leaf muted">{{ col.emptyText }}</div>
+              <div v-if="filteredGroups(conn.id).length === 0" class="leaf muted" data-test="group-empty">
+                {{ hasGroupSearch(conn.id) ? '无匹配 Consumer' : col.emptyText }}
+              </div>
             </template>
           </template>
         </template>

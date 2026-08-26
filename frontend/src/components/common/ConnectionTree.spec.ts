@@ -120,6 +120,46 @@ describe('ConnectionTree', () => {
     expect(wrapper.findAll('[data-test="topic-name"]').map((n) => n.text())).toEqual(['order-db'])
   })
 
+  it('filters consumer groups with fuzzy search', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'grp-1', state: 'Stable', topics: {} },
+      { name: 'group_forensics_document_wait', state: 'Empty', topics: {} },
+      { name: 'console-consumer-123', state: 'Empty', topics: {} },
+    ])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(3)
+    await wrapper.find('[data-test="group-search"]').setValue('grp')
+    expect(wrapper.findAll('[data-test="group-node"]').map((n) => n.text())).toEqual(['grp-1', 'group_forensics_document_wait'])
+    await wrapper.find('[data-test="group-search"]').setValue('grp-1')
+    expect(wrapper.findAll('[data-test="group-node"]').map((n) => n.text())).toEqual(['grp-1'])
+  })
+
+  it('shows a no-match message when the consumer group search has no results', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'grp-1', state: 'Stable', topics: {} },
+    ])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="group-search"]').setValue('zzz')
+    expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="group-empty"]').text()).toBe('无匹配 Consumer')
+  })
+
+  it('keeps the consumer group search input case-sensitive (no autocapitalize)', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    const search = wrapper.find('[data-test="group-search"]')
+    expect(search.attributes('autocapitalize')).toBe('off')
+    expect(search.attributes('autocorrect')).toBe('off')
+    expect(search.attributes('autocomplete')).toBe('off')
+    expect(search.attributes('spellcheck')).toBe('false')
+  })
+
   it('excludes far-apart subsequence matches and ranks the substring match first', async () => {
     ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
       { name: 'activeInfoResult', partitions: [] },
