@@ -79,12 +79,12 @@ function close(): void {
       <div class="modal-body">
         <div class="field">
           <label class="label">名称 <span class="req">*</span></label>
-          <input v-model="form.name" data-test="input-name" class="input" placeholder="例如：本地开发" />
+          <input v-model="form.name" data-test="input-name" class="input" placeholder="例如：本地开发" autocapitalize="off" autocorrect="off" autocomplete="off" />
           <span v-if="nameInvalid" class="err">名称不能为空</span>
         </div>
         <div class="field">
           <label class="label">bootstrap.servers <span class="req">*</span></label>
-          <input v-model="form.brokers" data-test="input-brokers" class="input" placeholder="localhost:9092,broker2:9092" />
+          <input v-model="form.brokers" data-test="input-brokers" class="input" placeholder="localhost:9092,broker2:9092" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
           <span v-if="brokersInvalid" class="err">至少填写一个 broker</span>
         </div>
         <div class="field">
@@ -104,7 +104,7 @@ function close(): void {
           </div>
           <div class="field">
             <label class="label">用户名</label>
-            <input v-model="form.username" data-test="input-username" class="input" />
+            <input v-model="form.username" data-test="input-username" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
           </div>
           <div class="field">
             <label class="label">密码</label>

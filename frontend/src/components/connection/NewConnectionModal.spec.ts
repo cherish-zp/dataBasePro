@@ -20,6 +20,8 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     consumeMessagesByTimestamp: vi.fn(async () => []),
     getPartitionLag: vi.fn(async () => ({})),
     resetConsumerGroupOffset: vi.fn(async () => {}),
+    createTopic: vi.fn(async () => {}),
+    deleteTopic: vi.fn(async () => {}),
     produceMessage: vi.fn(async () => {}),
     ...overrides,
   }
@@ -40,6 +42,21 @@ describe('NewConnectionModal', () => {
   it('does not render when hidden', () => {
     const wrapper = mount(NewConnectionModal, { props: { show: false } })
     expect(wrapper.find('[data-test="new-connection-modal"]').exists()).toBe(false)
+  })
+
+  it('keeps case-sensitive text inputs (brokers/name/username) free of autocapitalize', async () => {
+    const wrapper = mountModal()
+    for (const sel of ['input-brokers', 'input-name']) {
+      const input = wrapper.find(`[data-test="${sel}"]`)
+      expect(input.attributes('autocapitalize'), sel).toBe('off')
+      expect(input.attributes('autocorrect'), sel).toBe('off')
+      expect(input.attributes('autocomplete'), sel).toBe('off')
+    }
+    await wrapper.find('[data-test="input-sasl"]').setValue(true)
+    const username = wrapper.find('[data-test="input-username"]')
+    expect(username.attributes('autocapitalize')).toBe('off')
+    expect(username.attributes('autocorrect')).toBe('off')
+    expect(username.attributes('autocomplete')).toBe('off')
   })
 
   it('save is disabled until name and brokers are provided', async () => {
