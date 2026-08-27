@@ -3,6 +3,7 @@ import { reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
 import type { Connection, Topic, ConsumerGroup } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
+import { useConnectionsStore, type ConnectionStatus } from '@/store/connections'
 import ConfirmDialog from './ConfirmDialog.vue'
 
 const props = defineProps<{ connections: Connection[] }>()
@@ -13,6 +14,8 @@ const emit = defineEmits<{
   (e: 'new'): void
 }>()
 
+const connStore = useConnectionsStore()
+
 // Per data-source type metadata so the tree can grow to MySQL/ES later.
 const TYPE_META: Record<string, { label: string; icon: string }> = {
   kafka: { label: 'Kafka', icon: '⚡' },
@@ -22,6 +25,40 @@ const TYPE_META: Record<string, { label: string; icon: string }> = {
 
 function typeMeta(conn: Connection): { label: string; icon: string } {
   return TYPE_META[conn.type] ?? { label: conn.type, icon: '📦' }
+}
+
+const STATUS_LABEL: Record<ConnectionStatus, string> = {
+  unknown: '未连接',
+  connecting: '连接中…',
+  connected: '已连接',
+  error: '连接失败',
+  disconnected: '未连接',
+}
+
+function statusOf(id: string): ConnectionStatus {
+  return connStore.statusById[id] ?? 'unknown'
+}
+
+function isConnected(id: string): boolean {
+  return statusOf(id) === 'connected'
+}
+
+// statusClass maps a connection's state to the status-dot colouring. The dot
+// uses the data-source colour (per type) when connected or connecting, and a
+// neutral red/gray otherwise.
+function statusClass(conn: Connection): string[] {
+  const s = statusOf(conn.id)
+  if (s === 'connected') return [`conn-status-${conn.type}`]
+  if (s === 'connecting') return [`conn-status-${conn.type}`, 'conn-status-connecting']
+  return [`conn-status-${s}`]
+}
+
+async function onToggleConnect(conn: Connection): Promise<void> {
+  if (isConnected(conn.id)) {
+    await connStore.disconnect(conn.id)
+  } else {
+    await connStore.connect(conn.id)
+  }
 }
 
 // An "object collection" groups the objects a data source exposes (topics,
@@ -77,6 +114,7 @@ async function toggle(conn: Connection): Promise<void> {
 async function load(connId: string): Promise<void> {
   loadingByConn.value[connId] = true
   errorByConn.value[connId] = ''
+  connStore.setStatus(connId, 'connecting')
   try {
     const [topics, groups] = await Promise.all([
       getApi().listTopics(connId),
@@ -84,8 +122,10 @@ async function load(connId: string): Promise<void> {
     ])
     topicsByConn.value[connId] = topics
     groupsByConn.value[connId] = groups
+    connStore.setStatus(connId, 'connected')
   } catch (e) {
     errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+    connStore.setStatus(connId, 'error')
   } finally {
     loadingByConn.value[connId] = false
   }
@@ -236,8 +276,19 @@ async function executeDelete(): Promise<void> {
             <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </span>
+        <span
+          class="conn-status"
+          data-test="conn-status-dot"
+          :class="statusClass(conn)"
+          :data-status="statusOf(conn.id)"
+          :title="STATUS_LABEL[statusOf(conn.id)]"
+        ></span>
         <span class="conn-name" data-test="conn-name">{{ conn.name }}</span>
         <span class="conn-type" :class="`conn-type-${conn.type}`" data-test="conn-type">{{ typeMeta(conn).label }}</span>
+        <button class="conn-toggle" type="button" data-test="btn-connect" :title="isConnected(conn.id) ? '关闭连接' : '打开连接'" @click.stop="onToggleConnect(conn)">
+          <span class="toggle-icon">⏻</span>
+          <span class="toggle-text">{{ isConnected(conn.id) ? '断开' : '连接' }}</span>
+        </button>
         <button class="conn-delete" type="button" data-test="btn-delete" @click.stop="emit('delete', conn.id)">🗑</button>
       </div>
 
@@ -432,6 +483,26 @@ async function executeDelete(): Promise<void> {
 .conn-type-kafka { color: var(--info); background: var(--info-soft); }
 .conn-type-mysql { color: var(--warn); background: var(--warn-soft); }
 .conn-type-es { color: var(--ok); background: var(--ok-soft); }
+.conn-status {
+  width: 8px; height: 8px; border-radius: 50%; flex: none; margin: 0 6px;
+  background: var(--text-tertiary);
+}
+.conn-status-kafka { background: var(--ok); }
+.conn-status-mysql { background: var(--info); }
+.conn-status-es { background: var(--warn); }
+.conn-status-connecting { background: var(--ok); animation: conn-pulse 1.1s ease-in-out infinite; }
+.conn-status-error { background: var(--danger); }
+.conn-status-disconnected { background: var(--text-tertiary); }
+.conn-status-unknown { background: var(--text-tertiary); }
+@keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.conn-toggle {
+  display: flex; align-items: center; gap: 3px;
+  background: none; border: 1px solid var(--border-strong); color: var(--text-secondary);
+  font-size: 11px; font-weight: 500; border-radius: 6px; padding: 1px 7px; cursor: pointer; flex: none;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.conn-toggle:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.conn-toggle .toggle-icon { font-size: 12px; line-height: 1; }
 .conn-delete { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; flex: none; }
 .conn-delete:hover { color: var(--danger); background: var(--danger-soft); }
 .conn-children { margin-left: 16px; border-left: 1px solid var(--border); padding-left: 8px; }

@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Connection } from '@/api/types'
+import { useConnectionsStore } from '@/store/connections'
 import ConnectionTree from './ConnectionTree.vue'
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
@@ -58,6 +60,7 @@ function clickConfirmDialog(testId: string): void {
 describe('ConnectionTree', () => {
   let api: Api
   beforeEach(() => {
+    setActivePinia(createPinia())
     api = fakeApi()
     setApi(api)
   })
@@ -478,5 +481,82 @@ describe('ConnectionTree', () => {
     await switchSection(wrapper, 'topics')
     expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(1)
     expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(0)
+  })
+
+  it('renders a status dot and a connect button for each connection', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    expect(wrapper.findAll('[data-test="conn-status-dot"]')).toHaveLength(1)
+    expect(wrapper.find('[data-test="btn-connect"]').exists()).toBe(true)
+  })
+
+  it('shows the type-specific color class on the dot when connected', () => {
+    const store = useConnectionsStore()
+    store.setStatus('a', 'connected')
+    store.setStatus('m', 'connected')
+    const wrapper = mount(ConnectionTree, {
+      props: { connections: [conn('a'), { ...conn('m'), type: 'es' }] },
+    })
+    const dots = wrapper.findAll('[data-test="conn-status-dot"]')
+    expect(dots[0].classes()).toContain('conn-status-kafka')
+    expect(dots[1].classes()).toContain('conn-status-es')
+    expect(dots[0].attributes('data-status')).toBe('connected')
+  })
+
+  it('marks the dot as error when the connection status is error', () => {
+    const store = useConnectionsStore()
+    store.setStatus('a', 'error')
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    const dot = wrapper.find('[data-test="conn-status-dot"]')
+    expect(dot.attributes('data-status')).toBe('error')
+    expect(dot.classes()).toContain('conn-status-error')
+  })
+
+  it('connects a disconnected connection via the connect button', async () => {
+    const store = useConnectionsStore()
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    expect(wrapper.find('[data-test="btn-connect"]').text()).toContain('连接')
+    await wrapper.find('[data-test="btn-connect"]').trigger('click')
+    expect(api.connect).toHaveBeenCalledWith('a')
+    await vi.waitFor(() => {
+      expect(store.statusById['a']).toBe('connected')
+    })
+  })
+
+  it('disconnects a connected connection via the connect button', async () => {
+    const store = useConnectionsStore()
+    store.setStatus('a', 'connected')
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    expect(wrapper.find('[data-test="btn-connect"]').text()).toContain('断开')
+    await wrapper.find('[data-test="btn-connect"]').trigger('click')
+    expect(api.disconnect).toHaveBeenCalledWith('a')
+    expect(store.statusById['a']).toBe('disconnected')
+  })
+
+  it('does not expand the row when clicking the connect button', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await wrapper.find('[data-test="btn-connect"]').trigger('click')
+    expect(wrapper.find('[data-test="conn-caret"]').classes()).not.toContain('open')
+  })
+
+  it('marks a connection connected after a successful expand load', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const store = useConnectionsStore()
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(store.statusById['a']).toBe('connected')
+    })
+  })
+
+  it('marks a connection as error when the expand load fails', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const store = useConnectionsStore()
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(store.statusById['a']).toBe('error')
+    })
   })
 })

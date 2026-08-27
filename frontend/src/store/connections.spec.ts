@@ -85,6 +85,37 @@ describe('connections store', () => {
     expect(api.disconnect).toHaveBeenCalledWith('a')
   })
 
+  it('marks a connection connecting then connected after a successful connect', async () => {
+    const store = useConnectionsStore()
+    const pending = store.connect('a')
+    expect(store.statusById['a']).toBe('connecting')
+    await pending
+    expect(store.statusById['a']).toBe('connected')
+  })
+
+  it('marks a connection as error when connect fails', async () => {
+    ;(api.connect as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('nope'))
+    const store = useConnectionsStore()
+    await store.connect('a')
+    expect(store.statusById['a']).toBe('error')
+    expect(store.error).toBe('nope')
+  })
+
+  it('marks a connection disconnected after disconnect', async () => {
+    const store = useConnectionsStore()
+    await store.connect('a')
+    await store.disconnect('a')
+    expect(store.statusById['a']).toBe('disconnected')
+  })
+
+  it('seeds unknown statuses when connections are loaded', async () => {
+    ;(api.listConnections as ReturnType<typeof vi.fn>).mockResolvedValue([conn('a'), conn('b')])
+    const store = useConnectionsStore()
+    await store.load()
+    expect(store.statusById['a']).toBe('unknown')
+    expect(store.statusById['b']).toBe('unknown')
+  })
+
   it('testConnection delegates with the config', async () => {
     const store = useConnectionsStore()
     const cfg = { bootstrap_servers: ['localhost:9092'] }
