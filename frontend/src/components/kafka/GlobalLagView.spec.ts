@@ -167,6 +167,25 @@ describe('GlobalLagView', () => {
       expect(api.listConsumerGroups).toHaveBeenCalledTimes(2)
     })
   })
+
+  it('refetches when connectionId changes so a lag tab never shows another connection’s data', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([grp('g-a', { 'orders-a': [part(10)] })])
+      .mockResolvedValueOnce([grp('g-b', { 'orders-b': [part(20)] })])
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await loadDone(wrapper)
+    expect(api.listConsumerGroups).toHaveBeenCalledWith('a')
+    expect(rowsOf(wrapper)).toEqual([['g-a', 'orders-a']])
+    // Layout patches the same component instance when switching lag tabs, so
+    // the view must reload itself instead of keeping the previous data.
+    await wrapper.setProps({ connectionId: 'b' })
+    await vi.waitFor(() => {
+      expect(api.listConsumerGroups).toHaveBeenCalledWith('b')
+    })
+    await loadDone(wrapper)
+    expect(rowsOf(wrapper)).toEqual([['g-b', 'orders-b']])
+    expect(wrapper.find('[data-test="lag-value"]').text()).toBe('20')
+  })
 })
 
 function rowsOf(wrapper: ReturnType<typeof mount>): Array<[string, string]> {

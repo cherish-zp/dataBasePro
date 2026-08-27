@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { getApi } from '@/api/client'
 import type { ConsumerGroup } from '@/api/types'
 import { flattenGroupLag } from '@/utils/lag'
@@ -25,6 +25,19 @@ async function refresh(): Promise<void> {
 }
 
 onMounted(refresh)
+
+// Switching lag tabs patches this component instance in place (Layout does not
+// key its workspace), so connectionId changes must drop the previous
+// connection's data and refetch — same idiom as MessageBrowser/SqlConsole.
+watch(
+  () => props.connectionId,
+  () => {
+    groups.value = []
+    error.value = null
+    query.value = ''
+    refresh()
+  },
+)
 
 // rows re-flattens the fetched groups and keeps them sorted by Lag descending
 // even while filtering, so the biggest backlogs stay on top while searching.
