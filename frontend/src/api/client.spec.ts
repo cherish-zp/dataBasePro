@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../wailsjs/go/backend/App', () => ({
   ListTopics: vi.fn(async () => [{ name: 't1', partitions: [] }]),
+  DescribeTopic: vi.fn(async () => ({
+    name: 'orders',
+    partitions: [{ id: 0, leader: 1, replicas: [1], isr: [1] }],
+    configs: [{ key: 'retention.ms', value: '604800000' }],
+  })),
   ConsumeMessages: vi.fn(async () => [{ partition: 0, offset: 1, timestamp: 1, key: 'k', value: 'v', headers: [] }]),
   CreateConnection: vi.fn(async (c: unknown) => ({ id: 'x', ...(c as object) })),
   GetPartitionLag: vi.fn(async () => ({ 0: 5 })),
@@ -38,6 +43,14 @@ describe('WailsApi delegation', () => {
     const lag = await api.getPartitionLag('c', 't', 'g')
     expect(mocked.GetPartitionLag).toHaveBeenCalledWith('c', 't', 'g')
     expect(lag[0]).toBe(5)
+  })
+
+  it('delegates describeTopic with connection id and topic', async () => {
+    const got = await api.describeTopic('c-1', 'orders')
+    expect(mocked.DescribeTopic).toHaveBeenCalledWith('c-1', 'orders')
+    expect(got.name).toBe('orders')
+    expect(got.partitions[0].leader).toBe(1)
+    expect(got.configs[0].key).toBe('retention.ms')
   })
 })
 

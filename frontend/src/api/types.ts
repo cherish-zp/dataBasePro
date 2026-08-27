@@ -42,6 +42,19 @@ export interface Topic {
   partitions: Partition[]
 }
 
+// A single whitelisted topic configuration entry surfaced by DescribeTopic.
+export interface TopicConfigEntry {
+  key: string
+  value: string
+}
+
+// Partition topology plus key configs of one topic (mirrors model.TopicDetail).
+export interface TopicDetail {
+  name: string
+  partitions: Partition[]
+  configs: TopicConfigEntry[]
+}
+
 export interface Header {
   key: string
   value: string

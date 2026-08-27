@@ -19,6 +19,8 @@ export function DeleteConsumerGroup(arg1:backend.DeleteConsumerGroupRequest):Pro
 
 export function DeleteTopic(arg1:backend.DeleteTopicRequest):Promise<void>;
 
+export function DescribeTopic(arg1:string,arg2:string):Promise<model.TopicDetail>;
+
 export function Disconnect(arg1:string):Promise<void>;
 
 export function GetConnection(arg1:string):Promise<model.Connection>;

@@ -16,6 +16,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     disconnect: vi.fn(async () => {}),
     getConnection: vi.fn(async () => ({}) as never),
     listTopics: vi.fn(async () => []),
+    describeTopic: vi.fn(async () => ({ name: "", partitions: [], configs: [] })),
     listConsumerGroups: vi.fn(async () => []),
     consumeMessages: vi.fn(async () => []),
     consumeMessagesByTimestamp: vi.fn(async () => []),

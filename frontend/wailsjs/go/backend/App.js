@@ -34,6 +34,10 @@ export function DeleteTopic(arg1) {
   return window['go']['backend']['App']['DeleteTopic'](arg1);
 }
 
+export function DescribeTopic(arg1, arg2) {
+  return window['go']['backend']['App']['DescribeTopic'](arg1, arg2);
+}
+
 export function Disconnect(arg1) {
   return window['go']['backend']['App']['Disconnect'](arg1);
 }

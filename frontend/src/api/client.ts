@@ -5,6 +5,7 @@ import type {
   Connection,
   KafkaConfig,
   Topic,
+  TopicDetail,
   ConsumerGroup,
   Message,
   ConsumeRequest,
@@ -16,7 +17,7 @@ import type {
   ActiveMembersRequest,
   ActiveProducer,
   ActiveConsumer,
-} from './types' 
+} from './types'
 
 export interface Api {
   createConnection(conn: Connection): Promise<Connection>
@@ -27,6 +28,7 @@ export interface Api {
   connect(id: string): Promise<void>
   disconnect(id: string): Promise<void>
   listTopics(id: string): Promise<Topic[]>
+  describeTopic(id: string, topic: string): Promise<TopicDetail>
   listConsumerGroups(id: string): Promise<ConsumerGroup[]>
   createTopic(req: CreateTopicRequest): Promise<void>
   deleteTopic(req: DeleteTopicRequest): Promise<void>
@@ -69,6 +71,9 @@ export class WailsApi implements Api {
   }
   listTopics(id: string): Promise<Topic[]> {
     return App.ListTopics(id) as unknown as Promise<Topic[]>
+  }
+  describeTopic(id: string, topic: string): Promise<TopicDetail> {
+    return App.DescribeTopic(id, topic) as unknown as Promise<TopicDetail>
   }
   listConsumerGroups(id: string): Promise<ConsumerGroup[]> {
     return App.ListConsumerGroups(id) as unknown as Promise<ConsumerGroup[]>

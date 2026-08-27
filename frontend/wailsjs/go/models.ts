@@ -444,6 +444,54 @@ export namespace model {
 		    return a;
 		}
 	}
+	export class TopicConfigEntry {
+	    key: string;
+	    value: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TopicConfigEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.value = source["value"];
+	    }
+	}
+	export class TopicDetail {
+	    name: string;
+	    partitions: Partition[];
+	    configs: TopicConfigEntry[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TopicDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.partitions = this.convertValues(source["partitions"], Partition);
+	        this.configs = this.convertValues(source["configs"], TopicConfigEntry);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 

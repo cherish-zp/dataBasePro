@@ -5,6 +5,7 @@ import type { Connection, Topic, ConsumerGroup } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
 import { useConnectionsStore, type ConnectionStatus } from '@/store/connections'
 import ConfirmDialog from './ConfirmDialog.vue'
+import TopicDetailDrawer from '@/components/kafka/TopicDetailDrawer.vue'
 
 const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
@@ -243,6 +244,9 @@ async function submitCreate(conn: Connection): Promise<void> {
 // returns false), so deletion is confirmed in-app instead.
 const confirm = ref<{ connId: string; kind: ObjectKind; name: string } | null>(null)
 
+// detailMeta holds the topic whose detail drawer is open; null hides it.
+const detailMeta = ref<{ connId: string; topic: string } | null>(null)
+
 function askDelete(conn: Connection, kind: ObjectKind, name: string): void {
   confirm.value = { connId: conn.id, kind, name }
 }
@@ -413,6 +417,13 @@ async function executeDelete(): Promise<void> {
               >
                 <span class="leaf-name" data-test="topic-name">{{ t.name }}</span>
                 <button
+                  class="leaf-info"
+                  type="button"
+                  data-test="btn-topic-info"
+                  title="Topic 详情"
+                  @click.stop="detailMeta = { connId: conn.id, topic: t.name }"
+                >ℹ</button>
+                <button
                   class="leaf-del"
                   type="button"
                   data-test="btn-delete-topic"
@@ -454,6 +465,12 @@ async function executeDelete(): Promise<void> {
         <div class="leaf muted" data-test="type-unsupported">{{ typeMeta(conn).label }} 类型暂未支持</div>
       </div>
     </div>
+    <TopicDetailDrawer
+      :show="!!detailMeta"
+      :connection-id="detailMeta?.connId ?? ''"
+      :topic="detailMeta?.topic ?? ''"
+      @close="detailMeta = null"
+    />
     <ConfirmDialog
       :show="!!confirm"
       :message="confirm ? `确认删除 ${confirm.kind === 'topic' ? 'Topic' : 'Consumer Group'}「${confirm.name}」？此操作不可恢复。` : ''"
@@ -568,6 +585,13 @@ async function executeDelete(): Promise<void> {
 }
 .leaf:hover .leaf-del { opacity: 1; }
 .leaf-del:hover { color: var(--danger); background: var(--danger-soft); }
+.leaf-info {
+  background: none; border: none; color: var(--text-tertiary); cursor: pointer;
+  border-radius: 4px; padding: 0 3px; flex: none; opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.leaf:hover .leaf-info { opacity: 1; }
+.leaf-info:hover { color: var(--info); background: var(--info-soft); }
 .create-form {
   margin: 6px 0 2px; padding: 8px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--bg-subtle); display: flex; flex-direction: column; gap: 7px;

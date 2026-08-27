@@ -17,6 +17,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     disconnect: vi.fn(async () => {}),
     getConnection: vi.fn(async () => ({}) as never),
     listTopics: vi.fn(async () => []),
+    describeTopic: vi.fn(async () => ({ name: "", partitions: [], configs: [] })),
     listConsumerGroups: vi.fn(async () => []),
     consumeMessages: vi.fn(async () => []),
     consumeMessagesByTimestamp: vi.fn(async () => []),
@@ -239,17 +240,21 @@ describe('ConnectionTree', () => {
     expect(wrapper.emitted('open-group')?.[0]).toEqual(['a', 'grp-1'])
   })
 
-  it('shows a Lag 总览 entry for an expanded kafka connection and emits open-lag on click', async () => {
-    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  it('opens the topic detail drawer from the info button', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue({ name: 'user-log', partitions: [], configs: [] })
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    expect(wrapper.find('[data-test="btn-open-lag"]').exists()).toBe(false)
     await expand(wrapper)
-    const entry = wrapper.find('[data-test="btn-open-lag"]')
-    expect(entry.exists()).toBe(true)
-    expect(entry.text()).toContain('Lag 总览')
-    await entry.trigger('click')
-    expect(wrapper.emitted('open-lag')?.[0]).toEqual(['a'])
+    expect(wrapper.find('[data-test="btn-topic-info"]').exists()).toBe(true)
+    await wrapper.find('[data-test="btn-topic-info"]').trigger('click')
+    expect(api.describeTopic).toHaveBeenCalledWith('a', 'user-log')
+    // The drawer closes again and stays closed.
+    await wrapper.find('[data-test="drawer-close"]').trigger('click')
+    await wrapper.find('[data-test="btn-topic-info"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.describeTopic).toHaveBeenCalledTimes(2)
+    })
   })
 
   it('opens and closes the topic creation form from the Topics header', async () => {
