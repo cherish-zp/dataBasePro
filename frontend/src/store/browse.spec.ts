@@ -68,6 +68,50 @@ describe('browse store', () => {
     expect(store.stateFor('t1').messages).toHaveLength(1)
   })
 
+  it('queries by time range and keeps messages before the end time', async () => {
+    const early = { ...msg(0), timestamp: 1700000000000 }
+    const middle = { ...msg(1), timestamp: 1700000005000 }
+    const late = { ...msg(2), timestamp: 1700000010000 }
+    ;(api.consumeMessagesByTimestamp as ReturnType<typeof vi.fn>).mockResolvedValue([early, middle, late])
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, timestampMs: 1700000000000, endTimeMs: 1700000006000, limit: 10 })
+    expect(api.consumeMessagesByTimestamp).toHaveBeenCalledWith(
+      expect.objectContaining({ timestamp_ms: 1700000000000 }),
+    )
+    expect(store.stateFor('t1').messages.map((m) => m.offset)).toEqual([0, 1])
+  })
+
+  it('keeps all messages when the time range has only a start', async () => {
+    const early = { ...msg(0), timestamp: 1000 }
+    const late = { ...msg(1), timestamp: 9000000000000 }
+    ;(api.consumeMessagesByTimestamp as ReturnType<typeof vi.fn>).mockResolvedValue([early, late])
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, timestampMs: 500, endTimeMs: null, limit: 10 })
+    expect(store.stateFor('t1').messages).toHaveLength(2)
+  })
+
+  it('falls back to the offset query when no time range is given', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([msg(0)])
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, timestampMs: null, endTimeMs: null, limit: 10 })
+    expect(api.consumeMessages).toHaveBeenCalled()
+    expect(api.consumeMessagesByTimestamp).not.toHaveBeenCalled()
+  })
+
+  it('restores the plain offset query and drops the cutoff when the range is cleared', async () => {
+    const late = { ...msg(9), timestamp: 9000000000000 }
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([late])
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, timestampMs: 1000, endTimeMs: 2000, limit: 10 })
+    expect(store.stateFor('t1').messages).toHaveLength(0)
+
+    await store.fetch('t1', 'c', 'topic-a', { timestampMs: null, endTimeMs: null })
+    expect(api.consumeMessages).toHaveBeenLastCalledWith(
+      expect.objectContaining({ connection_id: 'c', topic: 'topic-a', partition: 0 }),
+    )
+    expect(store.stateFor('t1').messages).toHaveLength(1)
+  })
+
   it('marks hasMore only for single-partition queries that hit the limit', async () => {
     ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([msg(0), msg(1), msg(2)])
     const store = useBrowseStore()

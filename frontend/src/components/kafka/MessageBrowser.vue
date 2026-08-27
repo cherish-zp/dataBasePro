@@ -17,6 +17,8 @@ const mode = ref<'earliest' | 'latest' | 'timestamp'>('earliest')
 const partition = ref(-1)
 const limit = ref(500)
 const timestampMs = ref<number | null>(null)
+const startTime = ref('')
+const endTime = ref('')
 const detailOpen = ref(false)
 
 const partitionOptions = computed(() => [
@@ -24,8 +26,24 @@ const partitionOptions = computed(() => [
   ...props.partitions.map((p) => ({ label: String(p), value: p })),
 ])
 
+// dtToMs converts a datetime-local value ('') to unix ms; empty input = unset.
+function dtToMs(v: string): number | null {
+  if (!v) return null
+  const ms = new Date(v).getTime()
+  return Number.isFinite(ms) ? ms : null
+}
+
 function buildQuery(): Partial<MessageQuery> {
   const q: Partial<MessageQuery> = { partition: partition.value, limit: limit.value }
+  const startMs = dtToMs(startTime.value)
+  if (startMs != null) {
+    // A filled start time takes precedence over the 起点 mode select.
+    q.offset = OffsetEarliest
+    q.timestampMs = startMs
+    q.endTimeMs = dtToMs(endTime.value)
+    return q
+  }
+  q.endTimeMs = null
   if (mode.value === 'earliest') {
     q.offset = OffsetEarliest
     q.timestampMs = null
@@ -85,6 +103,14 @@ onMounted(runQuery)
       <label v-if="mode === 'timestamp'" class="filter-item">
         时间戳(ms)
         <input v-model.number="timestampMs" data-test="filter-timestamp" type="number" class="input" placeholder="毫秒时间戳" />
+      </label>
+      <label class="filter-item">
+        起始时间
+        <input v-model="startTime" data-test="filter-start-time" type="datetime-local" class="input" />
+      </label>
+      <label class="filter-item">
+        结束时间
+        <input v-model="endTime" data-test="filter-end-time" type="datetime-local" class="input" />
       </label>
       <label class="filter-item">
         条数

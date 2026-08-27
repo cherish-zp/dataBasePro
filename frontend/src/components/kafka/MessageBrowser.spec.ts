@@ -142,6 +142,64 @@ describe('MessageBrowser', () => {
       )
     })
   })
+
+  it('queries by time range when the start time is filled', async () => {
+    const startInput = '2023-11-15T08:30:00'
+    const endInput = '2023-11-15T09:30:00'
+    const startMs = new Date(startInput).getTime()
+    const endMs = new Date(endInput).getTime()
+    const { wrapper, api } = mountBrowser({
+      consumeMessagesByTimestamp: vi.fn(async () => [
+        { ...msg(1), timestamp: startMs + 60000 },
+        { ...msg(2), timestamp: endMs + 60000 },
+      ]),
+    })
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalled()
+    })
+    await wrapper.find('[data-test="filter-start-time"]').setValue(startInput)
+    await wrapper.find('[data-test="filter-end-time"]').setValue(endInput)
+    await wrapper.find('[data-test="btn-query"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.consumeMessagesByTimestamp).toHaveBeenCalledWith(
+        expect.objectContaining({ timestamp_ms: startMs }),
+      )
+    })
+    // The record after the end time is cut off client-side.
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(1)
+      expect(wrapper.find('[data-test="message-count"]').text()).toBe('1 条')
+    })
+  })
+
+  it('restores the offset query after the time range is cleared', async () => {
+    const consume = vi.fn(async () => [msg(0)])
+    const startInput = '2023-11-15T08:30:00'
+    const startMs = new Date(startInput).getTime()
+    const { wrapper, api } = mountBrowser({
+      consumeMessages: consume,
+      consumeMessagesByTimestamp: vi.fn(async () => [{ ...msg(1), timestamp: startMs + 60000 }]),
+    })
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalled()
+    })
+    await wrapper.find('[data-test="filter-start-time"]').setValue(startInput)
+    await wrapper.find('[data-test="btn-query"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.consumeMessagesByTimestamp).toHaveBeenCalled()
+    })
+    await wrapper.find('[data-test="filter-start-time"]').setValue('')
+    await wrapper.find('[data-test="btn-query"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(consume).toHaveBeenLastCalledWith(
+        expect.objectContaining({ connection_id: 'c', topic: 'events', partition: -1, offset: -2, limit: 500 }),
+      )
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(1)
+    })
+  })
+
   it('renders contextual query and producer toolbar buttons', () => {
     const { wrapper } = mountBrowser()
     expect(wrapper.find('[data-test="btn-open-sql"]').exists()).toBe(true)

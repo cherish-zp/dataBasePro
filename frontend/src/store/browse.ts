@@ -7,7 +7,8 @@ import type { ConsumeRequest, Message } from '@/api/types'
 export interface MessageQuery {
   partition: number // -1 = all partitions
   offset: number // OffsetEarliest / OffsetLatest / absolute offset
-  timestampMs: number | null
+  timestampMs: number | null // start time; backend consumes from here
+  endTimeMs: number | null // client-side upper bound applied to returned records
   limit: number
 }
 
@@ -31,7 +32,7 @@ export const useBrowseStore = defineStore('browse', () => {
   function stateFor(tabId: string): BrowseState {
     if (!states.value[tabId]) {
       states.value[tabId] = {
-        query: { partition: -1, offset: OffsetEarliest, timestampMs: null, limit: 500 },
+        query: { partition: -1, offset: OffsetEarliest, timestampMs: null, endTimeMs: null, limit: 500 },
         messages: [],
         loading: false,
         error: null,
@@ -62,6 +63,10 @@ export const useBrowseStore = defineStore('browse', () => {
         msgs = await getApi().consumeMessagesByTimestamp(req)
       } else {
         msgs = await getApi().consumeMessages(req)
+      }
+      const endMs = st.query.endTimeMs
+      if (endMs != null) {
+        msgs = msgs.filter((m) => m.timestamp <= endMs)
       }
       st.messages = msgs
       st.selected = null
