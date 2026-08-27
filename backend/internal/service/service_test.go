@@ -21,6 +21,7 @@ type fakeKafka struct {
 	consumers  []*model.ActiveConsumer
 	resetCalls []model.ResetOffsetMode
 	detail     *model.TopicDetail
+	health     *model.ClusterHealth
 }
 
 func (f *fakeKafka) ListTopics(context.Context) ([]*model.Topic, error)      { return f.topics, nil }
@@ -54,6 +55,9 @@ func (f *fakeKafka) ListActiveConsumers(context.Context, string, string) ([]*mod
 }
 func (f *fakeKafka) DescribeTopic(context.Context, string) (*model.TopicDetail, error) {
 	return f.detail, nil
+}
+func (f *fakeKafka) DescribeCluster(context.Context) (*model.ClusterHealth, error) {
+	return f.health, nil
 }
 
 type fakeFactory struct {
@@ -305,6 +309,24 @@ func TestDescribeTopicDelegates(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("DescribeTopic must delegate to the data source, got %+v", got)
+	}
+}
+
+func TestDescribeClusterDelegates(t *testing.T) {
+	svc, f := newTestService(t)
+	ctx := context.Background()
+	c, err := svc.CreateConnection(ctx, sampleConn())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	want := &model.ClusterHealth{ClusterID: "c-1"}
+	f.k.health = want
+	got, err := svc.DescribeCluster(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("DescribeCluster: %v", err)
+	}
+	if got != want {
+		t.Fatalf("DescribeCluster must delegate to the data source, got %+v", got)
 	}
 }
 

@@ -144,6 +144,16 @@ func (s *Service) DescribeTopic(ctx context.Context, id, name string) (*model.To
 	return kds.DescribeTopic(ctx, name)
 }
 
+// DescribeCluster returns the cluster health snapshot (brokers, controller,
+// Kafka version, under-replicated partitions), auto-connecting if needed.
+func (s *Service) DescribeCluster(ctx context.Context, id string) (*model.ClusterHealth, error) {
+	kds, err := s.kafka(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return kds.DescribeCluster(ctx)
+}
+
 // ListConsumerGroups lists consumer groups with lag on the connection.
 func (s *Service) ListConsumerGroups(ctx context.Context, id string) ([]*model.ConsumerGroup, error) {
 	kds, err := s.kafka(ctx, id)

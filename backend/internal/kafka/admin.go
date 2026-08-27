@@ -25,6 +25,114 @@ var describeTopicConfigKeys = map[string]struct{}{
 	"max.message.bytes":   {},
 }
 
+// brokerProbe carries the fields of a per-broker API-versions probe needed to
+// decide its online state and Kafka version guess, decoupled from kadm so the
+// mapping can be unit-tested without a live cluster.
+type brokerProbe struct {
+	NodeID  int32
+	Version string // best-guess Kafka version from the API versions response
+	Err     bool   // probe failed -> broker considered offline
+}
+
+// DescribeCluster returns a health snapshot of the cluster: broker topology
+// (id/host/port/rack), controller, Kafka version and under-replicated
+// partitions. Broker online state derives from each broker's API versions
+// probe; when probes cannot be fetched at all, brokers are reported online
+// with an unknown version rather than failing the whole call.
+func (c *Client) DescribeCluster(ctx context.Context) (*model.ClusterHealth, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	meta, err := c.admin.Metadata(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("describe cluster: %w", err)
+	}
+	var probes []brokerProbe
+	if avs, perr := c.admin.ApiVersions(ctx); perr == nil {
+		probes = extractProbes(avs)
+	}
+	return mapClusterHealth(meta, probes), nil
+}
+
+// extractProbes converts kadm API-version responses into broker probes,
+// guessing each healthy broker's Kafka version.
+func extractProbes(avs kadm.BrokersApiVersions) []brokerProbe {
+	probes := make([]brokerProbe, 0, len(avs))
+	for _, v := range avs.Sorted() {
+		p := brokerProbe{NodeID: v.NodeID}
+		if v.Err != nil {
+			p.Err = true
+		} else {
+			p.Version = v.VersionGuess()
+		}
+		probes = append(probes, p)
+	}
+	return probes
+}
+
+// mapClusterHealth assembles the model snapshot from cluster metadata plus
+// optional per-broker probes (nil when probing failed wholesale).
+func mapClusterHealth(m kadm.Metadata, probes []brokerProbe) *model.ClusterHealth {
+	byNode := make(map[int32]brokerProbe, len(probes))
+	for _, p := range probes {
+		byNode[p.NodeID] = p
+	}
+	out := &model.ClusterHealth{
+		ClusterID:    m.Cluster,
+		ControllerID: m.Controller,
+		Brokers:      make([]model.BrokerInfo, 0, len(m.Brokers)),
+	}
+	for _, b := range m.Brokers {
+		bi := model.BrokerInfo{ID: b.NodeID, Host: b.Host, Port: b.Port, Online: true}
+		if b.Rack != nil {
+			bi.Rack = *b.Rack
+		}
+		if p, ok := byNode[b.NodeID]; ok {
+			bi.Version = p.Version
+			bi.Online = !p.Err
+		}
+		out.Brokers = append(out.Brokers, bi)
+	}
+	out.KafkaVersion = clusterVersion(byNode, m.Controller)
+	out.UnderReplicatedPartitions = countUnderReplicated(m.Topics)
+	return out
+}
+
+// clusterVersion returns the controller broker's version guess, falling back
+// to the lowest healthy probed broker id. Empty when no broker answered.
+func clusterVersion(probes map[int32]brokerProbe, controllerID int32) string {
+	if p, ok := probes[controllerID]; ok && !p.Err && p.Version != "" {
+		return p.Version
+	}
+	ids := make([]int32, 0, len(probes))
+	for id := range probes {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		p := probes[id]
+		if !p.Err && p.Version != "" {
+			return p.Version
+		}
+	}
+	return ""
+}
+
+// countUnderReplicated counts partitions whose ISR holds fewer replicas than
+// their full replica assignment. Errored partitions are skipped because their
+// ISR is unknown.
+func countUnderReplicated(topics kadm.TopicDetails) int32 {
+	n := int32(0)
+	topics.EachPartition(func(d kadm.PartitionDetail) {
+		if d.Err != nil {
+			return
+		}
+		if len(d.ISR) < len(d.Replicas) {
+			n++
+		}
+	})
+	return n
+}
+
 // DescribeTopic returns the partition topology (leader/replica/ISR per
 // partition) and the whitelisted key configs for a single topic.
 func (c *Client) DescribeTopic(ctx context.Context, name string) (*model.TopicDetail, error) {

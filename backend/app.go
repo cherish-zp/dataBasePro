@@ -175,6 +175,14 @@ func (a *App) DescribeTopic(id, topic string) (*model.TopicDetail, error) {
 	return a.svc.DescribeTopic(ctx, id, topic)
 }
 
+// DescribeCluster returns broker topology, controller, Kafka version and
+// under-replicated partitions for a connection's cluster.
+func (a *App) DescribeCluster(id string) (*model.ClusterHealth, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.DescribeCluster(ctx, id)
+}
+
 // ListConsumerGroups lists consumer groups (with lag) for a connection.
 func (a *App) ListConsumerGroups(id string) ([]*model.ConsumerGroup, error) {
 	ctx, cancel := a.newContext()
