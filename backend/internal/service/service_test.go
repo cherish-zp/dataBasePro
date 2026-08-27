@@ -20,12 +20,13 @@ type fakeKafka struct {
 	producers  []*model.ActiveProducer
 	consumers  []*model.ActiveConsumer
 	resetCalls []model.ResetOffsetMode
+	detail     *model.TopicDetail
 }
 
-func (f *fakeKafka) ListTopics(context.Context) ([]*model.Topic, error) { return f.topics, nil }
+func (f *fakeKafka) ListTopics(context.Context) ([]*model.Topic, error)      { return f.topics, nil }
 func (f *fakeKafka) CreateTopic(context.Context, string, int32, int16) error { return nil }
-func (f *fakeKafka) DeleteTopic(context.Context, string) error { return nil }
-func (f *fakeKafka) DeleteConsumerGroup(context.Context, string) error { return nil }
+func (f *fakeKafka) DeleteTopic(context.Context, string) error               { return nil }
+func (f *fakeKafka) DeleteConsumerGroup(context.Context, string) error       { return nil }
 func (f *fakeKafka) ListConsumerGroups(context.Context) ([]*model.ConsumerGroup, error) {
 	return f.group, nil
 }
@@ -50,6 +51,9 @@ func (f *fakeKafka) ListActiveProducers(context.Context, string) ([]*model.Activ
 }
 func (f *fakeKafka) ListActiveConsumers(context.Context, string, string) ([]*model.ActiveConsumer, error) {
 	return f.consumers, nil
+}
+func (f *fakeKafka) DescribeTopic(context.Context, string) (*model.TopicDetail, error) {
+	return f.detail, nil
 }
 
 type fakeFactory struct {
@@ -283,6 +287,24 @@ func TestProduceMessageDelegates(t *testing.T) {
 	c, _ := svc.CreateConnection(ctx, sampleConn())
 	if err := svc.ProduceMessage(ctx, c.ID, "t1", 0, []byte("k"), []byte("v")); err != nil {
 		t.Fatalf("ProduceMessage: %v", err)
+	}
+}
+
+func TestDescribeTopicDelegates(t *testing.T) {
+	svc, f := newTestService(t)
+	ctx := context.Background()
+	c, err := svc.CreateConnection(ctx, sampleConn())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	want := &model.TopicDetail{Name: "t1"}
+	f.k.detail = want
+	got, err := svc.DescribeTopic(ctx, c.ID, "t1")
+	if err != nil {
+		t.Fatalf("DescribeTopic: %v", err)
+	}
+	if got != want {
+		t.Fatalf("DescribeTopic must delegate to the data source, got %+v", got)
 	}
 }
 

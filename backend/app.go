@@ -168,6 +168,13 @@ func (a *App) ListTopics(id string) ([]*model.Topic, error) {
 	return a.svc.ListTopics(ctx, id)
 }
 
+// DescribeTopic returns a topic's partition topology and key configs.
+func (a *App) DescribeTopic(id, topic string) (*model.TopicDetail, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.DescribeTopic(ctx, id, topic)
+}
+
 // ListConsumerGroups lists consumer groups (with lag) for a connection.
 func (a *App) ListConsumerGroups(id string) ([]*model.ConsumerGroup, error) {
 	ctx, cancel := a.newContext()

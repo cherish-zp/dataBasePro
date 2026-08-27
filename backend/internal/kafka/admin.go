@@ -13,6 +13,80 @@ import (
 	"dataBasePro/backend/internal/model"
 )
 
+// describeTopicConfigKeys whitelists the topic configs surfaced in
+// TopicDetail.Configs. The full DescribeConfigs response contains dozens of
+// keys; only these handful of core entries are mapped through.
+var describeTopicConfigKeys = map[string]struct{}{
+	"retention.ms":        {},
+	"cleanup.policy":      {},
+	"segment.bytes":       {},
+	"retention.bytes":     {},
+	"min.insync.replicas": {},
+	"max.message.bytes":   {},
+}
+
+// DescribeTopic returns the partition topology (leader/replica/ISR per
+// partition) and the whitelisted key configs for a single topic.
+func (c *Client) DescribeTopic(ctx context.Context, name string) (*model.TopicDetail, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	details, err := c.admin.ListTopics(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("describe topic %q: %w", name, err)
+	}
+	td, ok := details[name]
+	if !ok {
+		return nil, fmt.Errorf("topic %q not found", name)
+	}
+	if td.Err != nil {
+		return nil, fmt.Errorf("describe topic %q: %w", name, td.Err)
+	}
+	out := &model.TopicDetail{Name: name}
+	for _, pd := range td.Partitions.Sorted() {
+		out.Partitions = append(out.Partitions, model.Partition{
+			ID:       pd.Partition,
+			Leader:   pd.Leader,
+			Replicas: pd.Replicas,
+			ISR:      pd.ISR,
+		})
+	}
+
+	configs, err := c.admin.DescribeTopicConfigs(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("describe topic %q configs: %w", name, err)
+	}
+	rc, rerr := configs.On(name, nil)
+	if err := firstErr(err, rerr, rc.Err); err != nil {
+		return nil, fmt.Errorf("describe topic %q configs: %w", name, err)
+	}
+	out.Configs = mapTopicConfigs(rc)
+	return out, nil
+}
+
+// mapTopicConfigs keeps only the whitelisted keys of a described topic config
+// resource and sorts the survivors by key for stable display.
+func mapTopicConfigs(rc kadm.ResourceConfig) []model.TopicConfigEntry {
+	out := make([]model.TopicConfigEntry, 0, len(rc.Configs))
+	for _, cfg := range rc.Configs {
+		if _, want := describeTopicConfigKeys[cfg.Key]; !want {
+			continue
+		}
+		out = append(out, model.TopicConfigEntry{Key: cfg.Key, Value: cfg.MaybeValue()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
+}
+
+// firstErr returns the first non-nil error of its arguments (or nil).
+func firstErr(errs ...error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
 // ListTopics returns all topics with their partition metadata, sorted by name.
 func (c *Client) ListTopics(ctx context.Context) ([]*model.Topic, error) {
 	details, err := c.admin.ListTopics(ctx)

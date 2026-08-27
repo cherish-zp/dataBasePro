@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
 
@@ -491,6 +493,99 @@ func TestDeleteTopic(t *testing.T) {
 		if tp.Name == "t1" {
 			t.Fatalf("topic t1 should have been deleted, still present: %+v", topics)
 		}
+	}
+}
+
+// strptr returns a pointer to s, used to set topic config values.
+func strptr(s string) *string { return &s }
+
+func TestMapTopicConfigsWhitelistsAndSorts(t *testing.T) {
+	rc := kadm.ResourceConfig{
+		Name: "t1",
+		Configs: []kadm.Config{
+			{Key: "segment.bytes", Value: strptr("104857600")},
+			{Key: "compression.type", Value: strptr("producer")}, // not whitelisted
+			{Key: "cleanup.policy", Value: strptr("delete")},
+			{Key: "retention.ms", Value: strptr("123456789")},
+			{Key: "max.message.bytes", Value: nil},                       // sensitive/unset -> empty value
+			{Key: "message.timestamp.type", Value: strptr("CreateTime")}, // not whitelisted
+			{Key: "min.insync.replicas", Value: strptr("1")},
+		},
+	}
+	got := mapTopicConfigs(rc)
+	want := []model.TopicConfigEntry{
+		{Key: "cleanup.policy", Value: "delete"},
+		{Key: "max.message.bytes", Value: ""},
+		{Key: "min.insync.replicas", Value: "1"},
+		{Key: "retention.ms", Value: "123456789"},
+		{Key: "segment.bytes", Value: "104857600"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mapTopicConfigs mismatch:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func TestDescribeTopic(t *testing.T) {
+	c := newCluster(t, 3, "detail-topic")
+	cl := newKafkaClient(t, c)
+	ctx := context.Background()
+
+	// Override a whitelisted config so the test asserts mapped values rather
+	// than only broker defaults.
+	alter, err := cl.admin.AlterTopicConfigs(ctx, []kadm.AlterConfig{
+		{Op: kadm.SetConfig, Name: "retention.ms", Value: strptr("123456789")},
+	}, "detail-topic")
+	var aerr error
+	if err == nil {
+		_, aerr = alter.On("detail-topic", nil)
+	}
+	if err != nil || aerr != nil {
+		t.Fatalf("alter retention.ms: err=%v alter=%v", err, aerr)
+	}
+
+	d, err := cl.DescribeTopic(ctx, "detail-topic")
+	if err != nil {
+		t.Fatalf("DescribeTopic: %v", err)
+	}
+	if d.Name != "detail-topic" {
+		t.Fatalf("expected name detail-topic, got %q", d.Name)
+	}
+	if len(d.Partitions) != 3 {
+		t.Fatalf("expected 3 partitions, got %d: %+v", len(d.Partitions), d.Partitions)
+	}
+	for i, p := range d.Partitions {
+		if p.ID != int32(i) {
+			t.Fatalf("expected partitions sorted by id, got %+v at index %d", d.Partitions, i)
+		}
+		if p.Leader != 0 || !reflect.DeepEqual(p.Replicas, []int32{0}) || !reflect.DeepEqual(p.ISR, []int32{0}) {
+			t.Fatalf("unexpected topology for partition %d: leader=%d replicas=%v isr=%v", p.ID, p.Leader, p.Replicas, p.ISR)
+		}
+	}
+
+	cfg := map[string]string{}
+	for _, e := range d.Configs {
+		cfg[e.Key] = e.Value
+	}
+	if cfg["retention.ms"] != "123456789" {
+		t.Fatalf("expected overridden retention.ms 123456789, got configs %+v", cfg)
+	}
+	for _, key := range []string{"cleanup.policy", "segment.bytes"} {
+		if _, ok := cfg[key]; !ok {
+			t.Fatalf("expected whitelisted config %s in %+v", key, cfg)
+		}
+	}
+	for _, key := range []string{"compression.type", "message.timestamp.type"} {
+		if _, ok := cfg[key]; ok {
+			t.Fatalf("config %s is not whitelisted but leaked into %+v", key, cfg)
+		}
+	}
+}
+
+func TestDescribeTopicUnknownTopic(t *testing.T) {
+	c := newCluster(t, 1, "t1")
+	cl := newKafkaClient(t, c)
+	if _, err := cl.DescribeTopic(context.Background(), "no-such-topic"); err == nil {
+		t.Fatal("expected an error describing a missing topic")
 	}
 }
 

@@ -134,6 +134,16 @@ func (s *Service) ListTopics(ctx context.Context, id string) ([]*model.Topic, er
 	return kds.ListTopics(ctx)
 }
 
+// DescribeTopic describes one topic's partition topology and key configs,
+// auto-connecting if needed.
+func (s *Service) DescribeTopic(ctx context.Context, id, name string) (*model.TopicDetail, error) {
+	kds, err := s.kafka(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return kds.DescribeTopic(ctx, name)
+}
+
 // ListConsumerGroups lists consumer groups with lag on the connection.
 func (s *Service) ListConsumerGroups(ctx context.Context, id string) ([]*model.ConsumerGroup, error) {
 	kds, err := s.kafka(ctx, id)
