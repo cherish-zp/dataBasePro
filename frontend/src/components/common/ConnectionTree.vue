@@ -6,6 +6,7 @@ import { fuzzyScore } from '@/utils/fuzzy'
 import { useConnectionsStore, type ConnectionStatus } from '@/store/connections'
 import ConfirmDialog from './ConfirmDialog.vue'
 import TopicDetailDrawer from '@/components/kafka/TopicDetailDrawer.vue'
+import ClusterHealthPanel from '@/components/kafka/ClusterHealthPanel.vue'
 
 const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
@@ -247,6 +248,9 @@ const confirm = ref<{ connId: string; kind: ObjectKind; name: string } | null>(n
 // detailMeta holds the topic whose detail drawer is open; null hides it.
 const detailMeta = ref<{ connId: string; topic: string } | null>(null)
 
+// healthConnId holds the connection whose cluster health drawer is open; null hides it.
+const healthConnId = ref<string | null>(null)
+
 function askDelete(conn: Connection, kind: ObjectKind, name: string): void {
   confirm.value = { connId: conn.id, kind, name }
 }
@@ -294,6 +298,7 @@ async function executeDelete(): Promise<void> {
           <span class="toggle-icon">⏻</span>
           <span class="toggle-text">{{ isConnected(conn.id) ? '断开' : '连接' }}</span>
         </button>
+        <button v-if="conn.type === 'kafka'" class="conn-health" type="button" data-test="btn-cluster-health" title="集群健康" @click.stop="healthConnId = conn.id">🩺</button>
         <button class="conn-delete" type="button" data-test="btn-delete" @click.stop="emit('delete', conn.id)">🗑</button>
       </div>
 
@@ -471,6 +476,11 @@ async function executeDelete(): Promise<void> {
       :topic="detailMeta?.topic ?? ''"
       @close="detailMeta = null"
     />
+    <ClusterHealthPanel
+      :show="!!healthConnId"
+      :connection-id="healthConnId ?? ''"
+      @close="healthConnId = null"
+    />
     <ConfirmDialog
       :show="!!confirm"
       :message="confirm ? `确认删除 ${confirm.kind === 'topic' ? 'Topic' : 'Consumer Group'}「${confirm.name}」？此操作不可恢复。` : ''"
@@ -534,6 +544,8 @@ async function executeDelete(): Promise<void> {
 .conn-toggle .toggle-icon { font-size: 12px; line-height: 1; }
 .conn-delete { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; flex: none; }
 .conn-delete:hover { color: var(--danger); background: var(--danger-soft); }
+.conn-health { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; font-size: 12px; line-height: 1; flex: none; transition: color 0.15s ease, background 0.15s ease; }
+.conn-health:hover { color: var(--ok); background: var(--ok-soft); }
 .conn-children { margin-left: 16px; border-left: 1px solid var(--border); padding-left: 8px; }
 .topic-search { margin: 6px 0 2px; }
 .search-input {

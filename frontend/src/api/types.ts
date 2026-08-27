@@ -55,6 +55,26 @@ export interface TopicDetail {
   configs: TopicConfigEntry[]
 }
 
+// One broker surfaced by the cluster health panel.
+export interface BrokerInfo {
+  id: number
+  host: string
+  port: number
+  rack: string
+  version: string
+  online: boolean
+}
+
+// Broker topology, controller, Kafka version and under-replicated partitions
+// for one connection's cluster (mirrors model.ClusterHealth).
+export interface ClusterHealth {
+  cluster_id: string
+  controller_id: number
+  kafka_version: string
+  brokers: BrokerInfo[]
+  under_replicated_partitions: number
+}
+
 export interface Header {
   key: string
   value: string

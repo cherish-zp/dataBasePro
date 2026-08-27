@@ -18,6 +18,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     getConnection: vi.fn(async () => ({}) as never),
     listTopics: vi.fn(async () => []),
     describeTopic: vi.fn(async () => ({ name: "", partitions: [], configs: [] })),
+    describeCluster: vi.fn(async () => ({ cluster_id: "", controller_id: -1, kafka_version: "", brokers: [], under_replicated_partitions: 0 })),
     listConsumerGroups: vi.fn(async () => []),
     consumeMessages: vi.fn(async () => []),
     consumeMessagesByTimestamp: vi.fn(async () => []),
@@ -268,6 +269,33 @@ describe('ConnectionTree', () => {
     await vi.waitFor(() => {
       expect(api.describeTopic).toHaveBeenCalledTimes(2)
     })
+  })
+
+  it('opens the cluster health panel from the connection row', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.describeCluster as ReturnType<typeof vi.fn>).mockResolvedValue({
+      cluster_id: 'kfake',
+      controller_id: 0,
+      kafka_version: 'v3.7',
+      brokers: [{ id: 0, host: 'b0', port: 9092, rack: '', version: 'v3.7', online: true }],
+      under_replicated_partitions: 0,
+    })
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    expect(wrapper.find('[data-test="btn-cluster-health"]').exists()).toBe(true)
+    await wrapper.find('[data-test="btn-cluster-health"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.describeCluster).toHaveBeenCalledWith('a')
+    })
+    expect(wrapper.find('[data-test="cluster-health-panel"]').exists()).toBe(true)
+    // Closing hides the panel again.
+    await wrapper.find('[data-test="drawer-close"]').trigger('click')
+    expect(wrapper.find('[data-test="cluster-health-panel"]').exists()).toBe(false)
+  })
+
+  it('hides the cluster health entry for non-kafka connections', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('m', 'mysql')] } })
+    expect(wrapper.find('[data-test="btn-cluster-health"]').exists()).toBe(false)
   })
 
   it('opens and closes the topic creation form from the Topics header', async () => {

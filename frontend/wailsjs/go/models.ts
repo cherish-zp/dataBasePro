@@ -171,6 +171,66 @@ export namespace model {
 	        this.leader = source["leader"];
 	    }
 	}
+	export class BrokerInfo {
+	    id: number;
+	    host: string;
+	    port: number;
+	    rack: string;
+	    version: string;
+	    online: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new BrokerInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.rack = source["rack"];
+	        this.version = source["version"];
+	        this.online = source["online"];
+	    }
+	}
+	export class ClusterHealth {
+	    cluster_id: string;
+	    controller_id: number;
+	    kafka_version: string;
+	    brokers: BrokerInfo[];
+	    under_replicated_partitions: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClusterHealth(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cluster_id = source["cluster_id"];
+	        this.controller_id = source["controller_id"];
+	        this.kafka_version = source["kafka_version"];
+	        this.brokers = this.convertValues(source["brokers"], BrokerInfo);
+	        this.under_replicated_partitions = source["under_replicated_partitions"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class TLSConfig {
 	    enabled: boolean;
 	    ca_cert?: string;

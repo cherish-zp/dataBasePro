@@ -6,6 +6,7 @@ import type {
   KafkaConfig,
   Topic,
   TopicDetail,
+  ClusterHealth,
   ConsumerGroup,
   Message,
   ConsumeRequest,
@@ -29,6 +30,7 @@ export interface Api {
   disconnect(id: string): Promise<void>
   listTopics(id: string): Promise<Topic[]>
   describeTopic(id: string, topic: string): Promise<TopicDetail>
+  describeCluster(id: string): Promise<ClusterHealth>
   listConsumerGroups(id: string): Promise<ConsumerGroup[]>
   createTopic(req: CreateTopicRequest): Promise<void>
   deleteTopic(req: DeleteTopicRequest): Promise<void>
@@ -74,6 +76,9 @@ export class WailsApi implements Api {
   }
   describeTopic(id: string, topic: string): Promise<TopicDetail> {
     return App.DescribeTopic(id, topic) as unknown as Promise<TopicDetail>
+  }
+  describeCluster(id: string): Promise<ClusterHealth> {
+    return App.DescribeCluster(id) as unknown as Promise<ClusterHealth>
   }
   listConsumerGroups(id: string): Promise<ConsumerGroup[]> {
     return App.ListConsumerGroups(id) as unknown as Promise<ConsumerGroup[]>

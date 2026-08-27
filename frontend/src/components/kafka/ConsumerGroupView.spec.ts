@@ -17,6 +17,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     getConnection: vi.fn(async () => ({}) as never),
     listTopics: vi.fn(async () => []),
     describeTopic: vi.fn(async () => ({ name: "", partitions: [], configs: [] })),
+    describeCluster: vi.fn(async () => ({ cluster_id: "", controller_id: -1, kafka_version: "", brokers: [], under_replicated_partitions: 0 })),
     listConsumerGroups: vi.fn(async () => []),
     consumeMessages: vi.fn(async () => []),
     consumeMessagesByTimestamp: vi.fn(async () => []),

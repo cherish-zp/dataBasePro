@@ -7,6 +7,13 @@ vi.mock('../../wailsjs/go/backend/App', () => ({
     partitions: [{ id: 0, leader: 1, replicas: [1], isr: [1] }],
     configs: [{ key: 'retention.ms', value: '604800000' }],
   })),
+  DescribeCluster: vi.fn(async () => ({
+    cluster_id: 'kfake',
+    controller_id: 0,
+    kafka_version: 'v3.7',
+    brokers: [],
+    under_replicated_partitions: 0,
+  })),
   ConsumeMessages: vi.fn(async () => [{ partition: 0, offset: 1, timestamp: 1, key: 'k', value: 'v', headers: [] }]),
   CreateConnection: vi.fn(async (c: unknown) => ({ id: 'x', ...(c as object) })),
   GetPartitionLag: vi.fn(async () => ({ 0: 5 })),
@@ -51,6 +58,13 @@ describe('WailsApi delegation', () => {
     expect(got.name).toBe('orders')
     expect(got.partitions[0].leader).toBe(1)
     expect(got.configs[0].key).toBe('retention.ms')
+  })
+
+  it('delegates describeCluster with the connection id', async () => {
+    const got = await api.describeCluster('c-1')
+    expect(mocked.DescribeCluster).toHaveBeenCalledWith('c-1')
+    expect(got.cluster_id).toBe('kfake')
+    expect(got.kafka_version).toBe('v3.7')
   })
 })
 
