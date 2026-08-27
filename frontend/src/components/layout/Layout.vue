@@ -7,6 +7,7 @@ import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
 import ConsumerGroupView from '@/components/kafka/ConsumerGroupView.vue'
 import ProducerPanel from '@/components/kafka/ProducerPanel.vue'
 import SqlConsole from '@/components/kafka/SqlConsole.vue'
+import GlobalLagView from '@/components/kafka/GlobalLagView.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import HomeView from '@/views/HomeView.vue'
 
@@ -60,6 +61,10 @@ function openGroup(connectionId: string, group: string): void {
   tabs.openGroup(connectionId, group)
 }
 
+function openLag(connectionId: string): void {
+  tabs.openLag(connectionId)
+}
+
 function removeConnection(id: string): void {
   for (const t of [...tabs.openTabs]) {
     if (t.connectionId === id) tabs.closeTab(t.id)
@@ -92,6 +97,7 @@ function openSqlTab(): void {
           :connections="props.connections"
           @open-topic="openTopic"
           @open-group="openGroup"
+          @open-lag="openLag"
           @delete="removeConnection"
           @new="emit('new')"
         />
@@ -141,6 +147,9 @@ function openSqlTab(): void {
               :topic="active.topic ?? ''"
               :partitions="active.partitions ?? []"
             />
+          </template>
+          <template v-else-if="active.kind === 'lag'">
+            <GlobalLagView :connection-id="active.connectionId" />
           </template>
         </div>
       </main>

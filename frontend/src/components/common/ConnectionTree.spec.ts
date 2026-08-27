@@ -239,6 +239,19 @@ describe('ConnectionTree', () => {
     expect(wrapper.emitted('open-group')?.[0]).toEqual(['a', 'grp-1'])
   })
 
+  it('shows a Lag 总览 entry for an expanded kafka connection and emits open-lag on click', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    expect(wrapper.find('[data-test="btn-open-lag"]').exists()).toBe(false)
+    await expand(wrapper)
+    const entry = wrapper.find('[data-test="btn-open-lag"]')
+    expect(entry.exists()).toBe(true)
+    expect(entry.text()).toContain('Lag 总览')
+    await entry.trigger('click')
+    expect(wrapper.emitted('open-lag')?.[0]).toEqual(['a'])
+  })
+
   it('opens and closes the topic creation form from the Topics header', async () => {
     ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])

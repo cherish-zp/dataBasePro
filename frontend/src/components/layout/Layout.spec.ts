@@ -147,6 +147,15 @@ describe('Layout', () => {
     expect(tabs.some((t) => t.text().includes('SQL'))).toBe(true)
   })
 
+  it('opens the global lag overview as a full tab from the tree entry', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-lag', 'a')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="global-lag-view"]').exists()).toBe(true)
+    })
+    expect(wrapper.findAll('[data-test="tab"]').some((t) => t.text().includes('Lag 总览'))).toBe(true)
+  })
+
   it('closes tabs of a deleted connection and emits delete', async () => {
     const { wrapper } = mountLayout([conn('a'), conn('b')])
     emitTree(wrapper, 'open-topic', 'a', 't1', [])

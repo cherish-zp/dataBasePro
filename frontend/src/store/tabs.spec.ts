@@ -70,6 +70,24 @@ describe('tabs store', () => {
     expect(second.id).toBe(store.openTabs[0].id)
     expect(store.activeTabId).toBe(second.id)
   })
+
+  it('opens a lag overview tab per connection and activates it', () => {
+    const store = useTabsStore()
+    const tab = store.openLag('conn-1')
+    expect(tab.kind).toBe('lag')
+    expect(tab.title).toBe('Lag 总览')
+    expect(tab.connectionId).toBe('conn-1')
+    expect(store.activeTabId).toBe(tab.id)
+  })
+
+  it('dedupes an already open lag overview tab', () => {
+    const store = useTabsStore()
+    store.openLag('conn-1')
+    const second = store.openLag('conn-1')
+    expect(store.openTabs).toHaveLength(1)
+    expect(second.id).toBe(store.openTabs[0].id)
+    expect(store.activeTabId).toBe(second.id)
+  })
 })
 
   it('stores partition metadata on topic tabs', () => {

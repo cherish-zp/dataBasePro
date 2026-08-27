@@ -10,6 +10,7 @@ const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
   (e: 'open-topic', connectionId: string, topic: string, partitions: number[]): void
   (e: 'open-group', connectionId: string, group: string): void
+  (e: 'open-lag', connectionId: string): void
   (e: 'delete', connectionId: string): void
   (e: 'new'): void
 }>()
@@ -314,6 +315,17 @@ async function executeDelete(): Promise<void> {
             </button>
           </div>
 
+          <button
+            class="lag-entry"
+            type="button"
+            data-test="btn-open-lag"
+            title="查看该连接所有消费组的 Lag 积压总览"
+            @click="emit('open-lag', conn.id)"
+          >
+            <span class="lag-entry-icon">📊</span>
+            <span>Lag 总览</span>
+          </button>
+
           <template v-for="col in collectionsOf(conn.type)" :key="col.key">
             <template v-if="activeSection(conn.id, collectionsOf(conn.type)) === col.key">
             <component
@@ -601,6 +613,17 @@ async function executeDelete(): Promise<void> {
   background: var(--bg-hover); border-radius: 99px; padding: 0 6px; line-height: 16px;
 }
 .segmented-btn.active .segmented-count { color: var(--accent); }
+.lag-entry {
+  display: flex; align-items: center; gap: 6px;
+  width: 100%; box-sizing: border-box;
+  background: none; border: none; color: var(--text);
+  font-size: 13px; font-family: inherit; text-align: left; line-height: inherit;
+  padding: 4px 7px; margin-bottom: 2px; border-radius: 6px; cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.lag-entry:hover { background: var(--bg-hover); }
+.lag-entry:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.lag-entry .lag-entry-icon { flex: none; }
 .conn-loading { color: var(--text-secondary); padding: 5px; }
 .conn-error { color: var(--danger); padding: 5px; }
 </style>

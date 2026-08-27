@@ -1,0 +1,177 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mount } from '@vue/test-utils'
+import { setApi } from '@/api/client'
+import type { Api } from '@/api/client'
+import type { ConsumerGroup, PartitionLag } from '@/api/types'
+import GlobalLagView from './GlobalLagView.vue'
+
+function fakeApi(overrides: Partial<Api> = {}): Api {
+  return {
+    listConnections: vi.fn(async () => []),
+    createConnection: vi.fn(async (c: never) => c),
+    deleteConnection: vi.fn(async () => {}),
+    testConnection: vi.fn(async () => {}),
+    connect: vi.fn(async () => {}),
+    disconnect: vi.fn(async () => {}),
+    getConnection: vi.fn(async () => ({}) as never),
+    listTopics: vi.fn(async () => []),
+    listConsumerGroups: vi.fn(async () => []),
+    consumeMessages: vi.fn(async () => []),
+    consumeMessagesByTimestamp: vi.fn(async () => []),
+    getPartitionLag: vi.fn(async () => ({})),
+    listActiveProducers: vi.fn(async () => []),
+    listActiveConsumers: vi.fn(async () => []),
+    resetConsumerGroupOffset: vi.fn(async () => {}),
+    createTopic: vi.fn(async () => {}),
+    deleteTopic: vi.fn(async () => {}),
+    deleteConsumerGroup: vi.fn(async () => {}),
+    produceMessage: vi.fn(async () => {}),
+    ...overrides,
+  }
+}
+
+const part = (lag: number): PartitionLag => ({
+  partition: 0,
+  current_offset: 0,
+  log_end_offset: lag,
+  lag,
+})
+
+const grp = (name: string, topics: ConsumerGroup['topics']): ConsumerGroup => ({
+  name,
+  state: 'Stable',
+  topics,
+})
+
+describe('GlobalLagView', () => {
+  let api: Api
+  beforeEach(() => {
+    api = fakeApi()
+    setApi(api)
+  })
+
+  // loadDone waits for the mount-time fetch to settle so assertions run against
+  // the steady state instead of the brief pre-loading render.
+  async function loadDone(wrapper: ReturnType<typeof mount>): Promise<void> {
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="btn-refresh"]').attributes('disabled')).toBeUndefined()
+    })
+  }
+
+  it('fetches consumer groups on mount and renders group × topic rows sorted by lag desc', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([
+      grp('g-a', { orders: [part(150)], events: [part(2)] }),
+      grp('g-b', { payments: [part(2000)] }),
+    ])
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(3)
+    })
+    expect(api.listConsumerGroups).toHaveBeenCalledWith('a')
+    expect(
+      wrapper.findAll('[data-test="lag-row"]').map((r) => [
+        r.find('[data-test="row-group"]').text(),
+        r.find('[data-test="row-topic"]').text(),
+        r.find('[data-test="lag-value"]').text(),
+      ]),
+    ).toEqual([
+      ['g-b', 'payments', '2000'],
+      ['g-a', 'orders', '150'],
+      ['g-a', 'events', '2'],
+    ])
+  })
+
+  it('sums the partitions of one group × topic into a single row', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([
+      grp('g-a', { orders: [part(100), part(20), part(1)], payments: [part(7)] }),
+    ])
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    expect(wrapper.find('[data-test="lag-value"]').text()).toBe('121')
+  })
+
+  it('filters rows with fuzzy search over group and topic', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([
+      grp('g-a', { orders: [part(2000)] }),
+      grp('g-b', { 'user-events': [part(500)] }),
+    ])
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    // Matches by topic name.
+    await wrapper.find('[data-test="global-lag-search"]').setValue('ord')
+    expect(rowsOf(wrapper)).toEqual([['g-a', 'orders']])
+    // Matches by group name via dense subsequence ("gb" → "g-b").
+    await wrapper.find('[data-test="global-lag-search"]').setValue('gb')
+    expect(rowsOf(wrapper)).toEqual([['g-b', 'user-events']])
+    expect(wrapper.findAll('[data-test="lag-row"]')[0].find('[data-test="lag-value"]').text()).toBe('500')
+    // Clearing restores the full list.
+    await wrapper.find('[data-test="global-lag-search"]').setValue('')
+    expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+  })
+
+  it('shows a no-match message when the search has no results', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([
+      grp('g-a', { orders: [part(1)] }),
+    ])
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(1)
+    })
+    await wrapper.find('[data-test="global-lag-search"]').setValue('zzz')
+    expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="lag-empty"]').text()).toBe('无匹配 Group / Topic')
+  })
+
+  it('colors the total lag cell above thresholds (>1000 red, >100 orange)', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([
+      grp('g-a', { huge: [part(2000)], medium: [part(150)], small: [part(42)] }),
+    ])
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(3)
+    })
+    const values = wrapper.findAll('[data-test="lag-value"]')
+    expect(values[0].classes()).toContain('lag-danger')
+    expect(values[1].classes()).toContain('lag-warn')
+    expect(values[2].classes()).not.toContain('lag-danger')
+    expect(values[2].classes()).not.toContain('lag-warn')
+  })
+
+  it('shows an empty state when there is no lag data', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await loadDone(wrapper)
+    expect(wrapper.find('[data-test="lag-empty"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="lag-empty"]').text()).toBe('暂无 lag 数据')
+  })
+
+  it('surfaces api errors instead of failing silently', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="lag-error"]').text()).toContain('boom')
+    })
+  })
+
+  it('refetches consumer groups from the 刷新 button', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await loadDone(wrapper)
+    expect(api.listConsumerGroups).toHaveBeenCalledTimes(1)
+    await wrapper.find('[data-test="btn-refresh"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.listConsumerGroups).toHaveBeenCalledTimes(2)
+    })
+  })
+})
+
+function rowsOf(wrapper: ReturnType<typeof mount>): Array<[string, string]> {
+  return wrapper.findAll('[data-test="lag-row"]').map((r) => [
+    r.find('[data-test="row-group"]').text(),
+    r.find('[data-test="row-topic"]').text(),
+  ])
+}

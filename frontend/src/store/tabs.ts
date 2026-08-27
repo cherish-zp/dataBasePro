@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type TabKind = 'topic' | 'group' | 'sql'
+export type TabKind = 'topic' | 'group' | 'sql' | 'lag'
 
 export interface Tab {
   id: string
@@ -80,6 +80,26 @@ export const useTabsStore = defineStore('tabs', () => {
     return tab
   }
 
+  // openLag opens the global consumer-lag overview for a connection. There is
+  // one such tab per connection, so the id keys on the connection alone.
+  function openLag(connectionId: string): Tab {
+    const id = `lag:${connectionId}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'lag',
+      title: 'Lag 总览',
+      connectionId,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
   function closeTab(id: string): void {
     const idx = openTabs.value.findIndex((t) => t.id === id)
     if (idx < 0) return
@@ -93,5 +113,5 @@ export const useTabsStore = defineStore('tabs', () => {
     if (openTabs.value.some((t) => t.id === id)) activeTabId.value = id
   }
 
-  return { openTabs, activeTabId, openTopic, openSql, openGroup, closeTab, setActive }
+  return { openTabs, activeTabId, openTopic, openSql, openGroup, openLag, closeTab, setActive }
 })
