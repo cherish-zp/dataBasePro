@@ -102,11 +102,11 @@ function listText(nums: number[]): string {
   right: 0;
   bottom: 0;
   width: 460px;
-  background: rgba(255, 255, 255, 0.86);
+  background: var(--glass-bg);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   border-left: 1px solid var(--border);
-  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--glass-shadow);
   z-index: 1000;
   display: flex;
   flex-direction: column;
