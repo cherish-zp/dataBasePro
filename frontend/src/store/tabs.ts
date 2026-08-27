@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type TabKind = 'topic' | 'group' | 'sql' | 'lag'
+export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health'
 
 export interface Tab {
   id: string
@@ -100,6 +100,26 @@ export const useTabsStore = defineStore('tabs', () => {
     return tab
   }
 
+  // openHealth opens the cluster health overview for a connection. There is
+  // one such tab per connection, so the id keys on the connection alone.
+  function openHealth(connectionId: string): Tab {
+    const id = `health:${connectionId}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'health',
+      title: '集群健康',
+      connectionId,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
   function closeTab(id: string): void {
     const idx = openTabs.value.findIndex((t) => t.id === id)
     if (idx < 0) return
@@ -113,5 +133,5 @@ export const useTabsStore = defineStore('tabs', () => {
     if (openTabs.value.some((t) => t.id === id)) activeTabId.value = id
   }
 
-  return { openTabs, activeTabId, openTopic, openSql, openGroup, openLag, closeTab, setActive }
+  return { openTabs, activeTabId, openTopic, openSql, openGroup, openLag, openHealth, closeTab, setActive }
 })

@@ -88,6 +88,27 @@ describe('tabs store', () => {
     expect(second.id).toBe(store.openTabs[0].id)
     expect(store.activeTabId).toBe(second.id)
   })
+
+  it('opens a cluster health tab per connection and activates it', () => {
+    const store = useTabsStore()
+    const tab = store.openHealth('conn-1')
+    expect(tab.kind).toBe('health')
+    expect(tab.title).toBe('集群健康')
+    expect(tab.connectionId).toBe('conn-1')
+    expect(tab.id).toBe('health:conn-1')
+    expect(store.activeTabId).toBe(tab.id)
+  })
+
+  it('dedupes an already open cluster health tab and focuses it', () => {
+    const store = useTabsStore()
+    store.openHealth('conn-1')
+    const other = store.openTopic('conn-1', 't1')
+    store.setActive(other.id)
+    const second = store.openHealth('conn-1')
+    expect(store.openTabs.filter((t) => t.kind === 'health')).toHaveLength(1)
+    expect(second.id).toBe('health:conn-1')
+    expect(store.activeTabId).toBe('health:conn-1')
+  })
 })
 
   it('stores partition metadata on topic tabs', () => {

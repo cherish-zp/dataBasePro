@@ -271,26 +271,13 @@ describe('ConnectionTree', () => {
     })
   })
 
-  it('opens the cluster health panel from the connection row', async () => {
+  it('emits open-health from the connection row health entry and does not render a drawer itself', async () => {
     ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
-    ;(api.describeCluster as ReturnType<typeof vi.fn>).mockResolvedValue({
-      cluster_id: 'kfake',
-      controller_id: 0,
-      kafka_version: 'v3.7',
-      brokers: [{ id: 0, host: 'b0', port: 9092, rack: '', version: 'v3.7', online: true }],
-      under_replicated_partitions: 0,
-    })
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
     expect(wrapper.find('[data-test="btn-cluster-health"]').exists()).toBe(true)
     await wrapper.find('[data-test="btn-cluster-health"]').trigger('click')
-    await vi.waitFor(() => {
-      expect(api.describeCluster).toHaveBeenCalledWith('a')
-    })
-    expect(wrapper.find('[data-test="cluster-health-panel"]').exists()).toBe(true)
-    // Closing hides the panel again.
-    await wrapper.find('[data-test="drawer-close"]').trigger('click')
-    expect(wrapper.find('[data-test="cluster-health-panel"]').exists()).toBe(false)
+    expect(wrapper.emitted('open-health')?.[0]).toEqual(['a'])
   })
 
   it('hides the cluster health entry for non-kafka connections', () => {

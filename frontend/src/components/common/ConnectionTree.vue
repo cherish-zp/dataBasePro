@@ -6,13 +6,13 @@ import { fuzzyScore } from '@/utils/fuzzy'
 import { useConnectionsStore, type ConnectionStatus } from '@/store/connections'
 import ConfirmDialog from './ConfirmDialog.vue'
 import TopicDetailDrawer from '@/components/kafka/TopicDetailDrawer.vue'
-import ClusterHealthPanel from '@/components/kafka/ClusterHealthPanel.vue'
 
 const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
   (e: 'open-topic', connectionId: string, topic: string, partitions: number[]): void
   (e: 'open-group', connectionId: string, group: string): void
   (e: 'open-lag', connectionId: string): void
+  (e: 'open-health', connectionId: string): void
   (e: 'delete', connectionId: string): void
   (e: 'new'): void
 }>()
@@ -248,9 +248,6 @@ const confirm = ref<{ connId: string; kind: ObjectKind; name: string } | null>(n
 // detailMeta holds the topic whose detail drawer is open; null hides it.
 const detailMeta = ref<{ connId: string; topic: string } | null>(null)
 
-// healthConnId holds the connection whose cluster health drawer is open; null hides it.
-const healthConnId = ref<string | null>(null)
-
 function askDelete(conn: Connection, kind: ObjectKind, name: string): void {
   confirm.value = { connId: conn.id, kind, name }
 }
@@ -298,7 +295,7 @@ async function executeDelete(): Promise<void> {
           <span class="toggle-icon">⏻</span>
           <span class="toggle-text">{{ isConnected(conn.id) ? '断开' : '连接' }}</span>
         </button>
-        <button v-if="conn.type === 'kafka'" class="conn-health" type="button" data-test="btn-cluster-health" title="集群健康" @click.stop="healthConnId = conn.id">🩺</button>
+        <button v-if="conn.type === 'kafka'" class="conn-health" type="button" data-test="btn-cluster-health" title="集群健康" @click.stop="emit('open-health', conn.id)">🩺</button>
         <button class="conn-delete" type="button" data-test="btn-delete" @click.stop="emit('delete', conn.id)">🗑</button>
       </div>
 
@@ -475,11 +472,6 @@ async function executeDelete(): Promise<void> {
       :connection-id="detailMeta?.connId ?? ''"
       :topic="detailMeta?.topic ?? ''"
       @close="detailMeta = null"
-    />
-    <ClusterHealthPanel
-      :show="!!healthConnId"
-      :connection-id="healthConnId ?? ''"
-      @close="healthConnId = null"
     />
     <ConfirmDialog
       :show="!!confirm"

@@ -8,6 +8,7 @@ import ConsumerGroupView from '@/components/kafka/ConsumerGroupView.vue'
 import ProducerPanel from '@/components/kafka/ProducerPanel.vue'
 import SqlConsole from '@/components/kafka/SqlConsole.vue'
 import GlobalLagView from '@/components/kafka/GlobalLagView.vue'
+import ClusterHealthPanel from '@/components/kafka/ClusterHealthPanel.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import HomeView from '@/views/HomeView.vue'
 
@@ -65,6 +66,10 @@ function openLag(connectionId: string): void {
   tabs.openLag(connectionId)
 }
 
+function openHealth(connectionId: string): void {
+  tabs.openHealth(connectionId)
+}
+
 function removeConnection(id: string): void {
   for (const t of [...tabs.openTabs]) {
     if (t.connectionId === id) tabs.closeTab(t.id)
@@ -98,6 +103,7 @@ function openSqlTab(): void {
           @open-topic="openTopic"
           @open-group="openGroup"
           @open-lag="openLag"
+          @open-health="openHealth"
           @delete="removeConnection"
           @new="emit('new')"
         />
@@ -150,6 +156,9 @@ function openSqlTab(): void {
           </template>
           <template v-else-if="active.kind === 'lag'">
             <GlobalLagView :connection-id="active.connectionId" />
+          </template>
+          <template v-else-if="active.kind === 'health'">
+            <ClusterHealthPanel :connection-id="active.connectionId" />
           </template>
         </div>
       </main>

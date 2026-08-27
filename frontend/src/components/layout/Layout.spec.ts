@@ -41,9 +41,9 @@ const conn = (id: string): Connection => ({
   config: { bootstrap_servers: ['h:1'] }, created_at: 1, updated_at: 1,
 })
 
-function mountLayout(connections: Connection[] = []) {
+function mountLayout(connections: Connection[] = [], overrides: Partial<Api> = {}) {
   setActivePinia(createPinia())
-  const api = fakeApi()
+  const api = fakeApi(overrides)
   setApi(api)
   const wrapper = mount(Layout, { props: { connections } })
   return { wrapper, api }
@@ -156,6 +156,26 @@ describe('Layout', () => {
       expect(wrapper.find('[data-test="global-lag-view"]').exists()).toBe(true)
     })
     expect(wrapper.findAll('[data-test="tab"]').some((t) => t.text().includes('Lag 总览'))).toBe(true)
+  })
+
+  it('opens the cluster health overview as a full tab from the tree entry with the connection id', async () => {
+    const { wrapper, api } = mountLayout([conn('a')], {
+      describeCluster: vi.fn(async () => ({
+        cluster_id: 'kfake',
+        controller_id: 0,
+        kafka_version: 'v3.7',
+        brokers: [{ id: 0, host: 'b0', port: 9092, rack: '', version: 'v3.7', online: true }],
+        under_replicated_partitions: 0,
+      })),
+    })
+    emitTree(wrapper, 'open-health', 'a')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="broker-card"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="cluster-health-panel"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="sidebar"]').find('[data-test="cluster-health-panel"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="tab"]').some((t) => t.text().includes('集群健康'))).toBe(true)
+    expect(api.describeCluster).toHaveBeenCalledWith('a')
   })
 
   it('closes tabs of a deleted connection and emits delete', async () => {

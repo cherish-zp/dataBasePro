@@ -53,11 +53,9 @@ describe('ClusterHealthPanel', () => {
     setApi(api)
   })
 
-  it('fetches the cluster health when shown', async () => {
+  it('fetches the cluster health on mount for its connection', async () => {
     ;(api.describeCluster as ReturnType<typeof vi.fn>).mockResolvedValue(health())
-    const wrapper = mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: true },
-    })
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="broker-card"]').exists()).toBe(true)
     })
@@ -66,9 +64,7 @@ describe('ClusterHealthPanel', () => {
 
   it('renders summary values (version, controller, broker count)', async () => {
     ;(api.describeCluster as ReturnType<typeof vi.fn>).mockResolvedValue(health())
-    const wrapper = mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: true },
-    })
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="health-summary"]').exists()).toBe(true)
     })
@@ -77,18 +73,20 @@ describe('ClusterHealthPanel', () => {
     expect(wrapper.find('[data-test="summary-brokers"]').text()).toBe('3')
   })
 
-  it('flags under-replicated partitions in red when above zero', async () => {
-    ;(api.describeCluster as ReturnType<typeof vi.fn>).mockResolvedValue(health())
-    const wrapper = mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: true },
-    })
+  it('flags under-replicated partitions in red when above zero and resets when zero', async () => {
+    ;(api.describeCluster as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(health())
+      .mockResolvedValueOnce({ ...health(), under_replicated_partitions: 0 })
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="urp-value"]').classes()).toContain('danger')
     })
     expect(wrapper.find('[data-test="urp-value"]').text()).toBe('2')
 
-    ;(api.describeCluster as ReturnType<typeof vi.fn>).mockResolvedValue({ ...health(), under_replicated_partitions: 0 })
     await wrapper.setProps({ connectionId: 'b' })
+    await vi.waitFor(() => {
+      expect(api.describeCluster).toHaveBeenCalledWith('b')
+    })
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="urp-value"]').text()).toBe('0')
     })
@@ -97,9 +95,7 @@ describe('ClusterHealthPanel', () => {
 
   it('renders one card per broker with host, rack and version', async () => {
     ;(api.describeCluster as ReturnType<typeof vi.fn>).mockResolvedValue(health())
-    const wrapper = mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: true },
-    })
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="broker-card"]')).toHaveLength(3)
     })
@@ -115,9 +111,7 @@ describe('ClusterHealthPanel', () => {
 
   it('badges only the controller broker', async () => {
     ;(api.describeCluster as ReturnType<typeof vi.fn>).mockResolvedValue(health())
-    const wrapper = mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: true },
-    })
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="controller-badge"]')).toHaveLength(1)
     })
@@ -128,9 +122,7 @@ describe('ClusterHealthPanel', () => {
 
   it('marks offline brokers with an offline status and a danger class', async () => {
     ;(api.describeCluster as ReturnType<typeof vi.fn>).mockResolvedValue(health())
-    const wrapper = mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: true },
-    })
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="broker-card"]')).toHaveLength(3)
     })
@@ -147,9 +139,7 @@ describe('ClusterHealthPanel', () => {
       ...health(),
       brokers: [],
     })
-    const wrapper = mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: true },
-    })
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="health-empty"]').exists()).toBe(true)
     })
@@ -157,38 +147,28 @@ describe('ClusterHealthPanel', () => {
     expect(wrapper.find('[data-test="broker-card"]').exists()).toBe(false)
   })
 
-  it('shows a loading state before the fetch settles', () => {
+  it('shows a loading state before the fetch settles', async () => {
     ;(api.describeCluster as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
-    const wrapper = mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: true },
-    })
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
+    // The initial render commits before the mounted hook flips `loading`, so
+    // flush one tick to observe the in-flight state.
+    await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-test="health-loading"]').exists()).toBe(true)
   })
 
   it('surfaces api errors instead of failing silently', async () => {
     ;(api.describeCluster as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
-    const wrapper = mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: true },
-    })
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="health-error"]').text()).toContain('boom')
     })
-  })
-
-  it('does not fetch while hidden', () => {
-    mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: false },
-    })
-    expect(api.describeCluster).not.toHaveBeenCalled()
   })
 
   it('refetches when the selected connection changes and clears stale data', async () => {
     ;(api.describeCluster as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce(health())
       .mockResolvedValueOnce({ ...health(), brokers: [health().brokers[0]] })
-    const wrapper = mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: true },
-    })
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="broker-card"]')).toHaveLength(3)
     })
@@ -199,18 +179,5 @@ describe('ClusterHealthPanel', () => {
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="broker-card"]')).toHaveLength(1)
     })
-  })
-
-  it('emits close from the close button without collapsing its own state', async () => {
-    ;(api.describeCluster as ReturnType<typeof vi.fn>).mockResolvedValue(health())
-    const wrapper = mount(ClusterHealthPanel, {
-      props: { connectionId: 'a', show: true },
-    })
-    await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="broker-card"]').exists()).toBe(true)
-    })
-    await wrapper.find('[data-test="drawer-close"]').trigger('click')
-    expect(wrapper.emitted('close')).toHaveLength(1)
-    expect(wrapper.find('[data-test="broker-card"]').exists()).toBe(true)
   })
 })
