@@ -96,4 +96,31 @@ describe('ProducerPanel', () => {
     await wrapper.find('[data-test="modal-close"]').trigger('click')
     expect(wrapper.emitted('close')).toBeTruthy()
   })
+
+  it('prefills the topic from the active tab each time the panel opens', async () => {
+    setActivePinia(createPinia())
+    setApi(fakeApi())
+    const wrapper = mount(ProducerPanel, {
+      props: { show: false, connectionId: 'c', topic: 'a', partitions: [0, 1] },
+    })
+    await wrapper.setProps({ topic: 'bad_t81_test' })
+    await wrapper.setProps({ show: true })
+    expect((wrapper.find('[data-test="input-topic"]').element as HTMLInputElement).value).toBe('bad_t81_test')
+  })
+
+  it('follows topic prop changes while the panel stays open', async () => {
+    setActivePinia(createPinia())
+    setApi(fakeApi())
+    const wrapper = mount(ProducerPanel, {
+      props: { show: true, connectionId: 'c', topic: 'a', partitions: [0, 1] },
+    })
+    await wrapper.setProps({ topic: 'b' })
+    expect((wrapper.find('[data-test="input-topic"]').element as HTMLInputElement).value).toBe('b')
+  })
+
+  it('keeps a manually edited topic when no open or prop change happens', async () => {
+    const { wrapper } = mountPanel()
+    await wrapper.find('[data-test="input-topic"]').setValue('custom')
+    expect((wrapper.find('[data-test="input-topic"]').element as HTMLInputElement).value).toBe('custom')
+  })
 })

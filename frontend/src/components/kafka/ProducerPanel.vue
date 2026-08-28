@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, computed } from 'vue'
+import { reactive, ref, computed, watch } from 'vue'
 import { getApi } from '@/api/client'
 
 const props = defineProps<{
@@ -19,6 +19,12 @@ const form = reactive({
 const producing = ref(false)
 const ok = ref(false)
 const error = ref<string | null>(null)
+
+// 面板随活跃 tab 常驻挂载：打开时用当前 topic 预填；打开状态下切换 tab 时跟随。
+// 其余时刻不回写，保证输入框仍可自由编辑。
+watch([() => props.show, () => props.topic], ([show]) => {
+  if (show) form.topic = props.topic
+})
 
 const partitionOptions = computed(() => [
   { label: '自动', value: -1 },
