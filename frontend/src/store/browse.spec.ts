@@ -155,4 +155,90 @@ describe('browse store', () => {
     await store.fetch('t1', 'c', 'topic-a', { partition: 0, offset: OffsetLatest, limit: 10 })
     expect(store.stateFor('t1').error).toBe('no broker')
   })
+
+  it('has no jump target for a plain offset query', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([msg(0)])
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, offset: OffsetEarliest, limit: 10 })
+    expect(store.stateFor('t1').target).toBeNull()
+    expect(store.targetKey('t1')).toBeNull()
+  })
+
+  it('jumpToOffset fetches from the entered offset via the offset path and records the target', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([msg(42), msg(43)])
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, timestampMs: 1000, endTimeMs: 2000, limit: 10 })
+    expect(api.consumeMessagesByTimestamp).toHaveBeenCalledTimes(1)
+    await store.jumpToOffset('t1', 'c', 'topic-a', 42)
+    expect(api.consumeMessages).toHaveBeenLastCalledWith(
+      expect.objectContaining({ connection_id: 'c', topic: 'topic-a', partition: 0, offset: 42, limit: 10 }),
+    )
+    // The jump always reuses the offset query path, dropping the time range.
+    expect(api.consumeMessagesByTimestamp).toHaveBeenCalledTimes(1)
+    expect(store.stateFor('t1').target).toEqual({ offset: 42 })
+  })
+
+  it('jumpToOffset merges the given partition and limit from the filter bar', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([msg(42)])
+    const store = useBrowseStore()
+    await store.jumpToOffset('t1', 'c', 'topic-a', 42, { partition: 1, limit: 5 })
+    expect(api.consumeMessages).toHaveBeenLastCalledWith(
+      expect.objectContaining({ partition: 1, offset: 42, limit: 5 }),
+    )
+  })
+
+  it('positions the target at the record matching the jumped offset', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([msg(40), msg(42), msg(44)])
+    const store = useBrowseStore()
+    await store.jumpToOffset('t1', 'c', 'topic-a', 42)
+    expect(store.targetKey('t1')).toBe('0:42')
+  })
+
+  it('falls back to the first record when the jumped offset has no exact match', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([msg(45), msg(46)])
+    const store = useBrowseStore()
+    await store.jumpToOffset('t1', 'c', 'topic-a', 42)
+    expect(store.targetKey('t1')).toBe('0:45')
+  })
+
+  it('resolves to no row when the jump returns no messages', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const store = useBrowseStore()
+    await store.jumpToOffset('t1', 'c', 'topic-a', 42)
+    expect(store.stateFor('t1').target).toEqual({ offset: 42 })
+    expect(store.targetKey('t1')).toBeNull()
+  })
+
+  it('clears the target when a query not initiated by a jump runs', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([msg(42)])
+    const store = useBrowseStore()
+    await store.jumpToOffset('t1', 'c', 'topic-a', 42)
+    expect(store.targetKey('t1')).toBe('0:42')
+    await store.fetch('t1', 'c', 'topic-a', { offset: OffsetEarliest })
+    expect(store.stateFor('t1').target).toBeNull()
+    expect(store.targetKey('t1')).toBeNull()
+  })
+
+  it('targets the first record of a time-query result', async () => {
+    const first = { ...msg(3), timestamp: 1700000000000 }
+    const second = { ...msg(8), timestamp: 1700000005000 }
+    ;(api.consumeMessagesByTimestamp as ReturnType<typeof vi.fn>).mockResolvedValue([first, second])
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, timestampMs: 1700000000000, endTimeMs: null, limit: 10 })
+    expect(store.targetKey('t1')).toBe('0:3')
+  })
+
+  it('keeps the target across fetchMore appends', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([msg(0)]) // initial plain fetch
+      .mockResolvedValueOnce([msg(42), msg(43)]) // jump fetch
+      .mockResolvedValueOnce([msg(44)]) // fetchMore append
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, offset: OffsetEarliest, limit: 2 })
+    await store.jumpToOffset('t1', 'c', 'topic-a', 42)
+    await store.fetchMore('t1', 'c', 'topic-a')
+    expect(store.stateFor('t1').target).toEqual({ offset: 42 })
+    expect(store.stateFor('t1').messages.map((m) => m.offset)).toEqual([42, 43, 44])
+    expect(store.targetKey('t1')).toBe('0:42')
+  })
 })

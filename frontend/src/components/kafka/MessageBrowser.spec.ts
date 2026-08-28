@@ -179,8 +179,10 @@ describe('MessageBrowser', () => {
     })
     // The record after the end time is cut off client-side.
     await vi.waitFor(() => {
-      expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(1)
       expect(wrapper.find('[data-test="message-count"]').text()).toBe('1 条')
+      // The first returned record (earliest >= start) is the time-jump target.
+      expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(0)
+      expect(wrapper.find('[data-test="target-row"]').exists()).toBe(true)
     })
   })
 
@@ -276,5 +278,110 @@ describe('MessageBrowser', () => {
       exportJsonl(messages),
       JSONL_MIME,
     )
+  })
+
+  it('renders the jump offset input and a disabled jump button when empty', async () => {
+    const { wrapper } = mountBrowser()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="browse-empty"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="jump-offset-input"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="btn-jump-offset"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('enables the jump button only for a valid non-negative offset', async () => {
+    const { wrapper } = mountBrowser()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="browse-empty"]').exists()).toBe(true)
+    })
+    const input = wrapper.find('[data-test="jump-offset-input"]')
+    await input.setValue(-1)
+    expect(wrapper.find('[data-test="btn-jump-offset"]').attributes('disabled')).toBeDefined()
+    await input.setValue('abc')
+    expect(wrapper.find('[data-test="btn-jump-offset"]').attributes('disabled')).toBeDefined()
+    await input.setValue(42)
+    expect(wrapper.find('[data-test="btn-jump-offset"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('jumps to the entered offset and highlights the target row', async () => {
+    const consume = vi.fn(async () => [msg(40), msg(41), msg(42)])
+    const { wrapper, api } = mountBrowser({ consumeMessages: consume })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(3)
+    })
+    consume.mockResolvedValue([msg(40), msg(42), msg(43)])
+    await wrapper.find('[data-test="jump-offset-input"]').setValue(42)
+    await wrapper.find('[data-test="btn-jump-offset"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(consume).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 42 }))
+    })
+    expect(api.consumeMessagesByTimestamp).not.toHaveBeenCalled()
+    // Only the exact-match row is highlighted; the rest keep the row hook.
+    const target = wrapper.find('[data-test="target-row"]')
+    expect(target.exists()).toBe(true)
+    expect(target.text()).toContain('k42')
+    expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(2)
+  })
+
+  it('highlights the first record when the jumped offset is missing', async () => {
+    const consume = vi.fn(async () => [msg(0)])
+    const { wrapper } = mountBrowser({ consumeMessages: consume })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(1)
+    })
+    consume.mockResolvedValue([msg(45), msg(46)])
+    await wrapper.find('[data-test="jump-offset-input"]').setValue(42)
+    await wrapper.find('[data-test="btn-jump-offset"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="target-row"]').text()).toContain('k45')
+    })
+  })
+
+  it('scrolls the target row into view after the jump', async () => {
+    const original = window.HTMLElement.prototype.scrollIntoView
+    let scrolled: Element | null = null
+    window.HTMLElement.prototype.scrollIntoView = vi.fn(function (this: Element) {
+      scrolled = this
+    })
+    try {
+      const consume = vi.fn(async () => [msg(0)])
+      const { wrapper } = mountBrowser({ consumeMessages: consume })
+      await vi.waitFor(() => {
+        expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(1)
+      })
+      consume.mockResolvedValue([msg(40), msg(42)])
+      await wrapper.find('[data-test="jump-offset-input"]').setValue(42)
+      await wrapper.find('[data-test="btn-jump-offset"]').trigger('click')
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="target-row"]').exists()).toBe(true)
+      })
+      await flushPromises()
+      expect(scrolled).toBe(wrapper.find('[data-test="target-row"]').element)
+    } finally {
+      if (original) window.HTMLElement.prototype.scrollIntoView = original
+      else delete (window.HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView
+    }
+  })
+
+  it('keeps the target highlighted after load more appends rows', async () => {
+    const consume = vi.fn(async () => [msg(1), msg(2), msg(3)])
+    const { wrapper } = mountBrowser({ consumeMessages: consume })
+    await wrapper.find('[data-test="filter-partition"]').setValue(0)
+    await wrapper.find('[data-test="filter-limit"]').setValue(3)
+    await wrapper.find('[data-test="jump-offset-input"]').setValue(1)
+    await wrapper.find('[data-test="btn-jump-offset"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="target-row"]').text()).toContain('k1')
+    })
+    expect(wrapper.find('[data-test="btn-load-more"]').exists()).toBe(true)
+    consume.mockResolvedValueOnce([msg(4)])
+    await wrapper.find('[data-test="btn-load-more"]').trigger('click')
+    await flushPromises()
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('tbody tr')).toHaveLength(4)
+    })
+    // The jump highlight survives the pagination append.
+    expect(wrapper.findAll('[data-test="target-row"]')).toHaveLength(1)
+    expect(wrapper.find('[data-test="target-row"]').text()).toContain('k1')
   })
 })
