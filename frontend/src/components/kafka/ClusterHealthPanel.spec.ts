@@ -183,4 +183,16 @@ describe('ClusterHealthPanel', () => {
       expect(wrapper.findAll('[data-test="broker-card"]')).toHaveLength(1)
     })
   })
+
+  it('re-fetches when the unified refresh request increments', async () => {
+    ;(api.describeCluster as ReturnType<typeof vi.fn>).mockResolvedValue(health())
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
+    await vi.waitFor(() => {
+      expect(api.describeCluster).toHaveBeenCalledTimes(1)
+    })
+    await wrapper.setProps({ refreshRequest: 1 })
+    await vi.waitFor(() => {
+      expect(api.describeCluster).toHaveBeenCalledTimes(2)
+    })
+  })
 })

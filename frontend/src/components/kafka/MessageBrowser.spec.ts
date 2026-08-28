@@ -387,4 +387,16 @@ describe('MessageBrowser', () => {
     expect(wrapper.findAll('[data-test="target-row"]')).toHaveLength(1)
     expect(wrapper.find('[data-test="target-row"]').text()).toContain('k1')
   })
+
+  it('re-fetches when the unified refresh request increments', async () => {
+    const consume = vi.fn(async () => [msg(0)])
+    const { wrapper } = mountBrowser({ consumeMessages: consume })
+    await vi.waitFor(() => {
+      expect(consume).toHaveBeenCalledTimes(1)
+    })
+    await wrapper.setProps({ refreshRequest: 1 })
+    await vi.waitFor(() => {
+      expect(consume).toHaveBeenCalledTimes(2)
+    })
+  })
 })

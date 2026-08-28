@@ -191,6 +191,17 @@ describe('GlobalLagView', () => {
     expect(rowsOf(wrapper)).toEqual([['g-b', 'orders-b']])
     expect(wrapper.find('[data-test="lag-value"]').text()).toBe('20')
   })
+
+  it('re-fetches when the unified refresh request increments', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await loadDone(wrapper)
+    expect(api.listConsumerGroups).toHaveBeenCalledTimes(1)
+    await wrapper.setProps({ refreshRequest: 1 })
+    await vi.waitFor(() => {
+      expect(api.listConsumerGroups).toHaveBeenCalledTimes(2)
+    })
+  })
 })
 
 function rowsOf(wrapper: ReturnType<typeof mount>): Array<[string, string]> {

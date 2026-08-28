@@ -109,6 +109,64 @@ describe('tabs store', () => {
     expect(second.id).toBe('health:conn-1')
     expect(store.activeTabId).toBe('health:conn-1')
   })
+
+  it('closeOthers keeps only the requested tab and focuses it', () => {
+    const store = useTabsStore()
+    const a = store.openTopic('conn-1', 'a')
+    store.openTopic('conn-1', 'b')
+    store.openTopic('conn-1', 'c')
+    store.closeOthers(a.id)
+    expect(store.openTabs).toHaveLength(1)
+    expect(store.openTabs[0].id).toBe(a.id)
+    expect(store.activeTabId).toBe(a.id)
+  })
+
+  it('closeOthers is a no-op for an unknown tab', () => {
+    const store = useTabsStore()
+    store.openTopic('conn-1', 'a')
+    store.openTopic('conn-1', 'b')
+    store.closeOthers('nope')
+    expect(store.openTabs).toHaveLength(2)
+  })
+
+  it('closeAll clears every tab and the active selection', () => {
+    const store = useTabsStore()
+    store.openTopic('conn-1', 'a')
+    store.openTopic('conn-1', 'b')
+    store.openLag('conn-1')
+    store.closeAll()
+    expect(store.openTabs).toHaveLength(0)
+    expect(store.activeTabId).toBeNull()
+  })
+
+  it('move reorders tabs and keeps the active tab id', () => {
+    const store = useTabsStore()
+    const a = store.openTopic('conn-1', 'a')
+    const b = store.openTopic('conn-1', 'b')
+    const c = store.openTopic('conn-1', 'c')
+    const d = store.openTopic('conn-1', 'd')
+    store.setActive(a.id)
+    store.move(0, 2)
+    expect(store.openTabs.map((t) => t.id)).toEqual([b.id, c.id, a.id, d.id])
+    expect(store.activeTabId).toBe(a.id)
+  })
+
+  it('move with equal indices is a no-op', () => {
+    const store = useTabsStore()
+    const a = store.openTopic('conn-1', 'a')
+    const b = store.openTopic('conn-1', 'b')
+    store.move(1, 1)
+    expect(store.openTabs.map((t) => t.id)).toEqual([a.id, b.id])
+  })
+
+  it('move ignores out-of-range indices', () => {
+    const store = useTabsStore()
+    const a = store.openTopic('conn-1', 'a')
+    const b = store.openTopic('conn-1', 'b')
+    store.move(0, 99)
+    store.move(-1, 1)
+    expect(store.openTabs.map((t) => t.id)).toEqual([a.id, b.id])
+  })
 })
 
   it('stores partition metadata on topic tabs', () => {

@@ -277,6 +277,26 @@ describe('ConsumerGroupView', () => {
     expect(wrapper.find('[data-test="trend-latest"]').text()).toBe('8')
     expect(getPartitionLag).toHaveBeenCalledWith('c', 'orders', 'grp-1')
   })
+
+  it('re-fetches group data when the unified refresh request increments', async () => {
+    const describe = vi.fn(async () => ({
+      group: 'grp-1',
+      state: 'Stable',
+      protocol_type: 'consumer',
+      members: [],
+    }))
+    const { wrapper } = mountView(
+      { listConsumerGroups: vi.fn(async () => [grp()]), describeGroup: describe },
+      { group: 'grp-1' },
+    )
+    await vi.waitFor(() => {
+      expect(describe).toHaveBeenCalledTimes(1)
+    })
+    await wrapper.setProps({ refreshRequest: 1 })
+    await vi.waitFor(() => {
+      expect(describe).toHaveBeenCalledTimes(2)
+    })
+  })
 })
 
   it('renders active producers and merges consumers into the lag table', async () => {

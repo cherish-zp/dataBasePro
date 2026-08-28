@@ -8,6 +8,7 @@ import type { Connection } from '@/api/types'
 import Layout from './Layout.vue'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
 import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
+import { useTabsStore } from '@/store/tabs'
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
   return {
@@ -269,5 +270,173 @@ describe('Layout', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
     await nextTick()
     expect(document.body.querySelector('[data-test="command-palette"]')).toBeNull()
+  })
+
+  it('opens a context menu on right-click with close / close-others / close-all / refresh', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 'orders', [0, 1])
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="message-browser"]').exists()).toBe(true)
+    })
+    await wrapper.findAll('[data-test="tab"]')[0].trigger('contextmenu', { clientX: 100, clientY: 120 })
+    const menu = document.body.querySelector('[data-test="tab-context-menu"]') as HTMLElement
+    expect(menu).not.toBeNull()
+    // Positioned at the cursor.
+    expect(menu.style.left).toBe('100px')
+    expect(menu.style.top).toBe('120px')
+    expect(menu.querySelector('[data-test="context-close"]')).not.toBeNull()
+    expect(menu.querySelector('[data-test="context-close-others"]')).not.toBeNull()
+    expect(menu.querySelector('[data-test="context-close-all"]')).not.toBeNull()
+    expect(menu.querySelector('[data-test="context-refresh"]')).not.toBeNull()
+  })
+
+  it('closes the right-clicked tab via the context menu', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 't1', [])
+    emitTree(wrapper, 'open-topic', 'a', 't2', [])
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(2)
+    })
+    await wrapper.findAll('[data-test="tab"]')[0].trigger('contextmenu', { clientX: 10, clientY: 10 })
+    ;(document.body.querySelector('[data-test="context-close"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(1)
+    })
+    expect(wrapper.find('[data-test="tab"]').text()).toContain('t2')
+  })
+
+  it('keeps only the right-clicked tab via 关闭其他', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 't1', [])
+    emitTree(wrapper, 'open-topic', 'a', 't2', [])
+    emitTree(wrapper, 'open-topic', 'a', 't3', [])
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(3)
+    })
+    await wrapper.findAll('[data-test="tab"]')[0].trigger('contextmenu', { clientX: 10, clientY: 10 })
+    ;(document.body.querySelector('[data-test="context-close-others"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(1)
+    })
+    expect(wrapper.find('[data-test="tab"]').text()).toContain('t1')
+  })
+
+  it('closes every tab via 关闭全部', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 't1', [])
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(1)
+    })
+    await wrapper.find('[data-test="tab"]').trigger('contextmenu', { clientX: 10, clientY: 10 })
+    ;(document.body.querySelector('[data-test="context-close-all"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="home-view"]').exists()).toBe(true)
+    })
+    expect(document.body.querySelector('[data-test="tab-context-menu"]')).toBeNull()
+  })
+
+  it('hides the refresh item on the context menu of a sql tab', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    const tabs = useTabsStore()
+    tabs.openSql('a', 'orders')
+    await nextTick()
+    await wrapper.find('[data-test="tab"]').trigger('contextmenu', { clientX: 10, clientY: 10 })
+    const menu = document.body.querySelector('[data-test="tab-context-menu"]') as HTMLElement
+    expect(menu).not.toBeNull()
+    expect(menu.querySelector('[data-test="context-refresh"]')).toBeNull()
+    expect(menu.querySelector('[data-test="context-close"]')).not.toBeNull()
+  })
+
+  it('refreshes the right-clicked tab through the context menu', async () => {
+    const { wrapper, api } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 'orders', [0, 1])
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalled()
+    })
+    await wrapper.findAll('[data-test="tab"]')[0].trigger('contextmenu', { clientX: 10, clientY: 10 })
+    ;(document.body.querySelector('[data-test="context-refresh"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('closes the context menu on Escape', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 't1', [])
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(1)
+    })
+    await wrapper.find('[data-test="tab"]').trigger('contextmenu', { clientX: 10, clientY: 10 })
+    expect(document.body.querySelector('[data-test="tab-context-menu"]')).not.toBeNull()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="tab-context-menu"]')).toBeNull()
+  })
+
+  it('closes the context menu on an outside click', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 't1', [])
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(1)
+    })
+    await wrapper.find('[data-test="tab"]').trigger('contextmenu', { clientX: 10, clientY: 10 })
+    expect(document.body.querySelector('[data-test="tab-context-menu"]')).not.toBeNull()
+    document.body.click()
+    await nextTick()
+    expect(document.body.querySelector('[data-test="tab-context-menu"]')).toBeNull()
+  })
+
+  it('refreshes the active topic from the top bar refresh button', async () => {
+    const { wrapper, api } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 'orders', [0, 1])
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalled()
+    })
+    const btn = wrapper.find('[data-test="btn-refresh-active"]')
+    expect(btn.attributes('disabled')).toBeUndefined()
+    await btn.trigger('click')
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('disables the top bar refresh button for a sql tab', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    const tabs = useTabsStore()
+    tabs.openSql('a', 'orders')
+    await nextTick()
+    expect(wrapper.find('[data-test="btn-refresh-active"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('reorders tabs by drag and drop', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 't1', [])
+    emitTree(wrapper, 'open-topic', 'a', 't2', [])
+    emitTree(wrapper, 'open-topic', 'a', 't3', [])
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(3)
+    })
+    const titles = () => wrapper.findAll('[data-test="tab"]').map((t) => t.find('[data-test="tab-title"]').text())
+    expect(titles()).toEqual(['t1', 't2', 't3'])
+    await wrapper.findAll('[data-test="tab"]')[0].trigger('dragstart')
+    await wrapper.findAll('[data-test="tab"]')[2].trigger('dragover')
+    await wrapper.findAll('[data-test="tab"]')[2].trigger('drop')
+    await nextTick()
+    expect(titles()).toEqual(['t2', 't1', 't3'])
+  })
+
+  it('marks the dragged tab as dragging and clears it on dragend', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 't1', [])
+    emitTree(wrapper, 'open-topic', 'a', 't2', [])
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(2)
+    })
+    const tab = wrapper.findAll('[data-test="tab"]')[0]
+    await tab.trigger('dragstart')
+    expect(tab.classes()).toContain('dragging')
+    await tab.trigger('dragend')
+    await nextTick()
+    expect(tab.classes()).not.toContain('dragging')
   })
 })
