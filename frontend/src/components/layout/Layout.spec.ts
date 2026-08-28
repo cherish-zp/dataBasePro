@@ -243,4 +243,31 @@ describe('Layout', () => {
     await nextTick()
     expect(wrapper.classes()).not.toContain('resizing')
   })
+
+  it('opens the command palette with cmd+k no matter where focus sits', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    expect(document.body.querySelector('[data-test="command-palette"]')).toBeNull()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="command-palette"]')).not.toBeNull()
+    wrapper.unmount()
+  })
+
+  it('ignores a plain k press without the shortcut modifier', async () => {
+    mountLayout([conn('a')])
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k' }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="command-palette"]')).toBeNull()
+  })
+
+  it('stops listening for cmd+k after unmount', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="command-palette"]')).not.toBeNull()
+    wrapper.unmount()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="command-palette"]')).toBeNull()
+  })
 })

@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useTabsStore, type Tab } from '@/store/tabs'
 import type { Connection } from '@/api/types'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
+import CommandPalette from '@/components/common/CommandPalette.vue'
 import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
 import ConsumerGroupView from '@/components/kafka/ConsumerGroupView.vue'
 import ProducerPanel from '@/components/kafka/ProducerPanel.vue'
@@ -173,6 +174,7 @@ function openSqlTab(): void {
       @close="showProducer = false"
     />
     <SettingsPanel :show="showSettings" @close="showSettings = false" />
+    <CommandPalette />
   </div>
 </template>
 
