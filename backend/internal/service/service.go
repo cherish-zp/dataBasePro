@@ -226,6 +226,16 @@ func (s *Service) ProduceMessage(ctx context.Context, id, topic string, partitio
 	return kds.ProduceMessage(ctx, topic, partition, key, value)
 }
 
+// ProduceMessages publishes a batch of records to the connection and returns
+// one result per message.
+func (s *Service) ProduceMessages(ctx context.Context, id, topic string, partition int32, messages []model.BatchProduceMessage) ([]*model.ProduceResult, error) {
+	kds, err := s.kafka(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return kds.ProduceMessages(ctx, topic, partition, messages)
+}
+
 // kafka returns the pooled Kafka client for id, auto-connecting using the
 // stored definition when it is not yet pooled.
 func (s *Service) kafka(ctx context.Context, id string) (KafkaDataSource, error) {

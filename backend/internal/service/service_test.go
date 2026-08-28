@@ -22,6 +22,7 @@ type fakeKafka struct {
 	resetCalls []model.ResetOffsetMode
 	detail     *model.TopicDetail
 	health     *model.ClusterHealth
+	batchCalls [][]model.BatchProduceMessage
 }
 
 func (f *fakeKafka) ListTopics(context.Context) ([]*model.Topic, error)      { return f.topics, nil }
@@ -46,6 +47,15 @@ func (f *fakeKafka) ResetConsumerGroupOffset(_ context.Context, _, _ string, mod
 }
 func (f *fakeKafka) ProduceMessage(_ context.Context, _ string, _ int32, _, _ []byte) error {
 	return nil
+}
+
+func (f *fakeKafka) ProduceMessages(_ context.Context, _ string, _ int32, msgs []model.BatchProduceMessage) ([]*model.ProduceResult, error) {
+	f.batchCalls = append(f.batchCalls, msgs)
+	out := make([]*model.ProduceResult, len(msgs))
+	for i := range msgs {
+		out[i] = &model.ProduceResult{Index: i, Partition: 0, Offset: int64(i)}
+	}
+	return out, nil
 }
 func (f *fakeKafka) ListActiveProducers(context.Context, string) ([]*model.ActiveProducer, error) {
 	return f.producers, nil
@@ -291,6 +301,32 @@ func TestProduceMessageDelegates(t *testing.T) {
 	c, _ := svc.CreateConnection(ctx, sampleConn())
 	if err := svc.ProduceMessage(ctx, c.ID, "t1", 0, []byte("k"), []byte("v")); err != nil {
 		t.Fatalf("ProduceMessage: %v", err)
+	}
+}
+
+func TestProduceMessagesDelegates(t *testing.T) {
+	svc, f := newTestService(t)
+	ctx := context.Background()
+	c, err := svc.CreateConnection(ctx, sampleConn())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	msgs := []model.BatchProduceMessage{
+		{Key: "k-1", Value: "v-1"},
+		{Key: "k-2", Value: "v-2"},
+	}
+	got, err := svc.ProduceMessages(ctx, c.ID, "t1", 0, msgs)
+	if err != nil {
+		t.Fatalf("ProduceMessages: %v", err)
+	}
+	if len(f.k.batchCalls) != 1 {
+		t.Fatalf("expected 1 batch call, got %d", len(f.k.batchCalls))
+	}
+	if len(f.k.batchCalls[0]) != 2 || f.k.batchCalls[0][0].Key != "k-1" || f.k.batchCalls[0][1].Value != "v-2" {
+		t.Fatalf("batch must be delegated verbatim, got %+v", f.k.batchCalls)
+	}
+	if len(got) != 2 || got[0].Index != 0 || got[1].Index != 1 || got[1].Offset != 1 {
+		t.Fatalf("unexpected results: %+v", got)
 	}
 }
 

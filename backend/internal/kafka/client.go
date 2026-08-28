@@ -228,6 +228,32 @@ func (c *Client) ProduceMessage(ctx context.Context, topic string, partition int
 	return nil
 }
 
+// ProduceMessages publishes a batch of records sequentially over the same
+// writer as ProduceMessage and returns one result per message. Errors are
+// reported per item in ProduceResult.Error; the call itself only fails when
+// results cannot be collected at all. A partition < 0 lets the client choose
+// the partition.
+func (c *Client) ProduceMessages(ctx context.Context, topic string, partition int32, messages []model.BatchProduceMessage) ([]*model.ProduceResult, error) {
+	results := make([]*model.ProduceResult, 0, len(messages))
+	for i, msg := range messages {
+		res := &model.ProduceResult{Index: i}
+		rec := &kgo.Record{Topic: topic, Key: []byte(msg.Key), Value: []byte(msg.Value)}
+		if partition >= 0 {
+			rec.Partition = partition
+		}
+		pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := c.kcl.ProduceSync(pctx, rec).FirstErr(); err != nil {
+			res.Error = fmt.Sprintf("produce record: %v", err)
+		} else {
+			res.Partition = rec.Partition
+			res.Offset = rec.Offset
+		}
+		cancel()
+		results = append(results, res)
+	}
+	return results, nil
+}
+
 // fetch spins up a short-lived consumer pinned to the given partitions and
 // collects up to limit records.
 func (c *Client) fetch(ctx context.Context, topic string, offsets map[int32]kgo.Offset, limit int) ([]*model.Message, error) {

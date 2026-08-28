@@ -78,6 +78,10 @@ export function ProduceMessage(arg1) {
   return window['go']['backend']['App']['ProduceMessage'](arg1);
 }
 
+export function ProduceMessages(arg1) {
+  return window['go']['backend']['App']['ProduceMessages'](arg1);
+}
+
 export function ResetConsumerGroupOffset(arg1) {
   return window['go']['backend']['App']['ResetConsumerGroupOffset'](arg1);
 }

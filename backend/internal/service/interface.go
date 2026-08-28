@@ -34,6 +34,7 @@ type KafkaDataSource interface {
 	ListActiveConsumers(ctx context.Context, group, topic string) ([]*model.ActiveConsumer, error)
 	ResetConsumerGroupOffset(ctx context.Context, group, topic string, mode model.ResetOffsetMode, timestampMS int64) error
 	ProduceMessage(ctx context.Context, topic string, partition int32, key, value []byte) error
+	ProduceMessages(ctx context.Context, topic string, partition int32, messages []model.BatchProduceMessage) ([]*model.ProduceResult, error)
 }
 
 // ClientFactory creates KafkaDataSource instances; it exists so callers can

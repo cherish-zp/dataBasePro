@@ -91,6 +91,14 @@ type ProduceRequest struct {
 	Value        string `json:"value"`
 }
 
+// BatchProduceRequest carries the parameters for publishing a batch of records.
+type BatchProduceRequest struct {
+	ConnectionID string                      `json:"connection_id"`
+	Topic        string                      `json:"topic"`
+	Partition    int32                       `json:"partition"`
+	Messages     []model.BatchProduceMessage `json:"messages"`
+}
+
 // CreateTopic creates a topic on a connection's cluster.
 func (a *App) CreateTopic(req CreateTopicRequest) error {
 	ctx, cancel := a.newContext()
@@ -237,4 +245,12 @@ func (a *App) ProduceMessage(req ProduceRequest) error {
 	ctx, cancel := a.newContext()
 	defer cancel()
 	return a.svc.ProduceMessage(ctx, req.ConnectionID, req.Topic, req.Partition, []byte(req.Key), []byte(req.Value))
+}
+
+// ProduceMessages publishes a batch of records to a connection and returns one
+// result per message.
+func (a *App) ProduceMessages(req BatchProduceRequest) ([]*model.ProduceResult, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.ProduceMessages(ctx, req.ConnectionID, req.Topic, req.Partition, req.Messages)
 }

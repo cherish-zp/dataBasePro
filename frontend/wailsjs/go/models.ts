@@ -16,6 +16,42 @@ export namespace backend {
 	        this.topic = source["topic"];
 	    }
 	}
+	export class BatchProduceRequest {
+	    connection_id: string;
+	    topic: string;
+	    partition: number;
+	    messages: model.BatchProduceMessage[];
+	
+	    static createFrom(source: any = {}) {
+	        return new BatchProduceRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.topic = source["topic"];
+	        this.partition = source["partition"];
+	        this.messages = this.convertValues(source["messages"], model.BatchProduceMessage);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ConsumeRequest {
 	    connection_id: string;
 	    topic: string;
@@ -169,6 +205,20 @@ export namespace model {
 	        this.last_sequence = source["last_sequence"];
 	        this.last_timestamp = source["last_timestamp"];
 	        this.leader = source["leader"];
+	    }
+	}
+	export class BatchProduceMessage {
+	    key: string;
+	    value: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BatchProduceMessage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.value = source["value"];
 	    }
 	}
 	export class BrokerInfo {
@@ -468,6 +518,24 @@ export namespace model {
 	        this.member_id = source["member_id"];
 	        this.client_id = source["client_id"];
 	        this.client_host = source["client_host"];
+	    }
+	}
+	export class ProduceResult {
+	    index: number;
+	    partition: number;
+	    offset: number;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProduceResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.index = source["index"];
+	        this.partition = source["partition"];
+	        this.offset = source["offset"];
+	        this.error = source["error"];
 	    }
 	}
 	

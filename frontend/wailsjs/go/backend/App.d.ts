@@ -41,6 +41,8 @@ export function ListTopics(arg1:string):Promise<Array<model.Topic>>;
 
 export function ProduceMessage(arg1:backend.ProduceRequest):Promise<void>;
 
+export function ProduceMessages(arg1:backend.BatchProduceRequest):Promise<Array<model.ProduceResult>>;
+
 export function ResetConsumerGroupOffset(arg1:backend.ResetOffsetRequest):Promise<void>;
 
 export function TestConnection(arg1:model.KafkaConfig):Promise<void>;
