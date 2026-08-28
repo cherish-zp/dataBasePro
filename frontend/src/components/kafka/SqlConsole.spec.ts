@@ -85,6 +85,40 @@ describe('SqlConsole', () => {
     expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toContain('orders')
   })
 
+  // Tab switch reuses the mounted console (only props change), so the topic
+  // watcher must rebind the editor template and wipe stale results.
+  it('rebinds the query and clears results when the tab switches topic', async () => {
+    const { wrapper, api } = mountConsole({
+      consumeMessages: vi.fn(async () => [msg('k1', 'v1')]),
+    })
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-test="sql-row"]')).toHaveLength(1)
+
+    await wrapper.setProps({ topic: 'bad_t81_test' })
+    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
+      'SELECT * FROM bad_t81_test LIMIT 100',
+    )
+    expect(wrapper.findAll('[data-test="sql-row"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="sql-empty"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await flushPromises()
+    expect(api.consumeMessages).toHaveBeenLastCalledWith(expect.objectContaining({ topic: 'bad_t81_test' }))
+  })
+
+  // Documents current watcher semantics: an in-progress user edit is discarded
+  // on topic change (no dirty-state guard), so any future guard would surface
+  // here instead of silently changing behavior.
+  it('overwrites a user-edited query when the topic changes', async () => {
+    const { wrapper } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'k1'")
+    await wrapper.setProps({ topic: 'bad_t81_test' })
+    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
+      'SELECT * FROM bad_t81_test LIMIT 100',
+    )
+  })
+
   it('runs a query and applies a WHERE key filter', async () => {
     const { wrapper, api } = mountConsole({
       consumeMessages: vi.fn(async () => [msg('k1', 'v1'), msg('k2', 'v2'), msg('k1', 'v3')]),
