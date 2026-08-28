@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
 import type { Connection, Topic, ConsumerGroup } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
+import { CSV_MIME, downloadFile, exportCsv, type ExportColumn } from '@/utils/export'
 import { useConnectionsStore, type ConnectionStatus } from '@/store/connections'
 import ConfirmDialog from './ConfirmDialog.vue'
 import TopicDetailDrawer from '@/components/kafka/TopicDetailDrawer.vue'
@@ -109,7 +110,13 @@ async function toggle(conn: Connection): Promise<void> {
   const id = conn.id
   const nowExpanded = !expanded.value[id]
   expanded.value[id] = nowExpanded
-  if (nowExpanded && !topicsByConn.value[id] && conn.type === 'kafka') {
+  if (!nowExpanded) {
+    // Multi-select state is ephemeral and scoped to the visible tree node, so
+    // collapsing the connection discards it.
+    clearBatchState(id)
+    return
+  }
+  if (!topicsByConn.value[id] && conn.type === 'kafka') {
     await load(id)
   }
 }
@@ -242,14 +249,96 @@ async function submitCreate(conn: Connection): Promise<void> {
 
 // confirm holds the pending destructive action. The dialog is rendered by
 // Wails (window.confirm is silently unsupported in WKWebView and always
-// returns false), so deletion is confirmed in-app instead.
-const confirm = ref<{ connId: string; kind: ObjectKind; name: string } | null>(null)
+// returns false), so deletion is confirmed in-app instead. `names` marks a
+// batch delete of several topics at once.
+const confirm = ref<{ connId: string; kind: ObjectKind; name: string; names?: string[] } | null>(null)
+
+const confirmMessage = computed(() => {
+  const pending = confirm.value
+  if (!pending) return ''
+  if (pending.names) return `确认删除 ${pending.names.length} 个 Topic？此操作不可恢复。`
+  return `确认删除 ${pending.kind === 'topic' ? 'Topic' : 'Consumer Group'}「${pending.name}」？此操作不可恢复。`
+})
+
+const confirmText = computed(() => {
+  const pending = confirm.value
+  if (!pending) return '删除'
+  if (pending.names) return `删除 ${pending.names.length} 个 Topic`
+  return `删除 ${pending.kind === 'topic' ? 'Topic' : '消费组'}`
+})
 
 // detailMeta holds the topic whose detail drawer is open; null hides it.
 const detailMeta = ref<{ connId: string; topic: string } | null>(null)
 
 function askDelete(conn: Connection, kind: ObjectKind, name: string): void {
   confirm.value = { connId: conn.id, kind, name }
+}
+
+// Multi-select state is per connection and intentionally ephemeral: it lives
+// here (not in the stores) and is cleared when leaving select mode, after a
+// batch delete, or when the connection is collapsed.
+const selectModeByConn = ref<Record<string, boolean>>({})
+const selectedByConn = ref<Record<string, string[]>>({})
+const batchFeedbackByConn = ref<Record<string, BatchDeleteFeedback | null>>({})
+
+interface BatchDeleteFeedback {
+  deleted: number
+  failed: number
+  failures: { name: string; error: string }[]
+}
+
+function isSelectMode(connId: string): boolean {
+  return !!selectModeByConn.value[connId]
+}
+
+function selectedOf(connId: string): string[] {
+  return selectedByConn.value[connId] ?? []
+}
+
+function batchFeedback(connId: string): BatchDeleteFeedback | null {
+  return batchFeedbackByConn.value[connId] ?? null
+}
+
+function clearBatchState(connId: string): void {
+  selectModeByConn.value[connId] = false
+  selectedByConn.value[connId] = []
+  batchFeedbackByConn.value[connId] = null
+}
+
+function toggleSelectMode(conn: Connection): void {
+  if (isSelectMode(conn.id)) {
+    clearBatchState(conn.id)
+  } else {
+    selectModeByConn.value[conn.id] = true
+    batchFeedbackByConn.value[conn.id] = null
+  }
+}
+
+function isTopicSelected(connId: string, name: string): boolean {
+  return selectedOf(connId).includes(name)
+}
+
+function toggleTopicSelected(connId: string, name: string): void {
+  const cur = selectedOf(connId)
+  selectedByConn.value[connId] = cur.includes(name)
+    ? cur.filter((n) => n !== name)
+    : [...cur, name]
+}
+
+function isAllSelected(connId: string): boolean {
+  const list = topicsByConn.value[connId] ?? []
+  return list.length > 0 && list.every((t) => isTopicSelected(connId, t.name))
+}
+
+function toggleSelectAll(connId: string): void {
+  const list = topicsByConn.value[connId] ?? []
+  selectedByConn.value[connId] = isAllSelected(connId) ? [] : list.map((t) => t.name)
+}
+
+function askBatchDelete(connId: string): void {
+  const names = selectedOf(connId)
+  if (names.length === 0) return
+  confirm.value = { connId, kind: 'topic', name: '', names }
 }
 
 async function executeDelete(): Promise<void> {
@@ -259,6 +348,10 @@ async function executeDelete(): Promise<void> {
   const conn = props.connections.find((c) => c.id === pending.connId)
   if (!conn) return
   try {
+    if (pending.names) {
+      await executeBatchDelete(conn, pending.names)
+      return
+    }
     if (pending.kind === 'topic') {
       await getApi().deleteTopic({ connection_id: pending.connId, topic: pending.name })
     } else if (pending.kind === 'group') {
@@ -268,6 +361,37 @@ async function executeDelete(): Promise<void> {
   } catch (e) {
     errorByConn.value[pending.connId] = e instanceof Error ? e.message : String(e)
   }
+}
+
+// executeBatchDelete deletes the given topics in one call. Per-topic failures
+// are surfaced as feedback while the tree reloads regardless, so topics whose
+// deletion failed stay listed.
+async function executeBatchDelete(conn: Connection, names: string[]): Promise<void> {
+  const results = await getApi().deleteTopics({ connection_id: conn.id, names })
+  const failures = results
+    .filter((r) => r.error)
+    .map((r) => ({ name: r.name, error: r.error }))
+  batchFeedbackByConn.value[conn.id] = {
+    deleted: results.length - failures.length,
+    failed: failures.length,
+    failures,
+  }
+  selectedByConn.value[conn.id] = []
+  await load(conn.id)
+}
+
+// TOPIC_EXPORT_COLUMNS is deliberately data-source neutral (name + partition
+// count only) so the same export shape carries over to future source types.
+const TOPIC_EXPORT_COLUMNS: ExportColumn<Topic>[] = [
+  { label: 'topic', value: (t) => t.name },
+  { label: 'partitions', value: (t) => String(t.partitions.length) },
+]
+
+// exportTopics exports the connection's full topic list (not the search
+// filtered view and not just the selection), named after the connection.
+function exportTopics(conn: Connection): void {
+  const topics = topicsByConn.value[conn.id] ?? []
+  downloadFile(`topics-${conn.name}`, exportCsv(topics, TOPIC_EXPORT_COLUMNS), CSV_MIME)
 }
 </script>
 
@@ -394,6 +518,35 @@ async function executeDelete(): Promise<void> {
               />
             </div>
 
+            <div v-if="col.key === 'topics'" class="topic-toolbar">
+              <button class="tool-btn" type="button" data-test="select-mode-toggle" @click="toggleSelectMode(conn)">
+                {{ isSelectMode(conn.id) ? '退出多选' : '多选' }}
+              </button>
+              <template v-if="isSelectMode(conn.id)">
+                <button class="tool-btn" type="button" data-test="select-all-topics" @click="toggleSelectAll(conn.id)">
+                  {{ isAllSelected(conn.id) ? '取消全选' : '全选' }}
+                </button>
+                <button
+                  class="tool-btn danger"
+                  type="button"
+                  data-test="batch-delete-topics"
+                  :disabled="selectedOf(conn.id).length === 0"
+                  title="删除勾选的 Topic"
+                  @click="askBatchDelete(conn.id)"
+                >删除({{ selectedOf(conn.id).length }})</button>
+              </template>
+              <button class="tool-btn" type="button" data-test="export-topics" title="导出 Topic 列表为 CSV" @click="exportTopics(conn)">导出列表</button>
+            </div>
+
+            <div v-if="col.key === 'topics' && batchFeedback(conn.id)" class="batch-result">
+              <div class="batch-summary" data-test="batch-delete-summary">
+                删除完成：成功 {{ batchFeedback(conn.id)?.deleted ?? 0 }} / 失败 {{ batchFeedback(conn.id)?.failed ?? 0 }}
+              </div>
+              <div v-if="(batchFeedback(conn.id)?.failures.length ?? 0) > 0" class="batch-failures" data-test="batch-delete-failures">
+                <div v-for="f in batchFeedback(conn.id)?.failures" :key="f.name" class="batch-failure">{{ f.name }}：{{ f.error }}</div>
+              </div>
+            </div>
+
             <div v-if="col.key === 'consumers'" class="topic-search">
               <input
                 v-model="groupSearchByConn[conn.id]"
@@ -417,6 +570,14 @@ async function executeDelete(): Promise<void> {
                 :title="`${t.name} (${t.partitions.length} 分区)`"
                 @dblclick="emit('open-topic', conn.id, t.name, t.partitions.map((p) => p.id))"
               >
+                <input
+                  v-if="isSelectMode(conn.id)"
+                  type="checkbox"
+                  class="leaf-check"
+                  :data-test="`topic-check-${t.name}`"
+                  :checked="isTopicSelected(conn.id, t.name)"
+                  @click.stop="toggleTopicSelected(conn.id, t.name)"
+                />
                 <span class="leaf-name" data-test="topic-name">{{ t.name }}</span>
                 <button
                   class="leaf-info"
@@ -475,8 +636,8 @@ async function executeDelete(): Promise<void> {
     />
     <ConfirmDialog
       :show="!!confirm"
-      :message="confirm ? `确认删除 ${confirm.kind === 'topic' ? 'Topic' : 'Consumer Group'}「${confirm.name}」？此操作不可恢复。` : ''"
-      :confirm-text="confirm ? `删除 ${confirm.kind === 'topic' ? 'Topic' : '消费组'}` : '删除'"
+      :message="confirmMessage"
+      :confirm-text="confirmText"
       @confirm="executeDelete"
       @cancel="confirm = null"
     />
@@ -540,6 +701,21 @@ async function executeDelete(): Promise<void> {
 .conn-health:hover { color: var(--ok); background: var(--ok-soft); }
 .conn-children { margin-left: 16px; border-left: 1px solid var(--border); padding-left: 8px; }
 .topic-search { margin: 6px 0 2px; }
+.topic-toolbar { display: flex; align-items: center; gap: 6px; margin: 4px 0 2px; }
+.tool-btn {
+  background: none; border: 1px solid var(--border-strong); color: var(--text-secondary);
+  font-size: 11px; font-weight: 500; border-radius: 6px; padding: 1px 8px; cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+.tool-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.tool-btn.danger:hover { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
+.tool-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.tool-btn:disabled:hover { color: var(--text-secondary); border-color: var(--border-strong); background: none; }
+.leaf-check { margin: 0; flex: none; accent-color: var(--accent); cursor: pointer; }
+.batch-result { margin: 4px 0 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-subtle); }
+.batch-summary { font-size: 12px; color: var(--text); }
+.batch-failures { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
+.batch-failure { font-size: 11px; color: var(--danger); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search-input {
   width: 100%; box-sizing: border-box;
   background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text);

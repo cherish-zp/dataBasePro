@@ -17,6 +17,8 @@ import type {
   ProduceResult,
   CreateTopicRequest,
   DeleteTopicRequest,
+  DeleteTopicsRequest,
+  TopicDeleteResult,
   DeleteConsumerGroupRequest,
   ActiveMembersRequest,
   ActiveProducer,
@@ -38,6 +40,7 @@ export interface Api {
   describeGroup(id: string, group: string): Promise<GroupDetail>
   createTopic(req: CreateTopicRequest): Promise<void>
   deleteTopic(req: DeleteTopicRequest): Promise<void>
+  deleteTopics(req: DeleteTopicsRequest): Promise<TopicDeleteResult[]>
   deleteConsumerGroup(req: DeleteConsumerGroupRequest): Promise<void>
   consumeMessages(req: ConsumeRequest): Promise<Message[]>
   consumeMessagesByTimestamp(req: ConsumeRequest): Promise<Message[]>
@@ -96,6 +99,9 @@ export class WailsApi implements Api {
   }
   deleteTopic(req: DeleteTopicRequest): Promise<void> {
     return App.DeleteTopic(req) as unknown as Promise<void>
+  }
+  deleteTopics(req: DeleteTopicsRequest): Promise<TopicDeleteResult[]> {
+    return App.DeleteTopics(req as unknown as never) as unknown as Promise<TopicDeleteResult[]>
   }
   deleteConsumerGroup(req: DeleteConsumerGroupRequest): Promise<void> {
     return App.DeleteConsumerGroup(req) as unknown as Promise<void>

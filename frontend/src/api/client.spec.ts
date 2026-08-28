@@ -19,11 +19,12 @@ vi.mock('../../wailsjs/go/backend/App', () => ({
   GetPartitionLag: vi.fn(async () => ({ 0: 5 })),
   ListConnections: vi.fn(async () => []),
   DescribeGroup: vi.fn(async () => ({ group: 'g1', state: 'Stable', protocol_type: 'consumer', members: [] })),
+  DeleteTopics: vi.fn(async () => [{ name: 't1', error: '' }]),
 }))
 
 import * as App from '../../wailsjs/go/backend/App'
 import { WailsApi, getApi, setApi } from './client'
-import type { ConsumeRequest } from './types'
+import type { ConsumeRequest, DeleteTopicsRequest } from './types'
 
 const mocked = vi.mocked(App, true)
 
@@ -73,6 +74,13 @@ describe('WailsApi delegation', () => {
     expect(mocked.DescribeGroup).toHaveBeenCalledWith('c-1', 'g1')
     expect(got.group).toBe('g1')
     expect(got.state).toBe('Stable')
+  })
+
+  it('delegates deleteTopics with the request payload', async () => {
+    const req: DeleteTopicsRequest = { connection_id: 'c', names: ['t1', 't2'] }
+    const got = await api.deleteTopics(req)
+    expect(mocked.DeleteTopics).toHaveBeenCalledWith(req)
+    expect(got[0]).toEqual({ name: 't1', error: '' })
   })
 })
 

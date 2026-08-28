@@ -4,8 +4,16 @@ import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Connection } from '@/api/types'
+import { CSV_MIME, downloadFile } from '@/utils/export'
 import { useConnectionsStore } from '@/store/connections'
 import ConnectionTree from './ConnectionTree.vue'
+
+// Stub the DOM download trigger but keep the real CSV builders, so the
+// assertions check exactly what the component passes to downloadFile.
+vi.mock('@/utils/export', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/utils/export')>()
+  return { ...actual, downloadFile: vi.fn() }
+})
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
   return {
@@ -29,6 +37,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     resetConsumerGroupOffset: vi.fn(async () => {}),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
+    deleteTopics: vi.fn(async () => []),
     deleteConsumerGroup: vi.fn(async () => {}),
     produceMessage: vi.fn(async () => {}),
     produceMessages: vi.fn(async () => []),
@@ -606,5 +615,153 @@ describe('ConnectionTree', () => {
     await vi.waitFor(() => {
       expect(store.statusById['a']).toBe('error')
     })
+  })
+
+  it('toggles multi-select mode showing checkboxes and batch controls', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 't1', partitions: [] },
+      { name: 't2', partitions: [] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    expect(wrapper.find('[data-test="topic-check-t1"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="select-all-topics"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="batch-delete-topics"]').exists()).toBe(false)
+
+    await wrapper.find('[data-test="select-mode-toggle"]').trigger('click')
+    expect(wrapper.find('[data-test="topic-check-t1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="topic-check-t2"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="select-all-topics"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="batch-delete-topics"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="select-mode-toggle"]').trigger('click')
+    expect(wrapper.find('[data-test="topic-check-t1"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="select-all-topics"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="batch-delete-topics"]').exists()).toBe(false)
+  })
+
+  it('selects all topics and reflects the count on the delete button', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 't1', partitions: [] },
+      { name: 't2', partitions: [] },
+      { name: 't3', partitions: [] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="select-mode-toggle"]').trigger('click')
+
+    const del = wrapper.find('[data-test="batch-delete-topics"]')
+    expect((del.element as HTMLButtonElement).disabled).toBe(true)
+    expect(del.text()).toContain('删除(0)')
+
+    await wrapper.find('[data-test="select-all-topics"]').trigger('click')
+    const delAll = wrapper.find('[data-test="batch-delete-topics"]')
+    expect(delAll.text()).toContain('删除(3)')
+    expect((delAll.element as HTMLButtonElement).disabled).toBe(false)
+
+    await wrapper.find('[data-test="topic-check-t1"]').trigger('click')
+    expect(wrapper.find('[data-test="batch-delete-topics"]').text()).toContain('删除(2)')
+  })
+
+  it('batch deletes after confirmation and shows per-topic feedback', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([
+        { name: 't1', partitions: [] },
+        { name: 't2', partitions: [] },
+        { name: 't3', partitions: [] },
+      ])
+      .mockResolvedValue([{ name: 't3', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.deleteTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 't1', error: '' },
+      { name: 't2', error: 'UNKNOWN_TOPIC_OR_PARTITION' },
+    ])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="select-mode-toggle"]').trigger('click')
+    await wrapper.find('[data-test="topic-check-t1"]').trigger('click')
+    await wrapper.find('[data-test="topic-check-t2"]').trigger('click')
+    await wrapper.find('[data-test="batch-delete-topics"]').trigger('click')
+
+    expect(confirmDialog()).not.toBeNull()
+    expect(confirmDialog()?.textContent).toContain('2 个 Topic')
+
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(api.deleteTopics).toHaveBeenCalledWith({ connection_id: 'a', names: ['t1', 't2'] })
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="batch-delete-summary"]').text()).toContain('成功 1 / 失败 1')
+    })
+    const failures = wrapper.find('[data-test="batch-delete-failures"]')
+    expect(failures.text()).toContain('t2')
+    expect(failures.text()).toContain('UNKNOWN_TOPIC_OR_PARTITION')
+    // The tree refreshed (only t3 remains) and the selection was cleared.
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="topic-name"]').map((n) => n.text())).toEqual(['t3'])
+    })
+    expect(wrapper.find('[data-test="batch-delete-topics"]').text()).toContain('删除(0)')
+  })
+
+  it('skips batch deletion when confirmation is declined', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 't1', partitions: [] },
+      { name: 't2', partitions: [] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="select-mode-toggle"]').trigger('click')
+    await wrapper.find('[data-test="select-all-topics"]').trigger('click')
+    await wrapper.find('[data-test="batch-delete-topics"]').trigger('click')
+    expect(confirmDialog()).not.toBeNull()
+    clickConfirmDialog('confirm-dialog-cancel')
+    expect(api.deleteTopics).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).toBeNull()
+    })
+    // The selection survives a declined confirmation.
+    expect(wrapper.find('[data-test="batch-delete-topics"]').text()).toContain('删除(2)')
+  })
+
+  it('clears the selection when leaving multi-select mode', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 't1', partitions: [] },
+      { name: 't2', partitions: [] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="select-mode-toggle"]').trigger('click')
+    await wrapper.find('[data-test="select-all-topics"]').trigger('click')
+    expect(wrapper.find('[data-test="batch-delete-topics"]').text()).toContain('删除(2)')
+    await wrapper.find('[data-test="select-mode-toggle"]').trigger('click')
+    await wrapper.find('[data-test="select-mode-toggle"]').trigger('click')
+    expect(wrapper.find('[data-test="batch-delete-topics"]').text()).toContain('删除(0)')
+  })
+
+  it('exports the full topic list as CSV even when the search filter matches nothing', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 't1', partitions: [{ id: 0, leader: 0, replicas: [], isr: [] }] },
+      { name: 't2', partitions: [{ id: 0, leader: 0, replicas: [], isr: [] }, { id: 1, leader: 0, replicas: [], isr: [] }, { id: 2, leader: 0, replicas: [], isr: [] }] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="topic-search"]').setValue('zzz')
+    expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(0)
+
+    await wrapper.find('[data-test="export-topics"]').trigger('click')
+    expect(vi.mocked(downloadFile)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(downloadFile)).toHaveBeenCalledWith(
+      'topics-conn-a',
+      expect.stringContaining('topic,partitions'),
+      CSV_MIME,
+    )
+    const csv = vi.mocked(downloadFile).mock.calls[0][1]
+    expect(csv).toContain('t1,1')
+    expect(csv).toContain('t2,3')
   })
 })

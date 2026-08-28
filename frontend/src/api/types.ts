@@ -145,6 +145,18 @@ export interface DeleteTopicRequest {
   topic: string
 }
 
+export interface DeleteTopicsRequest {
+  connection_id: string
+  names: string[]
+}
+
+// Per-topic outcome of a batch delete; error is empty on success
+// (mirrors model.TopicDeleteResult).
+export interface TopicDeleteResult {
+  name: string
+  error: string
+}
+
 export interface DeleteConsumerGroupRequest {
   connection_id: string
   group: string

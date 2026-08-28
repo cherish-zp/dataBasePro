@@ -27,6 +27,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     resetConsumerGroupOffset: vi.fn(async () => {}),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
+    deleteTopics: vi.fn(async () => []),
     deleteConsumerGroup: vi.fn(async () => {}),
     produceMessage: vi.fn(async () => {}),
     produceMessages: vi.fn(async () => []),
