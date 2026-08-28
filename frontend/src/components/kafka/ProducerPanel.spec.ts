@@ -28,6 +28,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     deleteTopic: vi.fn(async () => {}),
     deleteConsumerGroup: vi.fn(async () => {}),
     produceMessage: vi.fn(async () => {}),
+    produceMessages: vi.fn(async () => []),
     ...overrides,
   }
 }
@@ -122,5 +123,133 @@ describe('ProducerPanel', () => {
     const { wrapper } = mountPanel()
     await wrapper.find('[data-test="input-topic"]').setValue('custom')
     expect((wrapper.find('[data-test="input-topic"]').element as HTMLInputElement).value).toBe('custom')
+  })
+
+  it('renders batch mode controls', () => {
+    const { wrapper } = mountPanel()
+    expect((wrapper.find('[data-test="input-count"]').element as HTMLInputElement).value).toBe('1')
+    expect(wrapper.find('[data-test="input-random-key"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="input-loop"]').exists()).toBe(true)
+  })
+
+  it('sends the same value N times in loop mode and shows the batch summary', async () => {
+    const { wrapper, api } = mountPanel({
+      produceMessages: vi.fn(async () => [
+        { index: 0, partition: 0, offset: 0, error: '' },
+        { index: 1, partition: 0, offset: 1, error: '' },
+        { index: 2, partition: 0, offset: 2, error: '' },
+      ]),
+    })
+    await wrapper.find('[data-test="input-value"]').setValue('payload')
+    await wrapper.find('[data-test="input-count"]').setValue(3)
+    await wrapper.find('[data-test="input-loop"]').setValue(true)
+    await wrapper.find('[data-test="btn-produce"]').trigger('click')
+    await flushPromises()
+    expect(api.produceMessages).toHaveBeenCalledWith({
+      connection_id: 'c',
+      topic: 'orders',
+      partition: -1,
+      messages: [
+        { key: '', value: 'payload' },
+        { key: '', value: 'payload' },
+        { key: '', value: 'payload' },
+      ],
+    })
+    expect(api.produceMessage).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="batch-summary"]').text()).toContain('成功 3 / 失败 0')
+  })
+
+  it('generates a random key per message when 随机 key is on', async () => {
+    const { wrapper, api } = mountPanel({
+      produceMessages: vi.fn(async () => [{ index: 0, partition: 0, offset: 0, error: '' }]),
+    })
+    await wrapper.find('[data-test="input-value"]').setValue('v')
+    await wrapper.find('[data-test="input-random-key"]').setValue(true)
+    await wrapper.find('[data-test="btn-produce"]').trigger('click')
+    await flushPromises()
+    const call = vi.mocked(api.produceMessages).mock.calls[0][0]
+    expect(call.messages).toHaveLength(1)
+    expect(call.messages[0].key).toMatch(/^key-/)
+    expect(api.produceMessage).not.toHaveBeenCalled()
+  })
+
+  it('expands a JSON array value into one message per element without loop', async () => {
+    const { wrapper, api } = mountPanel({
+      produceMessages: vi.fn(async () => [
+        { index: 0, partition: 0, offset: 0, error: '' },
+        { index: 1, partition: 0, offset: 1, error: '' },
+      ]),
+    })
+    await wrapper.find('[data-test="input-value"]').setValue('["a", {"x":1}]')
+    await wrapper.find('[data-test="input-count"]').setValue(2)
+    await wrapper.find('[data-test="btn-produce"]').trigger('click')
+    await flushPromises()
+    expect(api.produceMessages).toHaveBeenCalledWith({
+      connection_id: 'c',
+      topic: 'orders',
+      partition: -1,
+      messages: [
+        { key: '', value: 'a' },
+        { key: '', value: '{"x":1}' },
+      ],
+    })
+  })
+
+  it('surfaces an error when array mode receives a non-array value', async () => {
+    const { wrapper, api } = mountPanel()
+    await wrapper.find('[data-test="input-value"]').setValue('not json')
+    await wrapper.find('[data-test="input-count"]').setValue(2)
+    await wrapper.find('[data-test="btn-produce"]').trigger('click')
+    await flushPromises()
+    expect(api.produceMessages).not.toHaveBeenCalled()
+    expect(api.produceMessage).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="produce-error"]').exists()).toBe(true)
+  })
+
+  it('lists failed indexes with their errors after a batch send', async () => {
+    const { wrapper } = mountPanel({
+      produceMessages: vi.fn(async () => [
+        { index: 0, partition: 0, offset: 0, error: '' },
+        { index: 1, partition: 0, offset: -1, error: 'boom' },
+      ]),
+    })
+    await wrapper.find('[data-test="input-value"]').setValue('v')
+    await wrapper.find('[data-test="input-count"]').setValue(2)
+    await wrapper.find('[data-test="input-loop"]').setValue(true)
+    await wrapper.find('[data-test="btn-produce"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="batch-summary"]').text()).toContain('成功 1 / 失败 1')
+    expect(wrapper.find('[data-test="batch-failures"]').text()).toContain('boom')
+  })
+
+  it('records sent values as recent templates and refills on click', async () => {
+    localStorage.clear()
+    const { wrapper, api } = mountPanel()
+    await wrapper.find('[data-test="input-value"]').setValue('tpl-value')
+    await wrapper.find('[data-test="btn-produce"]').trigger('click')
+    await flushPromises()
+    expect(api.produceMessage).toHaveBeenCalled()
+    expect(JSON.parse(localStorage.getItem('dbclient.produce-templates.v1') ?? '[]')).toEqual(['tpl-value'])
+
+    await wrapper.find('[data-test="template-toggle"]').trigger('click')
+    const items = wrapper.findAll('[data-test="template-item"]')
+    expect(items).toHaveLength(1)
+    await items[0].trigger('click')
+    expect((wrapper.find('[data-test="input-value"]').element as HTMLTextAreaElement).value).toBe('tpl-value')
+  })
+
+  it('records batch values as templates only for successful messages', async () => {
+    localStorage.clear()
+    const { wrapper } = mountPanel({
+      produceMessages: vi.fn(async () => [
+        { index: 0, partition: 0, offset: 0, error: '' },
+        { index: 1, partition: 0, offset: -1, error: 'boom' },
+      ]),
+    })
+    await wrapper.find('[data-test="input-value"]').setValue('["good","bad"]')
+    await wrapper.find('[data-test="input-count"]').setValue(2)
+    await wrapper.find('[data-test="btn-produce"]').trigger('click')
+    await flushPromises()
+    expect(JSON.parse(localStorage.getItem('dbclient.produce-templates.v1') ?? '[]')).toEqual(['good'])
   })
 })

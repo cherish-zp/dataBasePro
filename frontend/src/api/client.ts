@@ -12,6 +12,8 @@ import type {
   ConsumeRequest,
   ResetOffsetRequest,
   ProduceRequest,
+  BatchProduceRequest,
+  ProduceResult,
   CreateTopicRequest,
   DeleteTopicRequest,
   DeleteConsumerGroupRequest,
@@ -42,6 +44,7 @@ export interface Api {
   listActiveConsumers(req: ActiveMembersRequest): Promise<ActiveConsumer[]>
   resetConsumerGroupOffset(req: ResetOffsetRequest): Promise<void>
   produceMessage(req: ProduceRequest): Promise<void>
+  produceMessages(req: BatchProduceRequest): Promise<ProduceResult[]>
 }
 
 // The Wails binding generator models Go `[]byte` fields as `number[]`, but
@@ -112,6 +115,9 @@ export class WailsApi implements Api {
   }
   produceMessage(req: ProduceRequest): Promise<void> {
     return App.ProduceMessage(req)
+  }
+  produceMessages(req: BatchProduceRequest): Promise<ProduceResult[]> {
+    return App.ProduceMessages(req as unknown as never) as unknown as Promise<ProduceResult[]>
   }
 }
 

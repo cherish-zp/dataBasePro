@@ -149,6 +149,28 @@ export interface ProduceRequest {
   value: string
 }
 
+// One record inside a batch produce request (mirrors model.BatchProduceMessage).
+export interface BatchProduceMessage {
+  key: string
+  value: string
+}
+
+export interface BatchProduceRequest {
+  connection_id: string
+  topic: string
+  partition: number
+  messages: BatchProduceMessage[]
+}
+
+// Per-message outcome of a batch produce; error is empty on success
+// (mirrors model.ProduceResult).
+export interface ProduceResult {
+  index: number
+  partition: number
+  offset: number
+  error: string
+}
+
 // Offset sentinels matching model.OffsetEarliest / OffsetLatest.
 export const OffsetEarliest = -2
 export const OffsetLatest = -1

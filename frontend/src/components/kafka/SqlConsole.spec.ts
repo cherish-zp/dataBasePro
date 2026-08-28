@@ -38,6 +38,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     deleteTopic: vi.fn(async () => {}),
     deleteConsumerGroup: vi.fn(async () => {}),
     produceMessage: vi.fn(async () => {}),
+    produceMessages: vi.fn(async () => []),
     ...overrides,
   }
 }
