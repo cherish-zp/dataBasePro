@@ -34,6 +34,13 @@
   --info: #0a84ff;
   --info-soft: rgba(10, 132, 255, 0.12);
 
+  /* JSON syntax highlighting (message detail drawer). */
+  --json-key: #0550ae;
+  --json-string: #116329;
+  --json-number: #953800;
+  --json-boolean: #8250df;
+  --json-null: #57606a;
+
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08), 0 14px 40px rgba(0, 0, 0, 0.1);
   --radius-sm: 6px;
@@ -66,6 +73,11 @@
   --ok-soft: rgba(63, 185, 80, 0.18);
   --info: #6ea8fe;
   --info-soft: rgba(110, 168, 254, 0.16);
+  --json-key: #79c0ff;
+  --json-string: #7ee787;
+  --json-number: #ffa657;
+  --json-boolean: #d2a8ff;
+  --json-null: #8b949e;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.5), 0 14px 40px rgba(0, 0, 0, 0.5);
 }
