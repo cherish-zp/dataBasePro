@@ -3,6 +3,8 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
+import type { BatchProduceRequest } from '@/api/types'
+import { COUNT_MAX } from '@/utils/batchProduce'
 import ProducerPanel from './ProducerPanel.vue'
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
@@ -206,6 +208,22 @@ describe('ProducerPanel', () => {
     expect(api.produceMessages).not.toHaveBeenCalled()
     expect(api.produceMessage).not.toHaveBeenCalled()
     expect(wrapper.find('[data-test="produce-error"]').exists()).toBe(true)
+  })
+
+  it('caps an oversized JSON array batch at COUNT_MAX messages and failure rows', async () => {
+    const big = JSON.stringify(Array.from({ length: COUNT_MAX + 10 }, (_, i) => `m-${i}`))
+    const { wrapper, api } = mountPanel({
+      produceMessages: vi.fn(async (req: BatchProduceRequest) =>
+        req.messages.map((_m, index) => ({ index, partition: -1, offset: -1, error: 'boom' })),
+      ),
+    })
+    await wrapper.find('[data-test="input-value"]').setValue(big)
+    await wrapper.find('[data-test="input-count"]').setValue(2)
+    await wrapper.find('[data-test="btn-produce"]').trigger('click')
+    await flushPromises()
+    const call = vi.mocked(api.produceMessages).mock.calls[0][0]
+    expect(call.messages).toHaveLength(COUNT_MAX)
+    expect(wrapper.findAll('[data-test="batch-failures"] .msg.err')).toHaveLength(COUNT_MAX)
   })
 
   it('lists failed indexes with their errors after a batch send', async () => {

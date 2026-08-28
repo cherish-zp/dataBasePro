@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref, computed, watch } from 'vue'
 import { getApi } from '@/api/client'
-import { buildBatchMessages, clampCount, loadTemplates, saveTemplate } from '@/utils/batchProduce'
+import { buildBatchMessages, clampCount, COUNT_MAX, loadTemplates, saveTemplate } from '@/utils/batchProduce'
 
 const props = defineProps<{
   show: boolean
@@ -80,7 +80,8 @@ async function produce(): Promise<void> {
       })
       const failed = results.filter((r) => r.error !== '')
       batchSummary.value = { ok: results.length - failed.length, failed: failed.length }
-      batchFailures.value = failed.map((r) => ({ index: r.index, error: r.error }))
+      // Cap rendered failures to COUNT_MAX so a huge failing batch cannot freeze the UI.
+      batchFailures.value = failed.slice(0, COUNT_MAX).map((r) => ({ index: r.index, error: r.error }))
       // 只把成功发送的 value 记入最近模板（循环模式下值相同，自动去重）。
       const sent: string[] = []
       for (let i = 0; i < messages.length; i++) {

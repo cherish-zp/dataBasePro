@@ -56,7 +56,9 @@ function parseArrayMessages(value: string, keyOf: () => string): BatchProduceIte
   if (parsed.length === 0) {
     throw new Error('JSON 数组不能为空')
   }
-  return parsed.map((item) => ({
+  // Clamp oversized pastes to COUNT_MAX: without this a huge array turns into
+  // thousands of sequential produce calls and unbounded failure rows (UI freeze).
+  return parsed.slice(0, COUNT_MAX).map((item) => ({
     key: keyOf(),
     value: typeof item === 'string' ? item : JSON.stringify(item),
   }))

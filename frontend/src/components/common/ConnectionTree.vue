@@ -580,6 +580,7 @@ function exportTopics(conn: Connection): void {
                   :data-test="`topic-check-${t.name}`"
                   :checked="isTopicSelected(conn.id, t.name)"
                   @click.stop="toggleTopicSelected(conn.id, t.name)"
+                  @dblclick.stop
                 />
                 <span class="leaf-name" data-test="topic-name">{{ t.name }}</span>
                 <button

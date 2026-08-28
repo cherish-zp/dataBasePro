@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   buildBatchMessages,
   clampCount,
+  COUNT_MAX,
   loadTemplates,
   randomKey,
   saveTemplate,
@@ -73,6 +74,12 @@ describe('buildBatchMessages', () => {
 
   it('rejects an empty JSON array', () => {
     expect(() => buildBatchMessages({ value: '[]', key: '', count: 2, randomKey: false, loop: false })).toThrow()
+  })
+
+  it('truncates a JSON array longer than COUNT_MAX to COUNT_MAX messages', () => {
+    const big = JSON.stringify(Array.from({ length: COUNT_MAX + 5 }, (_, i) => `m-${i}`))
+    const msgs = buildBatchMessages({ value: big, key: 'k', count: 2, randomKey: false, loop: false })
+    expect(msgs).toHaveLength(COUNT_MAX)
   })
 })
 

@@ -236,6 +236,18 @@ describe('ConnectionTree', () => {
     expect(wrapper.emitted('open-topic')?.[0]).toEqual(['a', 'user-log', []])
   })
 
+  it('does not open the topic tab when double-clicking the multi-select checkbox', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="select-mode-toggle"]').trigger('click')
+    const check = wrapper.find('[data-test="topic-check-user-log"]')
+    expect(check.exists()).toBe(true)
+    await check.trigger('dblclick')
+    expect(wrapper.emitted('open-topic')).toBeUndefined()
+  })
+
   it('emits open-group on group double click', async () => {
     ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'grp-1', state: 'Empty', topics: {} }])
