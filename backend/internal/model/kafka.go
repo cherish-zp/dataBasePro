@@ -83,3 +83,21 @@ type ActiveConsumer struct {
 	ClientHost string  `json:"client_host"`
 	Partitions []int32 `json:"partitions"`
 }
+
+// GroupDetail describes one consumer group: its state plus the member
+// topology with each member's per-topic partition assignment.
+type GroupDetail struct {
+	Group        string        `json:"group"`
+	State        string        `json:"state"`
+	ProtocolType string        `json:"protocol_type"`
+	Members      []GroupMember `json:"members"`
+}
+
+// GroupMember is a member of a consumer group together with the partitions it
+// was assigned per topic.
+type GroupMember struct {
+	MemberID   string             `json:"member_id"`
+	ClientID   string             `json:"client_id"`
+	Host       string             `json:"host"`
+	Assignment map[string][]int32 `json:"assignment"`
+}

@@ -21,6 +21,8 @@ export function DeleteTopic(arg1:backend.DeleteTopicRequest):Promise<void>;
 
 export function DescribeCluster(arg1:string):Promise<model.ClusterHealth>;
 
+export function DescribeGroup(arg1:string,arg2:string):Promise<model.GroupDetail>;
+
 export function DescribeTopic(arg1:string,arg2:string):Promise<model.TopicDetail>;
 
 export function Disconnect(arg1:string):Promise<void>;

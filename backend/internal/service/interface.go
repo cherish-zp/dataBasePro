@@ -27,6 +27,7 @@ type KafkaDataSource interface {
 	DeleteTopic(ctx context.Context, name string) error
 	DeleteConsumerGroup(ctx context.Context, name string) error
 	ListConsumerGroups(ctx context.Context) ([]*model.ConsumerGroup, error)
+	DescribeGroup(ctx context.Context, group string) (*model.GroupDetail, error)
 	ConsumeMessages(ctx context.Context, topic string, partition int32, offset int64, limit int) ([]*model.Message, error)
 	ConsumeMessagesByTimestamp(ctx context.Context, topic string, partition int32, timestampMS int64, limit int) ([]*model.Message, error)
 	GetPartitionLag(ctx context.Context, topic string, group string) (map[int32]int64, error)

@@ -405,19 +405,48 @@ func mapActiveProducers(ps []kadm.DescribedProducer) []*model.ActiveProducer {
 func (c *Client) ListActiveConsumers(ctx context.Context, group, topic string) ([]*model.ActiveConsumer, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	dg, err := c.describeGroupRaw(ctx, group)
+	if err != nil {
+		return nil, err
+	}
+	return mapActiveConsumers(extractConsumerAssignments(dg.Members), topic), nil
+}
+
+// DescribeGroup returns a consumer group's state and member topology, with
+// every member's per-topic partition assignment.
+func (c *Client) DescribeGroup(ctx context.Context, group string) (*model.GroupDetail, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	dg, err := c.describeGroupRaw(ctx, group)
+	if err != nil {
+		return nil, err
+	}
+	return mapGroupDetail(group, dg), nil
+}
+
+// describeGroupRaw describes a single group, tolerating unknown groups (which
+// surface as an empty description) like the rest of the group views.
+func (c *Client) describeGroupRaw(ctx context.Context, group string) (kadm.DescribedGroup, error) {
 	groups, err := c.admin.DescribeGroups(ctx, group)
 	if err != nil {
-		return nil, fmt.Errorf("describe group %q: %w", group, err)
+		return kadm.DescribedGroup{}, fmt.Errorf("describe group %q: %w", group, err)
 	}
 	dg, ok := groups[group]
 	if !ok {
-		return []*model.ActiveConsumer{}, nil
+		return kadm.DescribedGroup{Group: group}, nil
 	}
 	if dg.Err != nil && !errors.Is(dg.Err, kerr.GroupIDNotFound) {
-		return nil, fmt.Errorf("describe group %q: %w", group, dg.Err)
+		return kadm.DescribedGroup{}, fmt.Errorf("describe group %q: %w", group, dg.Err)
 	}
-	members := make([]consumerAssignment, 0, len(dg.Members))
-	for _, m := range dg.Members {
+	return dg, nil
+}
+
+// extractConsumerAssignments converts described group members into the
+// testable consumerAssignment form (member identity + topic->partitions map).
+// It is shared by ListActiveConsumers and DescribeGroup.
+func extractConsumerAssignments(members []kadm.DescribedGroupMember) []consumerAssignment {
+	out := make([]consumerAssignment, 0, len(members))
+	for _, m := range members {
 		ca := consumerAssignment{MemberID: m.MemberID, ClientID: m.ClientID, ClientHost: m.ClientHost}
 		if a, ok := m.Assigned.AsConsumer(); ok {
 			topics := map[string][]int32{}
@@ -426,9 +455,9 @@ func (c *Client) ListActiveConsumers(ctx context.Context, group, topic string) (
 			}
 			ca.topics = topics
 		}
-		members = append(members, ca)
+		out = append(out, ca)
 	}
-	return mapActiveConsumers(members, topic), nil
+	return out
 }
 
 // consumerAssignment carries the fields of a group member needed to filter by
@@ -453,6 +482,40 @@ func mapActiveConsumers(members []consumerAssignment, topic string) []*model.Act
 			ClientID:   m.ClientID,
 			ClientHost: m.ClientHost,
 			Partitions: parts,
+		})
+	}
+	return out
+}
+
+// mapGroupDetail assembles the group description from a described group,
+// mapping members through their resolved assignments with deterministic
+// topic/partition ordering for display.
+func mapGroupDetail(group string, dg kadm.DescribedGroup) *model.GroupDetail {
+	return &model.GroupDetail{
+		Group:        group,
+		State:        dg.State,
+		ProtocolType: dg.ProtocolType,
+		Members:      mapGroupMembers(extractConsumerAssignments(dg.Members)),
+	}
+}
+
+// mapGroupMembers converts resolved member assignments into model form. The
+// returned slice is never nil; assignment topics and partitions are sorted so
+// the topology renders stably.
+func mapGroupMembers(members []consumerAssignment) []model.GroupMember {
+	out := make([]model.GroupMember, 0, len(members))
+	for _, m := range members {
+		assignment := make(map[string][]int32, len(m.topics))
+		for topic, parts := range m.topics {
+			sorted := append([]int32(nil), parts...)
+			sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+			assignment[topic] = sorted
+		}
+		out = append(out, model.GroupMember{
+			MemberID:   m.MemberID,
+			ClientID:   m.ClientID,
+			Host:       m.ClientHost,
+			Assignment: assignment,
 		})
 	}
 	return out

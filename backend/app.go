@@ -198,6 +198,14 @@ func (a *App) ListConsumerGroups(id string) ([]*model.ConsumerGroup, error) {
 	return a.svc.ListConsumerGroups(ctx, id)
 }
 
+// DescribeGroup returns a consumer group's state and member topology with
+// per-topic partition assignments.
+func (a *App) DescribeGroup(id, group string) (*model.GroupDetail, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.DescribeGroup(ctx, id, group)
+}
+
 // ConsumeMessages fetches a batch of messages for a connection.
 func (a *App) ConsumeMessages(req ConsumeRequest) ([]*model.Message, error) {
 	ctx, cancel := a.newContext()

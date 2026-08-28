@@ -22,6 +22,7 @@ type fakeKafka struct {
 	resetCalls []model.ResetOffsetMode
 	detail     *model.TopicDetail
 	health     *model.ClusterHealth
+	groupDg    *model.GroupDetail
 	batchCalls [][]model.BatchProduceMessage
 }
 
@@ -68,6 +69,10 @@ func (f *fakeKafka) DescribeTopic(context.Context, string) (*model.TopicDetail, 
 }
 func (f *fakeKafka) DescribeCluster(context.Context) (*model.ClusterHealth, error) {
 	return f.health, nil
+}
+
+func (f *fakeKafka) DescribeGroup(context.Context, string) (*model.GroupDetail, error) {
+	return f.groupDg, nil
 }
 
 type fakeFactory struct {
@@ -401,5 +406,30 @@ func TestListActiveConsumers(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].MemberID != "m-1" || len(got[0].Partitions) != 2 {
 		t.Fatalf("unexpected consumers: %+v", got)
+	}
+}
+
+func TestDescribeGroupDelegates(t *testing.T) {
+	svc, f := newTestService(t)
+	ctx := context.Background()
+	c, err := svc.CreateConnection(ctx, sampleConn())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	want := &model.GroupDetail{
+		Group:        "grp-1",
+		State:        "Stable",
+		ProtocolType: "consumer",
+		Members: []model.GroupMember{
+			{MemberID: "m-1", ClientID: "c-1", Host: "10.0.0.1", Assignment: map[string][]int32{"t1": {0, 1}}},
+		},
+	}
+	f.k.groupDg = want
+	got, err := svc.DescribeGroup(ctx, c.ID, "grp-1")
+	if err != nil {
+		t.Fatalf("DescribeGroup: %v", err)
+	}
+	if got != want {
+		t.Fatalf("DescribeGroup must delegate to the data source, got %+v", got)
 	}
 }

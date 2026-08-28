@@ -163,6 +163,16 @@ func (s *Service) ListConsumerGroups(ctx context.Context, id string) ([]*model.C
 	return kds.ListConsumerGroups(ctx)
 }
 
+// DescribeGroup describes one consumer group's state and member topology,
+// auto-connecting if needed.
+func (s *Service) DescribeGroup(ctx context.Context, id, group string) (*model.GroupDetail, error) {
+	kds, err := s.kafka(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return kds.DescribeGroup(ctx, group)
+}
+
 // ConsumeMessages fetches a batch of messages from the connection.
 func (s *Service) ConsumeMessages(ctx context.Context, id, topic string, partition int32, offset int64, limit int) ([]*model.Message, error) {
 	kds, err := s.kafka(ctx, id)
