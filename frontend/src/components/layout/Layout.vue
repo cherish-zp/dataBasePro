@@ -113,10 +113,15 @@ function refreshActive(): void {
 
 // --- Tab right-click context menu -------------------------------------------
 
+// Menu is 130px min-width and up to 4 items tall; clamp the cursor position so
+// a tab bar near the right/bottom edge cannot push it off-screen.
+const CONTEXT_MENU_W = 160
+const CONTEXT_MENU_H = 180
+
 function openTabContextMenu(e: MouseEvent, t: Tab): void {
   contextTab.value = t
-  contextX.value = e.clientX
-  contextY.value = e.clientY
+  contextX.value = Math.max(0, Math.min(e.clientX, window.innerWidth - CONTEXT_MENU_W))
+  contextY.value = Math.max(0, Math.min(e.clientY, window.innerHeight - CONTEXT_MENU_H))
 }
 
 function closeContextMenu(): void {
@@ -186,12 +191,10 @@ function onTabDragStart(e: DragEvent, from: number): void {
 }
 
 function onTabDragOver(e: DragEvent, to: number): void {
-  e.preventDefault()
   if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
 }
 
-function onTabDrop(e: DragEvent, to: number): void {
-  e.preventDefault()
+function onTabDrop(_e: DragEvent, to: number): void {
   const from = dragFrom.value
   if (from == null || from === to) return
   // Dropping onto the tab at index `to` lands the dragged tab where that

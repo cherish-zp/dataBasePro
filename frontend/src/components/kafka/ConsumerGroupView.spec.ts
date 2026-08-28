@@ -297,6 +297,51 @@ describe('ConsumerGroupView', () => {
       expect(describe).toHaveBeenCalledTimes(2)
     })
   })
+
+  it('re-fetches group data when the group prop changes while mounted', async () => {
+    const gA: ConsumerGroup = { name: 'grp-1', state: 'Stable', topics: { 'orders': [] } }
+    const gB: ConsumerGroup = { name: 'grp-2', state: 'Stable', topics: { 'users': [] } }
+    const listGroups = vi.fn(async () => [gA, gB])
+    const describe = vi.fn(async () => ({ group: 'grp-1', state: 'Stable', protocol_type: 'consumer', members: [] }))
+    const { wrapper } = mountView({ listConsumerGroups: listGroups, describeGroup: describe }, { group: 'grp-1' })
+    await vi.waitFor(() => {
+      expect(describe).toHaveBeenCalledTimes(1)
+    })
+    expect(listGroups).toHaveBeenCalledTimes(1)
+    // Switching to another group tab patches the props in place (Layout does
+    // not key its workspace), so the panel must refetch for the new group.
+    await wrapper.setProps({ group: 'grp-2' })
+    await vi.waitFor(() => {
+      expect(listGroups).toHaveBeenCalledTimes(2)
+    })
+    expect(describe.mock.calls.length).toBeGreaterThan(1)
+    expect(describe.mock.calls.at(-1)).toEqual(['c', 'grp-2'])
+  })
+
+  it('resets the selected group when the group prop changes after the user picked one', async () => {
+    const groups: ConsumerGroup[] = [
+      { name: 'grp-1', state: 'Stable', topics: { 'orders': [] } },
+      { name: 'grp-2', state: 'Stable', topics: { 'users': [] } },
+      { name: 'grp-3', state: 'Stable', topics: { 'payments': [] } },
+    ]
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => groups) }, { group: 'grp-1' })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="field-group"] [data-test="search-select-value"]').text()).toBe('grp-1 (Stable)')
+    })
+    await wrapper.find('[data-test="field-group"] [data-test="search-select-trigger"]').trigger('click')
+    const grp2 = wrapper.findAll('[data-test="field-group"] [data-test="search-select-option"]').find((n) => n.text().includes('grp-2'))
+    expect(grp2).toBeDefined()
+    await grp2!.trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="field-group"] [data-test="search-select-value"]').text()).toBe('grp-2 (Stable)')
+    })
+    // Switching to another group tab must reset the manual selection to the
+    // incoming group instead of keeping the previously picked one.
+    await wrapper.setProps({ group: 'grp-3' })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="field-group"] [data-test="search-select-value"]').text()).toBe('grp-3 (Stable)')
+    })
+  })
 })
 
   it('renders active producers and merges consumers into the lag table', async () => {

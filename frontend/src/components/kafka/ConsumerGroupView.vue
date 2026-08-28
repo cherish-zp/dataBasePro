@@ -141,6 +141,19 @@ watch(
   },
 )
 
+// Switching group tabs patches this instance in place (Layout does not key its
+// workspace), so a changed connection/group must reset the local selection and
+// re-run the refresh path. No `immediate`, so mount keeps its single
+// onMounted refresh; the existing selectedGroup watchers pick up the reset.
+watch(
+  () => [props.connectionId, props.group],
+  () => {
+    selectedGroup.value = props.group ?? null
+    selectedTopic.value = null
+    void refresh()
+  },
+)
+
 onMounted(refresh)
 </script>
 
