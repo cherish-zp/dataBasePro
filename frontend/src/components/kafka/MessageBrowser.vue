@@ -8,7 +8,16 @@ import { formatTime, displayValue } from '@/utils/format'
 import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
 import MessageDetailDrawer from './MessageDetailDrawer.vue'
 
-const props = defineProps<{ tabId: string; connectionId: string; topic: string; partitions: number[] }>()
+const props = withDefaults(
+  defineProps<{
+    tabId: string
+    connectionId: string
+    topic: string
+    partitions: number[]
+    refreshRequest?: number
+  }>(),
+  { refreshRequest: 0 },
+)
 const emit = defineEmits<{ (e: 'open-sql'): void; (e: 'open-producer'): void }>()
 
 const store = useBrowseStore()
@@ -139,6 +148,16 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 watch(
   () => [props.connectionId, props.topic],
   () => runQuery(),
+)
+
+// Unified refresh: Layout bumps refreshRequest (topbar button / tab context
+// menu) and each data panel re-runs its own fetch path. The watcher only
+// fires on increments, so mount keeps its single initial runQuery.
+watch(
+  () => props.refreshRequest,
+  () => {
+    if (props.refreshRequest > 0) void runQuery()
+  },
 )
 
 onMounted(runQuery)

@@ -3,7 +3,10 @@ import { onMounted, ref, watch } from 'vue'
 import { getApi } from '@/api/client'
 import type { ClusterHealth } from '@/api/types'
 
-const props = defineProps<{ connectionId: string }>()
+const props = withDefaults(
+  defineProps<{ connectionId: string; refreshRequest?: number }>(),
+  { refreshRequest: 0 },
+)
 
 const health = ref<ClusterHealth | null>(null)
 const loading = ref(false)
@@ -24,6 +27,16 @@ async function load(): Promise<void> {
 }
 
 onMounted(load)
+
+// Unified refresh from the top bar / tab context menu: re-run the local
+// load() (describeCluster). Only fires on increments, so mount keeps its
+// single initial load.
+watch(
+  () => props.refreshRequest,
+  () => {
+    if (props.refreshRequest > 0) void load()
+  },
+)
 
 // Switching tabs patches this component instance in place (Layout does not
 // key its workspace), so connectionId changes must drop the previous

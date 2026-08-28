@@ -8,7 +8,10 @@ import GroupLagPanel from './GroupLagPanel.vue'
 import ActiveProducersPanel from './ActiveProducersPanel.vue'
 import LagTrend from './LagTrend.vue'
 
-const props = defineProps<{ tabId: string; connectionId: string; group?: string }>()
+const props = withDefaults(
+  defineProps<{ tabId: string; connectionId: string; group?: string; refreshRequest?: number }>(),
+  { refreshRequest: 0 },
+)
 
 const store = useGroupsStore()
 const st = computed(() => store.stateFor(props.tabId))
@@ -127,6 +130,16 @@ function assignmentText(assignment: Record<string, number[]>): string {
     .map(([topic, parts]) => `${topic}:${[...parts].sort((x, y) => x - y).join(',')}`)
     .join(' ')
 }
+
+// Unified refresh from the top bar / tab context menu: re-run the full
+// refresh path (groups, active members and the group detail). Only fires on
+// increments, so mount keeps its single initial refresh.
+watch(
+  () => props.refreshRequest,
+  () => {
+    if (props.refreshRequest > 0) void refresh()
+  },
+)
 
 onMounted(refresh)
 </script>

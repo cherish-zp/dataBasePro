@@ -5,7 +5,10 @@ import type { ConsumerGroup } from '@/api/types'
 import { flattenGroupLag } from '@/utils/lag'
 import { fuzzyScore } from '@/utils/fuzzy'
 
-const props = defineProps<{ connectionId: string }>()
+const props = withDefaults(
+  defineProps<{ connectionId: string; refreshRequest?: number }>(),
+  { refreshRequest: 0 },
+)
 
 const groups = ref<ConsumerGroup[]>([])
 const loading = ref(false)
@@ -25,6 +28,16 @@ async function refresh(): Promise<void> {
 }
 
 onMounted(refresh)
+
+// Unified refresh from the top bar / tab context menu: re-run the local
+// refresh() (listConsumerGroups). Only fires on increments, so mount keeps
+// its single initial refresh.
+watch(
+  () => props.refreshRequest,
+  () => {
+    if (props.refreshRequest > 0) void refresh()
+  },
+)
 
 // Switching lag tabs patches this component instance in place (Layout does not
 // key its workspace), so connectionId changes must drop the previous

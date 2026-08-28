@@ -129,9 +129,48 @@ export const useTabsStore = defineStore('tabs', () => {
     }
   }
 
+  // closeOthers keeps only the requested tab and focuses it. A no-op when the
+  // id is not open.
+  function closeOthers(id: string): void {
+    const keep = openTabs.value.find((t) => t.id === id)
+    if (!keep) return
+    openTabs.value = [keep]
+    activeTabId.value = keep.id
+  }
+
+  // closeAll empties the tabbar and clears the active selection.
+  function closeAll(): void {
+    openTabs.value = []
+    activeTabId.value = null
+  }
+
+  // move reorders openTabs so the tab at index `from` lands at index `to`
+  // (measured in the array after removal). A no-op for equal or out-of-range
+  // indices. activeTabId needs no adjustment: it keys on the tab id, which the
+  // moved Tab object keeps, so the same tab stays active.
+  function move(from: number, to: number): void {
+    const len = openTabs.value.length
+    if (from < 0 || from >= len || to < 0 || to >= len || from === to) return
+    const [tab] = openTabs.value.splice(from, 1)
+    openTabs.value.splice(to, 0, tab)
+  }
+
   function setActive(id: string): void {
     if (openTabs.value.some((t) => t.id === id)) activeTabId.value = id
   }
 
-  return { openTabs, activeTabId, openTopic, openSql, openGroup, openLag, openHealth, closeTab, setActive }
+  return {
+    openTabs,
+    activeTabId,
+    openTopic,
+    openSql,
+    openGroup,
+    openLag,
+    openHealth,
+    closeTab,
+    closeOthers,
+    closeAll,
+    move,
+    setActive,
+  }
 })

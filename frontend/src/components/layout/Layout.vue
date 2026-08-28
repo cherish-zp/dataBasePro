@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useTabsStore, type Tab } from '@/store/tabs'
 import type { Connection } from '@/api/types'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
@@ -20,6 +20,22 @@ const emit = defineEmits<{
 }>()
 
 const tabs = useTabsStore()
+
+// refreshRequest drives the unified refresh: the top bar 刷新 button (and the
+// tab context menu's 刷新 item) bump the counter, and each data panel watches
+// its refreshRequest prop to re-run its own fetch. It only ever increments,
+// so a mount never double-fetches.
+const refreshRequest = ref(0)
+
+// Tab right-click menu state: the targeted tab plus the cursor position where
+// the fixed-position menu should render.
+const contextTab = ref<Tab | null>(null)
+const contextX = ref(0)
+const contextY = ref(0)
+const contextMenuEl = ref<HTMLElement | null>(null)
+
+// Drag-reorder state: the openTabs index currently being dragged.
+const dragFrom = ref<number | null>(null)
 
 const showProducer = ref(false)
 const showSettings = ref(false)
@@ -87,6 +103,107 @@ function openSqlTab(): void {
     tabs.openSql(activeTopic.value.connectionId, activeTopic.value.topic ?? '', activeTopic.value.partitions ?? [])
   }
 }
+
+// refreshActive bumps the unified refresh counter for the active tab. sql
+// consoles own their editor state and are excluded from unified refresh.
+function refreshActive(): void {
+  if (!active.value || active.value.kind === 'sql') return
+  refreshRequest.value++
+}
+
+// --- Tab right-click context menu -------------------------------------------
+
+function openTabContextMenu(e: MouseEvent, t: Tab): void {
+  contextTab.value = t
+  contextX.value = e.clientX
+  contextY.value = e.clientY
+}
+
+function closeContextMenu(): void {
+  contextTab.value = null
+}
+
+// onDocClick closes the tab context menu on clicks landing outside of it.
+function onDocClick(e: MouseEvent): void {
+  if (contextTab.value && contextMenuEl.value && !contextMenuEl.value.contains(e.target as Node)) {
+    closeContextMenu()
+  }
+}
+
+function onDocKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') closeContextMenu()
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocClick)
+  window.addEventListener('keydown', onDocKeydown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick)
+  window.removeEventListener('keydown', onDocKeydown)
+})
+
+function contextClose(): void {
+  if (!contextTab.value) return
+  tabs.closeTab(contextTab.value.id)
+  closeContextMenu()
+}
+
+function contextCloseOthers(): void {
+  if (!contextTab.value) return
+  tabs.closeOthers(contextTab.value.id)
+  closeContextMenu()
+}
+
+function contextCloseAll(): void {
+  tabs.closeAll()
+  closeContextMenu()
+}
+
+// contextRefresh refreshes the right-clicked tab through the same unified path
+// as the top bar button. An already-active tab bumps refreshRequest directly;
+// switching to another tab fetches on its own (the panel mounts or its
+// connection/topic watch fires), so bumping there too would double-fetch.
+function contextRefresh(): void {
+  const target = contextTab.value
+  if (!target) return
+  const wasActive = tabs.activeTabId === target.id
+  tabs.setActive(target.id)
+  if (wasActive) refreshRequest.value++
+  closeContextMenu()
+}
+
+// --- Tab drag reorder --------------------------------------------------------
+
+function onTabDragStart(e: DragEvent, from: number): void {
+  dragFrom.value = from
+  // Firefox needs a payload to initiate a drag; the drop is consumed anyway.
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', '')
+  }
+}
+
+function onTabDragOver(e: DragEvent, to: number): void {
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+}
+
+function onTabDrop(e: DragEvent, to: number): void {
+  e.preventDefault()
+  const from = dragFrom.value
+  if (from == null || from === to) return
+  // Dropping onto the tab at index `to` lands the dragged tab where that
+  // target currently sits; dragging rightwards shifts the target left by one
+  // after the removal.
+  tabs.move(from, from < to ? to - 1 : to)
+  dragFrom.value = null
+}
+
+function onTabDragEnd(): void {
+  dragFrom.value = null
+}
 </script>
 
 <template>
@@ -94,6 +211,15 @@ function openSqlTab(): void {
     <header class="topbar" data-test="topbar">
       <div class="brand" data-test="brand">🪐 dataBasePro</div>
       <div class="spacer"></div>
+      <button
+        class="btn ghost"
+        type="button"
+        data-test="btn-refresh-active"
+        :disabled="!active || active.kind === 'sql'"
+        @click="refreshActive"
+      >
+        刷新
+      </button>
       <button class="btn ghost" type="button" data-test="btn-settings" @click="showSettings = true">设置</button>
     </header>
 
@@ -120,14 +246,20 @@ function openSqlTab(): void {
       <main class="workspace">
         <div v-if="tabs.openTabs.length" class="tabbar">
           <div
-            v-for="t in tabs.openTabs"
+            v-for="(t, i) in tabs.openTabs"
             :key="t.id"
             class="tab"
-            :class="{ active: t.id === tabs.activeTabId }"
+            :class="{ active: t.id === tabs.activeTabId, dragging: dragFrom === i }"
             data-test="tab"
+            draggable="true"
             @click="tabs.setActive(t.id)"
+            @contextmenu.prevent.stop="openTabContextMenu($event, t)"
+            @dragstart="onTabDragStart($event, i)"
+            @dragover.prevent="onTabDragOver($event, i)"
+            @drop.prevent="onTabDrop($event, i)"
+            @dragend="onTabDragEnd"
           >
-            <span class="tab-title">{{ t.title }}</span>
+            <span class="tab-title" data-test="tab-title">{{ t.title }}</span>
             <button class="tab-close" type="button" data-test="tab-close" @click.stop="tabs.closeTab(t.id)">✕</button>
           </div>
         </div>
@@ -140,12 +272,18 @@ function openSqlTab(): void {
               :connection-id="active.connectionId"
               :topic="active.topic ?? ''"
               :partitions="active.partitions ?? []"
+              :refresh-request="refreshRequest"
               @open-sql="openSqlTab"
               @open-producer="openProducerPanel"
             />
           </template>
           <template v-else-if="active.kind === 'group'">
-            <ConsumerGroupView :tab-id="active.id" :connection-id="active.connectionId" :group="active.group ?? ''" />
+            <ConsumerGroupView
+              :tab-id="active.id"
+              :connection-id="active.connectionId"
+              :group="active.group ?? ''"
+              :refresh-request="refreshRequest"
+            />
           </template>
           <template v-else-if="active.kind === 'sql'">
             <SqlConsole
@@ -156,10 +294,10 @@ function openSqlTab(): void {
             />
           </template>
           <template v-else-if="active.kind === 'lag'">
-            <GlobalLagView :connection-id="active.connectionId" />
+            <GlobalLagView :connection-id="active.connectionId" :refresh-request="refreshRequest" />
           </template>
           <template v-else-if="active.kind === 'health'">
-            <ClusterHealthPanel :connection-id="active.connectionId" />
+            <ClusterHealthPanel :connection-id="active.connectionId" :refresh-request="refreshRequest" />
           </template>
         </div>
       </main>
@@ -175,6 +313,38 @@ function openSqlTab(): void {
     />
     <SettingsPanel :show="showSettings" @close="showSettings = false" />
     <CommandPalette />
+
+    <!-- Tab context menu. Teleported to <body> so a backdrop-filter ancestor
+         cannot confine the fixed positioning (same rationale as the command
+         palette). It renders at the cursor and closes on outside click or
+         Escape; the 刷新 item is omitted for sql tabs, which own their editor
+         state and are excluded from unified refresh. -->
+    <Teleport to="body">
+      <div
+        v-if="contextTab"
+        ref="contextMenuEl"
+        class="tab-context-menu"
+        data-test="tab-context-menu"
+        :style="{ left: `${contextX}px`, top: `${contextY}px` }"
+        @click.stop
+        @contextmenu.prevent.stop
+      >
+        <button class="context-item" type="button" data-test="context-close" @click="contextClose">关闭</button>
+        <button class="context-item" type="button" data-test="context-close-others" @click="contextCloseOthers">
+          关闭其他
+        </button>
+        <button class="context-item" type="button" data-test="context-close-all" @click="contextCloseAll">关闭全部</button>
+        <button
+          v-if="contextTab.kind !== 'sql'"
+          class="context-item"
+          type="button"
+          data-test="context-refresh"
+          @click="contextRefresh"
+        >
+          刷新
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -273,5 +443,34 @@ function openSqlTab(): void {
   padding: 1px 3px;
 }
 .tab-close:hover { color: var(--danger); }
+.tab.dragging {
+  opacity: 0.5;
+  border-color: var(--accent);
+}
+.tab-context-menu {
+  position: fixed;
+  z-index: 1200;
+  min-width: 130px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+.context-item {
+  text-align: left;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font);
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  transition: background 0.1s ease;
+}
+.context-item:hover { background: var(--bg-hover); }
 .workspace-body { flex: 1; min-height: 0; overflow: auto; }
 </style>
