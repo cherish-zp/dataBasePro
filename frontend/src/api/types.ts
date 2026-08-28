@@ -105,6 +105,32 @@ export interface ConsumerGroup {
   topics: Record<string, PartitionLag[]>
 }
 
+// One member of a consumer group with its per-topic partition assignment
+// (mirrors model.GroupMember).
+export interface GroupMember {
+  member_id: string
+  client_id: string
+  host: string
+  assignment: Record<string, number[]>
+}
+
+// State plus member topology of one consumer group (mirrors model.GroupDetail).
+export interface GroupDetail {
+  group: string
+  state: string
+  protocol_type: string
+  members: GroupMember[]
+}
+
+// One row of the reset-offset dry-run preview. new_offset is null when the
+// exact target is only computed by the broker at execution time (earliest and
+// timestamp modes); latest previews the log end offset verbatim.
+export interface ResetPreviewRow {
+  partition: number
+  current_offset: number
+  new_offset: number | null
+}
+
 export type ResetOffsetMode = 'earliest' | 'latest' | 'timestamp'
 
 export interface CreateTopicRequest {

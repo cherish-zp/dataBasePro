@@ -18,6 +18,7 @@ vi.mock('../../wailsjs/go/backend/App', () => ({
   CreateConnection: vi.fn(async (c: unknown) => ({ id: 'x', ...(c as object) })),
   GetPartitionLag: vi.fn(async () => ({ 0: 5 })),
   ListConnections: vi.fn(async () => []),
+  DescribeGroup: vi.fn(async () => ({ group: 'g1', state: 'Stable', protocol_type: 'consumer', members: [] })),
 }))
 
 import * as App from '../../wailsjs/go/backend/App'
@@ -65,6 +66,13 @@ describe('WailsApi delegation', () => {
     expect(mocked.DescribeCluster).toHaveBeenCalledWith('c-1')
     expect(got.cluster_id).toBe('kfake')
     expect(got.kafka_version).toBe('v3.7')
+  })
+
+  it('delegates describeGroup with the connection id and group', async () => {
+    const got = await api.describeGroup('c-1', 'g1')
+    expect(mocked.DescribeGroup).toHaveBeenCalledWith('c-1', 'g1')
+    expect(got.group).toBe('g1')
+    expect(got.state).toBe('Stable')
   })
 })
 
