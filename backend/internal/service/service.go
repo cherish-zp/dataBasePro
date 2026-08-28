@@ -116,6 +116,16 @@ func (s *Service) DeleteTopic(ctx context.Context, id, name string) error {
 	return d.DeleteTopic(ctx, name)
 }
 
+// DeleteTopics removes several topics from the connection's cluster and
+// returns one result per topic.
+func (s *Service) DeleteTopics(ctx context.Context, id string, names []string) ([]*model.TopicDeleteResult, error) {
+	d, err := s.kafka(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return d.DeleteTopics(ctx, names)
+}
+
 // DeleteConsumerGroup removes an empty consumer group from the connection's cluster.
 func (s *Service) DeleteConsumerGroup(ctx context.Context, id, name string) error {
 	d, err := s.kafka(ctx, id)

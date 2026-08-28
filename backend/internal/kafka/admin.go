@@ -247,6 +247,35 @@ func (c *Client) DeleteTopic(ctx context.Context, name string) error {
 	return nil
 }
 
+// DeleteTopics removes several topics in one request and returns one result
+// per topic, sorted by name. Per-topic broker failures (e.g. deleting an
+// unknown topic) surface in the matching result's Error; the call itself only
+// fails when the request cannot be issued at all.
+func (c *Client) DeleteTopics(ctx context.Context, names []string) ([]*model.TopicDeleteResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	resp, err := c.admin.DeleteTopics(ctx, names...)
+	if err != nil {
+		return nil, fmt.Errorf("delete topics: %w", err)
+	}
+	return mapDeleteResults(resp), nil
+}
+
+// mapDeleteResults converts kadm per-topic delete responses into model form,
+// decoupled from kadm so the mapping can be unit-tested.
+func mapDeleteResults(rs kadm.DeleteTopicResponses) []*model.TopicDeleteResult {
+	out := make([]*model.TopicDeleteResult, 0, len(rs))
+	for _, r := range rs {
+		res := &model.TopicDeleteResult{Name: r.Topic}
+		if r.Err != nil {
+			res.Error = r.Err.Error()
+		}
+		out = append(out, res)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // DeleteConsumerGroup removes an empty consumer group from the cluster.
 // Groups with live members cannot be deleted and surface the broker error.
 func (c *Client) DeleteConsumerGroup(ctx context.Context, name string) error {

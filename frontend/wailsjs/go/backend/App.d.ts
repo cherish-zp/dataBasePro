@@ -19,6 +19,8 @@ export function DeleteConsumerGroup(arg1:backend.DeleteConsumerGroupRequest):Pro
 
 export function DeleteTopic(arg1:backend.DeleteTopicRequest):Promise<void>;
 
+export function DeleteTopics(arg1:backend.DeleteTopicsRequest):Promise<Array<model.TopicDeleteResult>>;
+
 export function DescribeCluster(arg1:string):Promise<model.ClusterHealth>;
 
 export function DescribeGroup(arg1:string,arg2:string):Promise<model.GroupDetail>;

@@ -76,6 +76,12 @@ type DeleteTopicRequest struct {
 	Topic        string `json:"topic"`
 }
 
+// DeleteTopicsRequest carries the parameters for batch-deleting Kafka topics.
+type DeleteTopicsRequest struct {
+	ConnectionID string   `json:"connection_id"`
+	Names        []string `json:"names"`
+}
+
 // DeleteConsumerGroupRequest carries the parameters for deleting a consumer group.
 type DeleteConsumerGroupRequest struct {
 	ConnectionID string `json:"connection_id"`
@@ -111,6 +117,14 @@ func (a *App) DeleteTopic(req DeleteTopicRequest) error {
 	ctx, cancel := a.newContext()
 	defer cancel()
 	return a.svc.DeleteTopic(ctx, req.ConnectionID, req.Topic)
+}
+
+// DeleteTopics removes several topics from a connection's cluster and returns
+// one result per topic.
+func (a *App) DeleteTopics(req DeleteTopicsRequest) ([]*model.TopicDeleteResult, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.DeleteTopics(ctx, req.ConnectionID, req.Names)
 }
 
 // DeleteConsumerGroup removes a consumer group from a connection's cluster.

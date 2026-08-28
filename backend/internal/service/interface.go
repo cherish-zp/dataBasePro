@@ -25,6 +25,7 @@ type KafkaDataSource interface {
 	DescribeCluster(ctx context.Context) (*model.ClusterHealth, error)
 	CreateTopic(ctx context.Context, name string, partitions int32, replicationFactor int16) error
 	DeleteTopic(ctx context.Context, name string) error
+	DeleteTopics(ctx context.Context, names []string) ([]*model.TopicDeleteResult, error)
 	DeleteConsumerGroup(ctx context.Context, name string) error
 	ListConsumerGroups(ctx context.Context) ([]*model.ConsumerGroup, error)
 	DescribeGroup(ctx context.Context, group string) (*model.GroupDetail, error)

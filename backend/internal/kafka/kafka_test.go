@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
 
@@ -493,6 +494,83 @@ func TestDeleteTopic(t *testing.T) {
 		if tp.Name == "t1" {
 			t.Fatalf("topic t1 should have been deleted, still present: %+v", topics)
 		}
+	}
+}
+
+func TestDeleteTopics(t *testing.T) {
+	c := newCluster(t, 1, "t1", "t2", "t3")
+	cl := newKafkaClient(t, c)
+
+	res, err := cl.DeleteTopics(context.Background(), []string{"t1", "t2"})
+	if err != nil {
+		t.Fatalf("DeleteTopics: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("expected 2 results, got %+v", res)
+	}
+	if res[0].Name != "t1" || res[1].Name != "t2" {
+		t.Fatalf("expected results sorted by name t1,t2, got %+v", res)
+	}
+	for _, r := range res {
+		if r.Error != "" {
+			t.Fatalf("unexpected error deleting %s: %s", r.Name, r.Error)
+		}
+	}
+	topics, err := cl.ListTopics(context.Background())
+	if err != nil {
+		t.Fatalf("ListTopics: %v", err)
+	}
+	if len(topics) != 1 || topics[0].Name != "t3" {
+		t.Fatalf("expected only t3 to remain, got %+v", topics)
+	}
+}
+
+func TestDeleteTopicsPartialFailure(t *testing.T) {
+	c := newCluster(t, 1, "t1")
+	cl := newKafkaClient(t, c)
+
+	// Deleting an unknown topic must fail that topic only; the existing topic
+	// still deletes and the call itself succeeds.
+	res, err := cl.DeleteTopics(context.Background(), []string{"t1", "no-such-topic"})
+	if err != nil {
+		t.Fatalf("DeleteTopics must not fail wholesale on per-topic errors: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("expected 2 results, got %+v", res)
+	}
+	byName := map[string]string{}
+	for _, r := range res {
+		byName[r.Name] = r.Error
+	}
+	if byName["t1"] != "" {
+		t.Fatalf("existing topic must delete cleanly, got error %q", byName["t1"])
+	}
+	if byName["no-such-topic"] == "" {
+		t.Fatal("missing topic must carry a per-topic error")
+	}
+	topics, err := cl.ListTopics(context.Background())
+	if err != nil {
+		t.Fatalf("ListTopics: %v", err)
+	}
+	if len(topics) != 0 {
+		t.Fatalf("t1 should have been deleted despite the partial failure, got %+v", topics)
+	}
+}
+
+func TestMapDeleteResultsSortsAndCarriesErrors(t *testing.T) {
+	rs := kadm.DeleteTopicResponses{
+		"b-topic": {Topic: "b-topic"},
+		"a-topic": {Topic: "a-topic"},
+		"c-topic": {Topic: "c-topic", Err: kerr.UnknownTopicOrPartition},
+	}
+	got := mapDeleteResults(rs)
+	want := []*model.TopicDeleteResult{
+		{Name: "a-topic"},
+		{Name: "b-topic"},
+		{Name: "c-topic", Error: kerr.UnknownTopicOrPartition.Error()},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("mapDeleteResults mismatch:\n got %+v\nwant %+v", got, want)
 	}
 }
 

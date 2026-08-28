@@ -13,23 +13,33 @@ import (
 // fakeKafka implements KafkaDataSource for service-layer tests.
 type fakeKafka struct {
 	fakeDataSource
-	topics     []*model.Topic
-	msgs       []*model.Message
-	lag        map[int32]int64
-	group      []*model.ConsumerGroup
-	producers  []*model.ActiveProducer
-	consumers  []*model.ActiveConsumer
-	resetCalls []model.ResetOffsetMode
-	detail     *model.TopicDetail
-	health     *model.ClusterHealth
-	groupDg    *model.GroupDetail
-	batchCalls [][]model.BatchProduceMessage
+	topics      []*model.Topic
+	msgs        []*model.Message
+	lag         map[int32]int64
+	group       []*model.ConsumerGroup
+	producers   []*model.ActiveProducer
+	consumers   []*model.ActiveConsumer
+	resetCalls  []model.ResetOffsetMode
+	detail      *model.TopicDetail
+	health      *model.ClusterHealth
+	groupDg     *model.GroupDetail
+	batchCalls  [][]model.BatchProduceMessage
+	deleteCalls [][]string
 }
 
 func (f *fakeKafka) ListTopics(context.Context) ([]*model.Topic, error)      { return f.topics, nil }
 func (f *fakeKafka) CreateTopic(context.Context, string, int32, int16) error { return nil }
 func (f *fakeKafka) DeleteTopic(context.Context, string) error               { return nil }
-func (f *fakeKafka) DeleteConsumerGroup(context.Context, string) error       { return nil }
+
+func (f *fakeKafka) DeleteTopics(_ context.Context, names []string) ([]*model.TopicDeleteResult, error) {
+	f.deleteCalls = append(f.deleteCalls, names)
+	out := make([]*model.TopicDeleteResult, 0, len(names))
+	for _, n := range names {
+		out = append(out, &model.TopicDeleteResult{Name: n})
+	}
+	return out, nil
+}
+func (f *fakeKafka) DeleteConsumerGroup(context.Context, string) error { return nil }
 func (f *fakeKafka) ListConsumerGroups(context.Context) ([]*model.ConsumerGroup, error) {
 	return f.group, nil
 }
@@ -331,6 +341,28 @@ func TestProduceMessagesDelegates(t *testing.T) {
 		t.Fatalf("batch must be delegated verbatim, got %+v", f.k.batchCalls)
 	}
 	if len(got) != 2 || got[0].Index != 0 || got[1].Index != 1 || got[1].Offset != 1 {
+		t.Fatalf("unexpected results: %+v", got)
+	}
+}
+
+func TestDeleteTopicsDelegates(t *testing.T) {
+	svc, f := newTestService(t)
+	ctx := context.Background()
+	c, err := svc.CreateConnection(ctx, sampleConn())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := svc.DeleteTopics(ctx, c.ID, []string{"t2", "t1"})
+	if err != nil {
+		t.Fatalf("DeleteTopics: %v", err)
+	}
+	if len(f.k.deleteCalls) != 1 {
+		t.Fatalf("expected 1 batch delete call, got %d", len(f.k.deleteCalls))
+	}
+	if len(f.k.deleteCalls[0]) != 2 || f.k.deleteCalls[0][0] != "t2" || f.k.deleteCalls[0][1] != "t1" {
+		t.Fatalf("names must be delegated verbatim, got %+v", f.k.deleteCalls)
+	}
+	if len(got) != 2 || got[0].Name != "t2" || got[1].Name != "t1" {
 		t.Fatalf("unexpected results: %+v", got)
 	}
 }

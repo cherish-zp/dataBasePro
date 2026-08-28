@@ -120,6 +120,20 @@ export namespace backend {
 	        this.topic = source["topic"];
 	    }
 	}
+	export class DeleteTopicsRequest {
+	    connection_id: string;
+	    names: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new DeleteTopicsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.names = source["names"];
+	    }
+	}
 	export class ProduceRequest {
 	    connection_id: string;
 	    topic: string;
@@ -639,6 +653,20 @@ export namespace model {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.key = source["key"];
 	        this.value = source["value"];
+	    }
+	}
+	export class TopicDeleteResult {
+	    name: string;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TopicDeleteResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.error = source["error"];
 	    }
 	}
 	export class TopicDetail {

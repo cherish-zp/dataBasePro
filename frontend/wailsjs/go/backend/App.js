@@ -34,6 +34,10 @@ export function DeleteTopic(arg1) {
   return window['go']['backend']['App']['DeleteTopic'](arg1);
 }
 
+export function DeleteTopics(arg1) {
+  return window['go']['backend']['App']['DeleteTopics'](arg1);
+}
+
 export function DescribeCluster(arg1) {
   return window['go']['backend']['App']['DescribeCluster'](arg1);
 }

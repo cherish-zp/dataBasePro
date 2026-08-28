@@ -56,6 +56,13 @@ type PartitionLag struct {
 	ClientHost string `json:"client_host,omitempty"`
 }
 
+// TopicDeleteResult is the per-topic outcome of a batch delete. Error is
+// empty on success.
+type TopicDeleteResult struct {
+	Name  string `json:"name"`
+	Error string `json:"error"`
+}
+
 // ResetOffsetMode selects how a consumer group offset is reset.
 type ResetOffsetMode string
 
