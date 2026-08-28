@@ -6,6 +6,7 @@ import { OffsetEarliest } from '@/api/types'
 import { parseSelect, matchesWhere } from '@/utils/sql'
 import { formatTime, displayValue } from '@/utils/format'
 import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
+import { useSqlHistoryStore } from '@/store/sqlhistory'
 
 const props = defineProps<{
   tabId: string
@@ -27,6 +28,8 @@ watch(
   },
 )
 
+const sqlHistory = useSqlHistoryStore()
+
 async function run(): Promise<void> {
   error.value = null
   results.value = []
@@ -36,6 +39,9 @@ async function run(): Promise<void> {
     return
   }
   const topic = parsed.topic ?? props.topic
+  // Record at submission: the query was accepted for execution, regardless of
+  // whether the broker later returns rows or errors (simple console behavior).
+  sqlHistory.record(sql.value)
   running.value = true
   try {
     const fetched = await getApi().consumeMessages({
@@ -70,10 +76,42 @@ function exportAs(format: 'csv' | 'jsonl'): void {
   }
 }
 
-// onDocClick closes the export menu on clicks landing outside of it.
+// History/favorites dropdown: refills the editor and re-executes the picked
+// query; favorites are named, savable and removable inline.
+const historyOpen = ref(false)
+const historyRoot = ref<HTMLElement | null>(null)
+const favFormOpen = ref(false)
+const favName = ref('')
+
+// applyQuery fills the editor with the picked query and executes it right
+// away (回填触发执行), closing the menu.
+function applyQuery(q: string): void {
+  historyOpen.value = false
+  sql.value = q
+  void run()
+}
+
+function openFavForm(): void {
+  favFormOpen.value = true
+}
+
+// confirmSave stores the current editor SQL under the entered name, then
+// collapses the inline form (the dropdown stays open to show the new entry).
+function confirmSave(): void {
+  const name = favName.value.trim()
+  if (!name) return
+  sqlHistory.saveFavorite(name, sql.value)
+  favFormOpen.value = false
+  favName.value = ''
+}
+
+// onDocClick closes either menu on clicks landing outside of it.
 function onDocClick(e: MouseEvent): void {
   if (exportOpen.value && exportRoot.value && !exportRoot.value.contains(e.target as Node)) {
     exportOpen.value = false
+  }
+  if (historyOpen.value && historyRoot.value && !historyRoot.value.contains(e.target as Node)) {
+    historyOpen.value = false
   }
 }
 
@@ -88,6 +126,75 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
         <span class="label">SQL</span>
         <textarea v-model="sql" data-test="input-sql" class="editor" rows="3" spellcheck="false"></textarea>
       </label>
+      <div ref="historyRoot" class="history-menu" data-test="history-menu">
+        <button class="btn ghost" type="button" data-test="history-toggle" @click="historyOpen = !historyOpen">
+          历史/收藏 ▾
+        </button>
+        <div v-if="historyOpen" class="history-pop" data-test="history-pop">
+          <div class="pop-section">
+            <div class="pop-title">历史</div>
+            <button
+              v-for="q in sqlHistory.history"
+              :key="q"
+              class="pop-item"
+              type="button"
+              data-test="history-item"
+              :title="q"
+              @click="applyQuery(q)"
+            >
+              {{ q }}
+            </button>
+            <div v-if="!sqlHistory.history.length" class="pop-empty" data-test="history-empty">暂无历史</div>
+          </div>
+          <div class="pop-section">
+            <div class="pop-title-row">
+              <span class="pop-title">收藏</span>
+              <button class="fav-save" type="button" data-test="fav-save" :disabled="!sql.trim()" @click="openFavForm">
+                保存当前查询
+              </button>
+            </div>
+            <div v-if="favFormOpen" class="fav-form">
+              <input
+                v-model="favName"
+                class="fav-name"
+                data-test="fav-name-input"
+                placeholder="收藏名称"
+                @keydown.enter.prevent="confirmSave"
+              />
+              <button
+                class="btn primary fav-confirm"
+                type="button"
+                data-test="fav-confirm"
+                :disabled="!favName.trim()"
+                @click="confirmSave"
+              >
+                确认
+              </button>
+            </div>
+            <div v-for="f in sqlHistory.favorites" :key="f.name" class="fav-row">
+              <button
+                class="pop-item"
+                type="button"
+                data-test="fav-item"
+                :title="f.sql"
+                @click="applyQuery(f.sql)"
+              >
+                {{ f.name }}
+              </button>
+              <button
+                class="fav-remove"
+                type="button"
+                data-test="fav-remove"
+                title="删除收藏"
+                @click="sqlHistory.removeFavorite(f.name)"
+              >
+                ✕
+              </button>
+            </div>
+            <div v-if="!sqlHistory.favorites.length" class="pop-empty" data-test="fav-empty">暂无收藏</div>
+          </div>
+        </div>
+      </div>
       <button class="btn primary" type="button" data-test="btn-run" :disabled="running" @click="run">
         {{ running ? '执行中…' : '执行' }}
       </button>
@@ -204,6 +311,46 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   transition: background 0.1s ease;
 }
 .export-item:hover { background: var(--bg-hover); }
+.history-menu { position: relative; }
+.history-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 380px; max-width: 70vw;
+  display: flex; flex-direction: column; gap: 10px; padding: 10px;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+.pop-section { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pop-title { font-size: 11px; font-weight: 600; color: var(--text-secondary); letter-spacing: 0.02em; padding: 0 2px 3px; }
+.pop-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-bottom: 3px; }
+.pop-item {
+  display: block; width: 100%; box-sizing: border-box; text-align: left; border: none; background: transparent; cursor: pointer;
+  color: var(--text); font-size: 13px; font-family: var(--mono); padding: 7px 10px; border-radius: var(--radius-sm);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background 0.1s ease;
+}
+.pop-item:hover { background: var(--bg-hover); }
+.pop-empty { font-size: 12px; color: var(--text-tertiary); padding: 4px 2px 2px; }
+.fav-save {
+  border: none; background: transparent; cursor: pointer; font-size: 12px; font-family: var(--font);
+  color: var(--accent); padding: 2px 4px; border-radius: var(--radius-sm);
+  transition: background 0.1s ease;
+}
+.fav-save:hover:not(:disabled) { background: var(--accent-soft); }
+.fav-save:disabled { opacity: 0.5; cursor: not-allowed; color: var(--text-tertiary); }
+.fav-form { display: flex; gap: 6px; padding: 2px 0 4px; }
+.fav-name {
+  flex: 1; min-width: 0; box-sizing: border-box; font-size: 13px; font-family: var(--font);
+  color: var(--text); background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+}
+.fav-name:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.fav-confirm { padding: 6px 14px; font-size: 12px; }
+.fav-row { display: flex; align-items: center; gap: 2px; }
+.fav-row .pop-item { flex: 1; min-width: 0; }
+.fav-remove {
+  flex: none; border: none; background: transparent; cursor: pointer; color: var(--text-tertiary);
+  font-size: 12px; padding: 6px 8px; border-radius: var(--radius-sm); line-height: 1;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+.fav-remove:hover { background: var(--danger-soft); color: var(--danger); }
 .btn.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }
 .btn.ghost:hover:not(:disabled) { background: var(--bg-hover); }
 .table-wrap { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }

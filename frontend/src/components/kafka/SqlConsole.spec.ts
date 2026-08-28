@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Message } from '@/api/types'
+import { useSqlHistoryStore } from '@/store/sqlhistory'
 import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
 import SqlConsole from './SqlConsole.vue'
 
@@ -56,6 +57,10 @@ function mountConsole(overrides: Partial<Api> = {}) {
 }
 
 describe('SqlConsole', () => {
+  // The console persists query history to localStorage; start every test from
+  // a clean slate so dropdown contents are deterministic.
+  beforeEach(() => localStorage.clear())
+
   it('renders the console as a full page', () => {
     const { wrapper } = mountConsole()
     expect(wrapper.find('[data-test="sql-console"]').exists()).toBe(true)
@@ -172,5 +177,88 @@ describe('SqlConsole', () => {
       exportJsonl(messages),
       JSONL_MIME,
     )
+  })
+
+  it('records an executed query into the history store', async () => {
+    const { wrapper } = mountConsole()
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await flushPromises()
+    expect(useSqlHistoryStore().history).toEqual(['SELECT * FROM orders LIMIT 100'])
+  })
+
+  it('does not record a query that fails to parse', async () => {
+    const { wrapper } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').setValue('INSERT INTO t VALUES (1)')
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="sql-error"]').exists()).toBe(true)
+    expect(useSqlHistoryStore().history).toEqual([])
+  })
+
+  it('opens the history/favorites dropdown with both sections', async () => {
+    const { wrapper } = mountConsole()
+    expect(wrapper.find('[data-test="history-pop"]').exists()).toBe(false)
+    await wrapper.find('[data-test="history-toggle"]').trigger('click')
+    const pop = wrapper.find('[data-test="history-pop"]')
+    expect(pop.exists()).toBe(true)
+    expect(pop.text()).toContain('历史')
+    expect(pop.text()).toContain('收藏')
+    expect(wrapper.find('[data-test="history-empty"]').exists()).toBe(true)
+  })
+
+  it('refills the editor and re-executes from a history item', async () => {
+    const { wrapper, api } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 10')
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 20')
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="history-toggle"]').trigger('click')
+    const items = wrapper.findAll('[data-test="history-item"]')
+    expect(items).toHaveLength(2)
+    await items[1].trigger('click')
+    await flushPromises()
+    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
+      'SELECT * FROM orders LIMIT 10',
+    )
+    expect(api.consumeMessages).toHaveBeenCalledTimes(3)
+    expect(api.consumeMessages).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 10 }))
+  })
+
+  it('saves the current sql as a named favorite via the inline form', async () => {
+    const { wrapper } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'x'")
+    await wrapper.find('[data-test="history-toggle"]').trigger('click')
+    const save = wrapper.find('[data-test="fav-save"]')
+    expect(save.attributes('disabled')).toBeUndefined()
+    await save.trigger('click')
+    const input = wrapper.find('[data-test="fav-name-input"]')
+    expect(input.exists()).toBe(true)
+    await input.setValue('recent-errors')
+    await input.trigger('keydown.enter')
+    expect(useSqlHistoryStore().favorites).toEqual([
+      { name: 'recent-errors', sql: "SELECT * FROM orders WHERE key = 'x'" },
+    ])
+    expect(wrapper.find('[data-test="fav-item"]').text()).toContain('recent-errors')
+  })
+
+  it('disables saving while the editor is empty', async () => {
+    const { wrapper } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').setValue('   ')
+    await wrapper.find('[data-test="history-toggle"]').trigger('click')
+    expect(wrapper.find('[data-test="fav-save"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="fav-name-input"]').exists()).toBe(false)
+  })
+
+  it('removes a favorite from the dropdown', async () => {
+    const { wrapper, api } = mountConsole()
+    useSqlHistoryStore().saveFavorite('top-errors', 'SELECT * FROM errors')
+    await wrapper.find('[data-test="history-toggle"]').trigger('click')
+    expect(wrapper.find('[data-test="fav-item"]').text()).toContain('top-errors')
+    await wrapper.find('[data-test="fav-remove"]').trigger('click')
+    expect(useSqlHistoryStore().favorites).toEqual([])
+    expect(wrapper.find('[data-test="fav-item"]').exists()).toBe(false)
+    expect(api.consumeMessages).not.toHaveBeenCalled()
   })
 })
