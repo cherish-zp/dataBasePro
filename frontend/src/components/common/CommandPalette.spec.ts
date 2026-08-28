@@ -87,8 +87,8 @@ async function typeQuery(text: string): Promise<void> {
   await nextTick()
 }
 
-async function pressInputKey(key: string): Promise<void> {
-  q('palette-input')?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+async function pressInputKey(key: string, init: KeyboardEventInit = {}): Promise<void> {
+  q('palette-input')?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }))
   await nextTick()
 }
 
@@ -256,6 +256,35 @@ describe('CommandPalette', () => {
     await pressInputKey('ArrowDown')
     await pressInputKey('Enter')
     expect(tabs.openTabs[0]).toMatchObject({ kind: 'topic', connectionId: 'a', topic: 'eu_orders' })
+    expect(q('command-palette')).toBeNull()
+  })
+
+  it('ignores enter pressed during IME composition', async () => {
+    const { tabs } = await openLoaded()
+    await typeQuery('orders')
+    // dispatchEvent returns false once the default is prevented; composing
+    // Enter must be left to the IME (no preventDefault, no action).
+    const notPrevented = q<HTMLInputElement>('palette-input')?.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, isComposing: true }),
+    )
+    await nextTick()
+    expect(notPrevented).toBe(true)
+    expect(tabs.openTabs).toHaveLength(0)
+    expect(q('command-palette')).not.toBeNull()
+  })
+
+  it('ignores arrow keys pressed during IME composition', async () => {
+    await openLoaded()
+    await typeQuery('orders')
+    await pressInputKey('ArrowDown', { isComposing: true })
+    expect(qa('palette-item')[0].classList.contains('active')).toBe(true)
+  })
+
+  it('handles enter normally when isComposing is false', async () => {
+    const { tabs } = await openLoaded()
+    await typeQuery('orders')
+    await pressInputKey('Enter', { isComposing: false })
+    expect(tabs.openTabs).toHaveLength(1)
     expect(q('command-palette')).toBeNull()
   })
 

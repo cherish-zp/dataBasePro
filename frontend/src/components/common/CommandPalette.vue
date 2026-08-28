@@ -150,6 +150,25 @@ function move(delta: number): void {
   cursor.value = (activeIndex.value + delta + n) % n
 }
 
+// onInputKeydown handles the input's keys with an IME guard: while a
+// composition is in progress (e.g. typing Chinese) Enter commits the candidate
+// and the arrows navigate candidates, so those keydowns must be left to the
+// IME — no action and no preventDefault. keyCode 229 is the legacy composing
+// signal (Safari).
+function onInputKeydown(e: KeyboardEvent): void {
+  if (e.isComposing || e.keyCode === 229) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    move(1)
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    move(-1)
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    chooseActive()
+  }
+}
+
 function choose(item: PaletteResult): void {
   if (item.kind === 'topic') tabs.openTopic(item.connId, item.name)
   else tabs.openGroup(item.connId, item.name)
@@ -191,9 +210,7 @@ watch([activeIndex, results, open], async () => {
           autocorrect="off"
           autocomplete="off"
           spellcheck="false"
-          @keydown.down.prevent="move(1)"
-          @keydown.up.prevent="move(-1)"
-          @keydown.enter.prevent="chooseActive"
+          @keydown="onInputKeydown"
         />
         <div ref="listEl" class="palette-list">
           <div v-if="!hasQuery" class="palette-note muted" data-test="palette-empty">输入以搜索 Topic / 消费组</div>
@@ -230,7 +247,9 @@ watch([activeIndex, results, open], async () => {
 
 <style scoped>
 .palette-backdrop {
-  position: fixed; inset: 0; z-index: 200;
+  /* Sits above every other overlay (drawers 1000, modals 900) so the palette
+     stays visible — and dismissible — even with a drawer or modal open. */
+  position: fixed; inset: 0; z-index: 1100;
   background: rgba(0, 0, 0, 0.32);
   -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
