@@ -1,10 +1,18 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Message } from '@/api/types'
+import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
 import SqlConsole from './SqlConsole.vue'
+
+// Stub the DOM download trigger but keep the real CSV/JSONL builders, so the
+// assertions check exactly what the component passes to downloadFile.
+vi.mock('@/utils/export', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/utils/export')>()
+  return { ...actual, downloadFile: vi.fn() }
+})
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
   return {
@@ -120,5 +128,49 @@ describe('SqlConsole', () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="sql-error"]').text()).toContain('cluster down')
     })
+  })
+
+  it('renders a disabled export control until results exist', () => {
+    const { wrapper } = mountConsole()
+    const toggle = wrapper.find('[data-test="export-toggle"]')
+    expect(toggle.exists()).toBe(true)
+    expect(toggle.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="export-csv"]').exists()).toBe(false)
+  })
+
+  it('exports query results as CSV via the dropdown', async () => {
+    const messages: Message[] = [msg('中文键', 'a,b'), msg('k2', 'v2')]
+    const { wrapper } = mountConsole({
+      consumeMessages: vi.fn(async () => messages),
+    })
+    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders')
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await flushPromises()
+    const toggle = wrapper.find('[data-test="export-toggle"]')
+    expect(toggle.attributes('disabled')).toBeUndefined()
+    await toggle.trigger('click')
+    await wrapper.find('[data-test="export-csv"]').trigger('click')
+    expect(vi.mocked(downloadFile)).toHaveBeenCalledWith(
+      'query-results',
+      exportCsv(messages, MESSAGE_EXPORT_COLUMNS),
+      CSV_MIME,
+    )
+  })
+
+  it('exports query results as JSONL via the dropdown', async () => {
+    const messages: Message[] = [msg('k1', 'v1')]
+    const { wrapper } = mountConsole({
+      consumeMessages: vi.fn(async () => messages),
+    })
+    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders')
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="export-toggle"]').trigger('click')
+    await wrapper.find('[data-test="export-jsonl"]').trigger('click')
+    expect(vi.mocked(downloadFile)).toHaveBeenCalledWith(
+      'query-results',
+      exportJsonl(messages),
+      JSONL_MIME,
+    )
   })
 })

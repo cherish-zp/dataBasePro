@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { getApi } from '@/api/client'
 import type { Message } from '@/api/types'
 import { OffsetEarliest } from '@/api/types'
 import { parseSelect, matchesWhere } from '@/utils/sql'
 import { formatTime, displayValue } from '@/utils/format'
+import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
 
 const props = defineProps<{
   tabId: string
@@ -53,6 +54,31 @@ async function run(): Promise<void> {
     running.value = false
   }
 }
+
+// Export dropdown: disabled until a query produced rows.
+const exportOpen = ref(false)
+const exportRoot = ref<HTMLElement | null>(null)
+
+// exportAs downloads the current result rows in the picked format and closes
+// the menu.
+function exportAs(format: 'csv' | 'jsonl'): void {
+  exportOpen.value = false
+  if (format === 'csv') {
+    downloadFile('query-results', exportCsv(results.value, MESSAGE_EXPORT_COLUMNS), CSV_MIME)
+  } else {
+    downloadFile('query-results', exportJsonl(results.value), JSONL_MIME)
+  }
+}
+
+// onDocClick closes the export menu on clicks landing outside of it.
+function onDocClick(e: MouseEvent): void {
+  if (exportOpen.value && exportRoot.value && !exportRoot.value.contains(e.target as Node)) {
+    exportOpen.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('click', onDocClick))
+onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 </script>
 
 <template>
@@ -74,6 +100,21 @@ async function run(): Promise<void> {
     <div class="results-panel" data-test="sql-results">
       <div class="results-header">
         <span>查询结果（{{ results.length }} 条）</span>
+        <div ref="exportRoot" class="export-menu" data-test="export-menu">
+          <button
+            class="btn ghost"
+            type="button"
+            data-test="export-toggle"
+            :disabled="results.length === 0"
+            @click="exportOpen = !exportOpen"
+          >
+            导出 ▾
+          </button>
+          <div v-if="exportOpen" class="export-pop">
+            <button class="export-item" type="button" data-test="export-csv" @click="exportAs('csv')">CSV</button>
+            <button class="export-item" type="button" data-test="export-jsonl" @click="exportAs('jsonl')">JSONL</button>
+          </div>
+        </div>
       </div>
       <div v-if="results.length" class="table-wrap">
         <table class="table">
@@ -149,7 +190,22 @@ async function run(): Promise<void> {
 .msg { font-size: 13px; border-radius: 9px; padding: 8px 12px; margin: 8px 16px 0; }
 .msg.err { background: var(--danger-soft); color: var(--danger); }
 .results-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 16px 16px; }
-.results-header { font-size: 13px; font-weight: 600; padding: 6px 0 10px; }
+.results-header { display: flex; align-items: center; gap: 12px; justify-content: space-between; font-size: 13px; font-weight: 600; padding: 6px 0 10px; }
+.export-menu { position: relative; font-weight: 400; }
+.export-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 110px;
+  display: flex; flex-direction: column; padding: 4px;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+.export-item {
+  text-align: left; border: none; background: transparent; cursor: pointer;
+  color: var(--text); font-size: 13px; font-family: var(--font); padding: 7px 10px; border-radius: var(--radius-sm);
+  transition: background 0.1s ease;
+}
+.export-item:hover { background: var(--bg-hover); }
+.btn.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }
+.btn.ghost:hover:not(:disabled) { background: var(--bg-hover); }
 .table-wrap { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table th { position: sticky; top: 0; background: var(--bg-subtle); text-align: left; padding: 8px 12px; color: var(--text-secondary); font-weight: 600; border-bottom: 1px solid var(--border); z-index: 1; }

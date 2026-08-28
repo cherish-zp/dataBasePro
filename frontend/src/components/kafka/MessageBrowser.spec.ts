@@ -4,7 +4,15 @@ import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Message } from '@/api/types'
+import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
 import MessageBrowser from './MessageBrowser.vue'
+
+// Stub the DOM download trigger but keep the real CSV/JSONL builders, so the
+// assertions check exactly what the component passes to downloadFile.
+vi.mock('@/utils/export', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/utils/export')>()
+  return { ...actual, downloadFile: vi.fn() }
+})
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
   return {
@@ -48,6 +56,10 @@ function mountBrowser(overrides: Partial<Api> = {}) {
 }
 
 describe('MessageBrowser', () => {
+  beforeEach(() => {
+    vi.mocked(downloadFile).mockClear()
+  })
+
   it('fetches earliest messages on mount and renders rows', async () => {
     const { wrapper, api } = mountBrowser({
       consumeMessages: vi.fn(async () => [msg(0), msg(1), msg(2)]),
@@ -212,5 +224,57 @@ describe('MessageBrowser', () => {
     expect(wrapper.emitted('open-sql')).toBeTruthy()
     await wrapper.find('[data-test="btn-open-producer"]').trigger('click')
     expect(wrapper.emitted('open-producer')).toBeTruthy()
+  })
+
+  it('renders a disabled export control when there are no messages', async () => {
+    const { wrapper } = mountBrowser()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="browse-empty"]').exists()).toBe(true)
+    })
+    const toggle = wrapper.find('[data-test="export-toggle"]')
+    expect(toggle.exists()).toBe(true)
+    expect(toggle.attributes('disabled')).toBeDefined()
+    // The format menu is closed until the toggle is clicked.
+    expect(wrapper.find('[data-test="export-csv"]').exists()).toBe(false)
+  })
+
+  it('exports loaded messages as CSV via the dropdown', async () => {
+    const messages: Message[] = [
+      { ...msg(0), key: '中文键', value: '值,含"逗号"' },
+      msg(1),
+    ]
+    const { wrapper } = mountBrowser({
+      consumeMessages: vi.fn(async () => messages),
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(2)
+    })
+    expect(wrapper.find('[data-test="export-toggle"]').attributes('disabled')).toBeUndefined()
+    await wrapper.find('[data-test="export-toggle"]').trigger('click')
+    await wrapper.find('[data-test="export-csv"]').trigger('click')
+    expect(vi.mocked(downloadFile)).toHaveBeenCalledWith(
+      'messages-events',
+      exportCsv(messages, MESSAGE_EXPORT_COLUMNS),
+      CSV_MIME,
+    )
+    // The menu closes after picking a format.
+    expect(wrapper.find('[data-test="export-csv"]').exists()).toBe(false)
+  })
+
+  it('exports loaded messages as JSONL via the dropdown', async () => {
+    const messages: Message[] = [msg(0), msg(1)]
+    const { wrapper } = mountBrowser({
+      consumeMessages: vi.fn(async () => messages),
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(2)
+    })
+    await wrapper.find('[data-test="export-toggle"]').trigger('click')
+    await wrapper.find('[data-test="export-jsonl"]').trigger('click')
+    expect(vi.mocked(downloadFile)).toHaveBeenCalledWith(
+      'messages-events',
+      exportJsonl(messages),
+      JSONL_MIME,
+    )
   })
 })
