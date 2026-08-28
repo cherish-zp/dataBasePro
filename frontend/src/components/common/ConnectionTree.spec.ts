@@ -742,6 +742,22 @@ describe('ConnectionTree', () => {
     expect(wrapper.find('[data-test="batch-delete-topics"]').text()).toContain('删除(0)')
   })
 
+  it('select-all only picks the topics left visible by the search filter', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'user-log', partitions: [] },
+      { name: 'user-events', partitions: [] },
+      { name: 'order-db', partitions: [] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="topic-search"]').setValue('user')
+    await wrapper.find('[data-test="select-mode-toggle"]').trigger('click')
+    await wrapper.find('[data-test="select-all-topics"]').trigger('click')
+    expect(wrapper.find('[data-test="batch-delete-topics"]').text()).toContain('删除(2)')
+    expect(api.deleteTopics).not.toHaveBeenCalled()
+  })
+
   it('exports the full topic list as CSV even when the search filter matches nothing', async () => {
     ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
       { name: 't1', partitions: [{ id: 0, leader: 0, replicas: [], isr: [] }] },

@@ -325,13 +325,16 @@ function toggleTopicSelected(connId: string, name: string): void {
     : [...cur, name]
 }
 
+// isAllSelected and toggleSelectAll operate on the visible (search filtered)
+// topic list: select-all must never silently include topics the user filtered
+// out of view, especially before a destructive batch delete.
 function isAllSelected(connId: string): boolean {
-  const list = topicsByConn.value[connId] ?? []
+  const list = filteredTopics(connId)
   return list.length > 0 && list.every((t) => isTopicSelected(connId, t.name))
 }
 
 function toggleSelectAll(connId: string): void {
-  const list = topicsByConn.value[connId] ?? []
+  const list = filteredTopics(connId)
   selectedByConn.value[connId] = isAllSelected(connId) ? [] : list.map((t) => t.name)
 }
 
