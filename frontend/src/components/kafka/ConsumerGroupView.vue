@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useGroupsStore } from '@/store/groups'
-import type { ResetOffsetMode } from '@/api/types'
+import { getApi } from '@/api/client'
+import type { GroupDetail, ResetOffsetMode, ResetPreviewRow } from '@/api/types'
 import SearchSelect, { type SelectOption } from '@/components/common/SearchSelect.vue'
 import GroupLagPanel from './GroupLagPanel.vue'
 import ActiveProducersPanel from './ActiveProducersPanel.vue'
+import LagTrend from './LagTrend.vue'
 
 const props = defineProps<{ tabId: string; connectionId: string; group?: string }>()
 
@@ -15,6 +17,9 @@ const selectedGroup = ref<string | null>(props.group ?? null)
 const selectedTopic = ref<string | null>(null)
 const resetMode = ref<ResetOffsetMode>('latest')
 const timestampMs = ref<number | null>(null)
+const previewRows = ref<ResetPreviewRow[] | null>(null)
+const groupDetail = ref<GroupDetail | null>(null)
+const membersNote = ref('')
 
 const groups = computed(() => st.value.groups)
 const group = computed(() => groups.value.find((g) => g.name === selectedGroup.value) ?? null)
@@ -37,6 +42,19 @@ async function syncMembers(): Promise<void> {
   await store.loadActiveProducers(props.tabId, props.connectionId, selectedGroup.value ?? '', selectedTopic.value ?? '')
 }
 
+async function loadGroupTopology(): Promise<void> {
+  if (!selectedGroup.value) {
+    groupDetail.value = null
+    return
+  }
+  try {
+    groupDetail.value = await getApi().describeGroup(props.connectionId, selectedGroup.value)
+    membersNote.value = ''
+  } catch (e) {
+    membersNote.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
 async function refresh(): Promise<void> {
   await store.load(props.tabId, props.connectionId)
   if (selectedGroup.value == null && groups.value.length > 0) {
@@ -48,7 +66,7 @@ async function refresh(): Promise<void> {
       selectedTopic.value = ts[0] ?? null
     }
   }
-  await syncMembers()
+  await Promise.all([syncMembers(), loadGroupTopology()])
 }
 
 watch(selectedGroup, (name) => {
@@ -56,6 +74,35 @@ watch(selectedGroup, (name) => {
 })
 
 watch([selectedGroup, selectedTopic], syncMembers)
+
+watch(selectedGroup, loadGroupTopology)
+
+// Any input that changes the reset target invalidates a shown preview.
+watch([selectedGroup, selectedTopic, resetMode, timestampMs], () => {
+  previewRows.value = null
+})
+
+// lagSampler feeds the trend chart with the group's summed lag on the topic.
+async function lagSampler(): Promise<number> {
+  if (!selectedGroup.value || !selectedTopic.value) return 0
+  const lag = await getApi().getPartitionLag(props.connectionId, selectedTopic.value, selectedGroup.value)
+  return Object.values(lag).reduce((total, lag) => total + lag, 0)
+}
+
+// previewReset builds the dry-run table from freshly loaded lag data. Only
+// the latest mode has a client-side computable target (the log end offset);
+// earliest/timestamp targets are resolved by the broker at execution time.
+async function previewReset(): Promise<void> {
+  if (!selectedGroup.value || !selectedTopic.value) return
+  await store.load(props.tabId, props.connectionId)
+  const g = groups.value.find((x) => x.name === selectedGroup.value)
+  const rows = selectedTopic.value ? g?.topics[selectedTopic.value] ?? [] : []
+  previewRows.value = rows.map((r) => ({
+    partition: r.partition,
+    current_offset: r.current_offset,
+    new_offset: resetMode.value === 'latest' ? r.log_end_offset : null,
+  }))
+}
 
 async function reset(): Promise<void> {
   if (!selectedGroup.value || !selectedTopic.value) return
@@ -67,6 +114,18 @@ async function reset(): Promise<void> {
     resetMode.value,
     resetMode.value === 'timestamp' ? (timestampMs.value ?? Date.now()) : undefined,
   )
+}
+
+async function confirmReset(): Promise<void> {
+  await reset()
+  previewRows.value = null
+}
+
+function assignmentText(assignment: Record<string, number[]>): string {
+  return Object.entries(assignment ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([topic, parts]) => `${topic}:${[...parts].sort((x, y) => x - y).join(',')}`)
+    .join(' ')
 }
 
 onMounted(refresh)
@@ -90,9 +149,35 @@ onMounted(refresh)
 
     <div v-if="st.error" class="msg err" data-test="group-error">{{ st.error }}</div>
 
-    <GroupLagPanel :rows="lags" :loading="st.loading" />
+    <LagTrend
+      v-if="selectedGroup && selectedTopic"
+      :sampler="lagSampler"
+      :sample-key="`${selectedGroup}/${selectedTopic}`"
+      title="Lag 趋势"
+    />
+
+    <GroupLagPanel :rows="lags" :loading="st.loading" :preview="previewRows" @confirm-reset="confirmReset" @cancel-preview="previewRows = null" />
 
     <ActiveProducersPanel :producers="producers" :note="producersNote" :loading="membersLoading" />
+
+    <div class="members-panel" data-test="members-panel">
+      <div class="members-header">
+        <span class="members-title">成员拓扑</span>
+        <span v-if="groupDetail" class="mono members-state" data-test="members-state">{{ groupDetail.state }}</span>
+      </div>
+      <div v-if="membersNote" class="members-note" data-test="members-note">{{ membersNote }}</div>
+      <div v-else-if="!groupDetail || groupDetail.members.length === 0" class="members-empty" data-test="members-empty">
+        暂无活跃成员
+      </div>
+      <div v-else class="members-list">
+        <div v-for="m in groupDetail.members" :key="m.member_id" class="member-row" data-test="member-row">
+          <span class="mono" data-test="member-id">{{ m.member_id }}</span>
+          <span class="mono" data-test="member-client-id">{{ m.client_id || '—' }}</span>
+          <span data-test="member-host">{{ m.host || '—' }}</span>
+          <span class="mono" data-test="member-assignment">{{ assignmentText(m.assignment) || '—' }}</span>
+        </div>
+      </div>
+    </div>
 
     <div class="reset-panel" data-test="reset-panel">
       <span class="reset-title">重置 Offset</span>
@@ -111,11 +196,11 @@ onMounted(refresh)
       <button
         class="btn danger"
         type="button"
-        data-test="btn-reset"
+        data-test="btn-dry-run"
         :disabled="!selectedGroup || !selectedTopic || st.resetting"
-        @click="reset"
+        @click="previewReset"
       >
-        {{ st.resetting ? '重置中…' : '重置' }}
+        预览(Dry-run)
       </button>
     </div>
   </div>
@@ -141,4 +226,14 @@ onMounted(refresh)
 .msg.err { background: var(--danger-soft); color: var(--danger); }
 .reset-panel { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 .reset-title { font-weight: 600; font-size: 13px; color: var(--text); padding-bottom: 6px; }
+.members-panel { margin-top: 14px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+.members-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.members-title { font-weight: 600; font-size: 13px; color: var(--text); }
+.members-state { font-size: 12px; color: var(--text-secondary); }
+.members-note { padding: 12px; font-size: 12px; color: var(--warn); }
+.members-empty { padding: 16px; text-align: center; color: var(--text-tertiary); font-size: 13px; }
+.member-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.member-row:last-child { border-bottom: none; }
+.mono { font-family: var(--mono); }
+[data-test="member-assignment"] { color: var(--text-secondary); }
 </style>

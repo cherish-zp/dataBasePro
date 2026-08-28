@@ -3,7 +3,7 @@ import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
-import type { ConsumerGroup } from '@/api/types'
+import type { ConsumerGroup, GroupDetail } from '@/api/types'
 import ConsumerGroupView from './ConsumerGroupView.vue'
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
@@ -19,6 +19,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     describeTopic: vi.fn(async () => ({ name: "", partitions: [], configs: [] })),
     describeCluster: vi.fn(async () => ({ cluster_id: "", controller_id: -1, kafka_version: "", brokers: [], under_replicated_partitions: 0 })),
     listConsumerGroups: vi.fn(async () => []),
+    describeGroup: vi.fn(async () => ({ group: '', state: '', protocol_type: '', members: [] })),
     consumeMessages: vi.fn(async () => []),
     consumeMessagesByTimestamp: vi.fn(async () => []),
     getPartitionLag: vi.fn(async () => ({})),
@@ -136,22 +137,144 @@ describe('ConsumerGroupView', () => {
     })
   })
 
-  it('resets offset to the selected mode and reloads', async () => {
-    const listGroups = vi.fn(async () => [grp()])
-    const { wrapper } = mountView({ listConsumerGroups: listGroups })
+  it('previews then confirms an offset reset through the dry-run flow', async () => {
+    const reset = vi.fn(async () => {})
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), resetConsumerGroupOffset: reset })
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
     })
     await wrapper.find('[data-test="select-reset-mode"]').setValue('earliest')
-    await wrapper.find('[data-test="btn-reset"]').trigger('click')
+    await wrapper.find('[data-test="btn-dry-run"]').trigger('click')
     await vi.waitFor(() => {
-      expect(wrapper.emitted().length || true).toBe(true)
+      expect(wrapper.find('[data-test="dry-run-table"]').exists()).toBe(true)
     })
-    expect(wrapper.vm.$options).toBeDefined()
-    // resetConsumerGroupOffset was called with earliest; then groups reloaded.
+    await wrapper.find('[data-test="btn-confirm-reset"]').trigger('click')
     await vi.waitFor(() => {
-      expect(listGroups).toHaveBeenCalled()
+      expect(reset).toHaveBeenCalledWith({
+        connection_id: 'c',
+        group: 'grp-1',
+        topic: 'orders',
+        mode: 'earliest',
+        timestamp_ms: undefined,
+      })
     })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="dry-run-table"]').exists()).toBe(false)
+    })
+  })
+
+  it('previews the affected partitions with current and new offsets before resetting', async () => {
+    const reset = vi.fn(async () => {})
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), resetConsumerGroupOffset: reset })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    await wrapper.find('[data-test="btn-dry-run"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="dry-run-row"]')).toHaveLength(2)
+    })
+    const rows = wrapper.findAll('[data-test="dry-run-row"]')
+    expect(rows[0].text()).toContain('0')
+    expect(rows[0].text()).toContain('10')
+    expect(rows[0].find('[data-test="dry-run-new-offset"]').text()).toBe('20')
+    expect(rows[1].find('[data-test="dry-run-new-offset"]').text()).toBe('15')
+    expect(reset).not.toHaveBeenCalled()
+  })
+
+  it('refreshes lag data when building the dry-run preview', async () => {
+    const groups = [grp()]
+    const listGroups = vi.fn(async () => groups)
+    const { wrapper } = mountView({ listConsumerGroups: listGroups })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    groups[0] = {
+      name: 'grp-1',
+      state: 'Stable',
+      topics: {
+        orders: [
+          { partition: 0, current_offset: 50, log_end_offset: 90, lag: 40 },
+          { partition: 1, current_offset: 15, log_end_offset: 15, lag: 0 },
+        ],
+      },
+    }
+    await wrapper.find('[data-test="btn-dry-run"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="dry-run-row"]')).toHaveLength(2)
+    })
+    const rows = wrapper.findAll('[data-test="dry-run-row"]')
+    expect(rows[0].text()).toContain('50')
+    expect(rows[0].find('[data-test="dry-run-new-offset"]').text()).toBe('90')
+  })
+
+  it('cancelling the dry-run preview clears it without resetting', async () => {
+    const reset = vi.fn(async () => {})
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), resetConsumerGroupOffset: reset })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    await wrapper.find('[data-test="btn-dry-run"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="dry-run-table"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="btn-cancel-preview"]').trigger('click')
+    expect(wrapper.find('[data-test="dry-run-table"]').exists()).toBe(false)
+    expect(reset).not.toHaveBeenCalled()
+  })
+
+  it('clears a stale preview when the reset mode changes', async () => {
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]) })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    await wrapper.find('[data-test="btn-dry-run"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="dry-run-table"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="select-reset-mode"]').setValue('earliest')
+    expect(wrapper.find('[data-test="dry-run-table"]').exists()).toBe(false)
+  })
+
+  it('renders the member topology with per-topic partition assignments', async () => {
+    const detail: GroupDetail = {
+      group: 'grp-1',
+      state: 'Stable',
+      protocol_type: 'consumer',
+      members: [
+        { member_id: 'm-1', client_id: 'c-1', host: '/10.0.0.1', assignment: { orders: [1, 0] } },
+        { member_id: 'm-2', client_id: 'c-2', host: '/10.0.0.2', assignment: { payments: [2] } },
+      ],
+    }
+    const describeGroup = vi.fn(async () => detail)
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), describeGroup })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="member-row"]')).toHaveLength(2)
+    })
+    expect(describeGroup).toHaveBeenCalledWith('c', 'grp-1')
+    const rows = wrapper.findAll('[data-test="member-row"]')
+    expect(rows[0].find('[data-test="member-id"]').text()).toBe('m-1')
+    expect(rows[0].find('[data-test="member-client-id"]').text()).toBe('c-1')
+    expect(rows[0].find('[data-test="member-host"]').text()).toBe('/10.0.0.1')
+    expect(rows[0].find('[data-test="member-assignment"]').text()).toBe('orders:0,1')
+    expect(rows[1].find('[data-test="member-assignment"]').text()).toBe('payments:2')
+    expect(wrapper.find('[data-test="members-state"]').text()).toBe('Stable')
+  })
+
+  it('shows an empty members note when the group has no members', async () => {
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]) })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="members-empty"]').exists()).toBe(true)
+    })
+  })
+
+  it('renders the lag trend fed by the summed partition lag', async () => {
+    const getPartitionLag = vi.fn(async () => ({ 0: 5, 1: 3 }))
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), getPartitionLag })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="trend-latest"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="trend-latest"]').text()).toBe('8')
+    expect(getPartitionLag).toHaveBeenCalledWith('c', 'orders', 'grp-1')
   })
 })
 
