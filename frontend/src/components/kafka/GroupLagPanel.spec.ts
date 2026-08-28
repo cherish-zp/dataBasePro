@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
-import type { PartitionLag } from '@/api/types'
+import type { PartitionLag, ResetPreviewRow } from '@/api/types'
 import GroupLagPanel from './GroupLagPanel.vue'
 
 describe('GroupLagPanel', () => {
@@ -54,5 +54,36 @@ describe('GroupLagPanel', () => {
   it('shows an empty state when there are no rows', () => {
     const wrapper = mount(GroupLagPanel, { props: { rows: [], loading: false } })
     expect(wrapper.find('[data-test="lag-empty"]').exists()).toBe(true)
+  })
+
+  it('does not render the dry-run preview without preview rows', () => {
+    const wrapper = mount(GroupLagPanel, { props: { rows, loading: false } })
+    expect(wrapper.find('[data-test="dry-run-table"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-confirm-reset"]').exists()).toBe(false)
+  })
+
+  it('renders the dry-run preview with current and new offsets', () => {
+    const preview: ResetPreviewRow[] = [
+      { partition: 0, current_offset: 10, new_offset: 20 },
+      { partition: 1, current_offset: 15, new_offset: null },
+    ]
+    const wrapper = mount(GroupLagPanel, { props: { rows, loading: false, preview } })
+    expect(wrapper.find('[data-test="dry-run-table"]').exists()).toBe(true)
+    const rowsEls = wrapper.findAll('[data-test="dry-run-row"]')
+    expect(rowsEls).toHaveLength(2)
+    expect(rowsEls[0].text()).toContain('0')
+    expect(rowsEls[0].text()).toContain('10')
+    expect(rowsEls[0].find('[data-test="dry-run-new-offset"]').text()).toBe('20')
+    // A null target is only computed by the broker at execution time.
+    expect(rowsEls[1].find('[data-test="dry-run-new-offset"]').text()).toBe('—')
+  })
+
+  it('emits confirm-reset and cancel-preview from the preview actions', async () => {
+    const preview: ResetPreviewRow[] = [{ partition: 0, current_offset: 10, new_offset: 20 }]
+    const wrapper = mount(GroupLagPanel, { props: { rows, loading: false, preview } })
+    await wrapper.find('[data-test="btn-confirm-reset"]').trigger('click')
+    await wrapper.find('[data-test="btn-cancel-preview"]').trigger('click')
+    expect(wrapper.emitted('confirm-reset')).toHaveLength(1)
+    expect(wrapper.emitted('cancel-preview')).toHaveLength(1)
   })
 })
