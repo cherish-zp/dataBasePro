@@ -61,6 +61,17 @@ async function run(): Promise<void> {
   }
 }
 
+// onEditorKeydown runs the query on ⌘Enter/Ctrl+Enter. The IME guard leaves
+// Enter during composition (e.g. committing a Chinese candidate) untouched, so
+// the IME keeps the key; a plain Enter stays a newline in the editor.
+function onEditorKeydown(e: KeyboardEvent): void {
+  if (e.isComposing || e.keyCode === 229) return
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    e.preventDefault()
+    void run()
+  }
+}
+
 // Export dropdown: disabled until a query produced rows.
 const exportOpen = ref(false)
 const exportRoot = ref<HTMLElement | null>(null)
@@ -124,7 +135,14 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     <div class="sql-toolbar" data-test="sql-toolbar">
       <label class="sql-field grow" data-test="sql-field">
         <span class="label">SQL</span>
-        <textarea v-model="sql" data-test="input-sql" class="editor" rows="3" spellcheck="false"></textarea>
+        <textarea
+          v-model="sql"
+          data-test="input-sql"
+          class="editor"
+          rows="3"
+          spellcheck="false"
+          @keydown="onEditorKeydown"
+        ></textarea>
       </label>
       <div ref="historyRoot" class="history-menu" data-test="history-menu">
         <button class="btn ghost" type="button" data-test="history-toggle" @click="historyOpen = !historyOpen">

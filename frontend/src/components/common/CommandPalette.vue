@@ -126,14 +126,15 @@ function toggle(): void {
   else openPalette()
 }
 
-// onGlobalKeydown binds ⌘K/Ctrl+K anywhere in the app. Escape is handled here
-// too so closing works no matter where the focus sits.
+// Layout's global shortcut handler toggles the palette through this exposed
+// method (single ⌘K owner, see the onGlobalKeydown comment above).
+defineExpose({ toggle })
+
+// onGlobalKeydown closes the palette on Escape from anywhere, so it stays
+// dismissible no matter where focus sits. ⌘K/Ctrl+K is owned by Layout's
+// unified global shortcut handler (it drives toggle() below), so the palette
+// never double-toggles.
 function onGlobalKeydown(e: KeyboardEvent): void {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-    e.preventDefault()
-    toggle()
-    return
-  }
   if (open.value && e.key === 'Escape') {
     e.preventDefault()
     close()

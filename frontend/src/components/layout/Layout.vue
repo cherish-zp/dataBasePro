@@ -40,6 +40,10 @@ const dragFrom = ref<number | null>(null)
 const showProducer = ref(false)
 const showSettings = ref(false)
 
+// paletteRef drives the command palette from the global shortcut handler: ⌘K
+// toggles it through the exposed toggle(), keeping a single keydown owner.
+const paletteRef = ref<InstanceType<typeof CommandPalette> | null>(null)
+
 // Sidebar can be resized by dragging the divider so long topic/consumer names
 // stay readable. Width is clamped between MIN_SIDEBAR and MAX_SIDEBAR.
 const MIN_SIDEBAR = 200
@@ -135,18 +139,44 @@ function onDocClick(e: MouseEvent): void {
   }
 }
 
-function onDocKeydown(e: KeyboardEvent): void {
+// onGlobalKeydown is the app-wide shortcut owner (registered once on mount,
+// removed on unmount): ⌘K toggles the command palette, ⌘R refreshes the active
+// tab, ⌘D closes it, and Escape closes the tab context menu. Every combo
+// guards against IME composition; ⌘R/⌘D are additionally ignored while focus
+// sits in an editable field so typing can never refresh or close a tab.
+function onGlobalKeydown(e: KeyboardEvent): void {
+  if (e.isComposing || e.keyCode === 229) return
+  const mod = e.metaKey || e.ctrlKey
+  if (mod && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    paletteRef.value?.toggle()
+    return
+  }
+  const target = e.target instanceof HTMLElement ? e.target : null
+  const editing =
+    target !== null &&
+    (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+  if (!editing && mod && e.key.toLowerCase() === 'r') {
+    e.preventDefault()
+    refreshActive()
+    return
+  }
+  if (!editing && mod && e.key.toLowerCase() === 'd') {
+    e.preventDefault()
+    if (tabs.activeTabId) tabs.closeTab(tabs.activeTabId)
+    return
+  }
   if (e.key === 'Escape') closeContextMenu()
 }
 
 onMounted(() => {
   document.addEventListener('click', onDocClick)
-  window.addEventListener('keydown', onDocKeydown)
+  window.addEventListener('keydown', onGlobalKeydown)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick)
-  window.removeEventListener('keydown', onDocKeydown)
+  window.removeEventListener('keydown', onGlobalKeydown)
 })
 
 function contextClose(): void {
@@ -315,7 +345,7 @@ function onTabDragEnd(): void {
       @close="showProducer = false"
     />
     <SettingsPanel :show="showSettings" @close="showSettings = false" />
-    <CommandPalette />
+    <CommandPalette ref="paletteRef" />
 
     <!-- Tab context menu. Teleported to <body> so a backdrop-filter ancestor
          cannot confine the fixed positioning (same rationale as the command
