@@ -19,6 +19,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     describeCluster: vi.fn(
       async () => ({ cluster_id: '', controller_id: -1, kafka_version: '', brokers: [], under_replicated_partitions: 0 }) as never,
     ),
+    alterTopicConfig: vi.fn(async () => {}),
     listConsumerGroups: vi.fn(async () => []),
     describeGroup: vi.fn(async () => ({ group: '', state: '', protocol_type: '', members: [] })),
     consumeMessages: vi.fn(async () => []),
@@ -161,5 +162,120 @@ describe('TopicDetailDrawer', () => {
     })
     await wrapper.find('[data-test="drawer-close"]').trigger('click')
     expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
+  it('enters edit mode via cfg-edit turning rows into editable inputs', async () => {
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
+    const wrapper = mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'user-log', show: true },
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
+
+    const inputs = wrapper.findAll('[data-test="cfg-input"]')
+    expect(inputs).toHaveLength(2)
+    expect((inputs[0].element as HTMLInputElement).value).toBe('delete')
+    expect((inputs[1].element as HTMLInputElement).value).toBe('604800000')
+    // In edit mode the edit button is hidden; only save/cancel are visible.
+    expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="cfg-save"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="cfg-cancel"]').exists()).toBe(true)
+  })
+
+  it('saves edited configs via alterTopicConfig then reloads', async () => {
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
+    const alter = (api.alterTopicConfig as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+
+    const wrapper = mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'user-log', show: true },
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
+    await wrapper.findAll('[data-test="cfg-input"]')[1].setValue('604800001')
+    await wrapper.find('[data-test="cfg-save"]').trigger('click')
+
+    await vi.waitFor(() => {
+      expect(alter).toHaveBeenCalledWith({
+        connection_id: 'a',
+        topic: 'user-log',
+        entries: [
+          { key: 'cleanup.policy', value: 'delete' },
+          { key: 'retention.ms', value: '604800001' },
+        ],
+      })
+    })
+    // Success re-runs load(): describeTopic must be called again.
+    await vi.waitFor(() => {
+      expect(api.describeTopic).toHaveBeenCalledTimes(2)
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+    })
+  })
+
+  it('keeps the edit input and shows an error banner on save failure', async () => {
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
+    const alter = (api.alterTopicConfig as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+
+    const wrapper = mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'user-log', show: true },
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
+    await wrapper.findAll('[data-test="cfg-input"]')[1].setValue('604800001')
+    await wrapper.find('[data-test="cfg-save"]').trigger('click')
+
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="cfg-error"]').text()).toContain('boom')
+    })
+    // The drawer must not reload on failure and the input keeps its value.
+    expect(api.describeTopic).toHaveBeenCalledTimes(1)
+    expect((wrapper.findAll('[data-test="cfg-input"]')[1].element as HTMLInputElement).value).toBe('604800001')
+    expect(wrapper.find('[data-test="cfg-save"]').exists()).toBe(true)
+  })
+
+  it('disables save and cancel while the save is in flight', async () => {
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
+    const alter = vi.fn((): Promise<void> => new Promise(() => {}))
+    setApi({ ...fakeApi({ alterTopicConfig: alter, describeTopic: (api.describeTopic as ReturnType<typeof vi.fn>) }) })
+
+    const wrapper = mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'user-log', show: true },
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
+    await wrapper.find('[data-test="cfg-save"]').trigger('click')
+
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="cfg-save"]').element as HTMLButtonElement).disabled).toBe(true)
+    })
+    expect((wrapper.find('[data-test="cfg-cancel"]').element as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('cancels the edit without calling alterTopicConfig', async () => {
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
+    const alter = (api.alterTopicConfig as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+
+    const wrapper = mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'user-log', show: true },
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
+    await wrapper.findAll('[data-test="cfg-input"]')[1].setValue('604800001')
+    await wrapper.find('[data-test="cfg-cancel"]').trigger('click')
+
+    expect(alter).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="cfg-save"]').exists()).toBe(false)
   })
 })

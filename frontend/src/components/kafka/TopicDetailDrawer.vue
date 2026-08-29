@@ -10,6 +10,12 @@ const detail = ref<TopicDetail | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 
+// Config editing state: drafts holds one editable value per whitelisted key.
+const editing = ref(false)
+const drafts = ref<Record<string, string>>({})
+const saving = ref(false)
+const cfgError = ref<string | null>(null)
+
 // load fetches the partition topology and key configs of the selected topic.
 async function load(): Promise<void> {
   if (!props.topic) return
@@ -32,12 +38,49 @@ watch(
       detail.value = null
       error.value = null
       loading.value = false
+      editing.value = false
+      saving.value = false
+      cfgError.value = null
+      drafts.value = {}
       return
     }
     void load()
   },
   { immediate: true },
 )
+
+// startEdit copies the described values into per-key drafts so edits start
+// from the current broker state.
+function startEdit(): void {
+  if (!detail.value) return
+  drafts.value = Object.fromEntries(detail.value.configs.map((c) => [c.key, c.value]))
+  cfgError.value = null
+  editing.value = true
+}
+
+function cancelEdit(): void {
+  editing.value = false
+  cfgError.value = null
+}
+
+// save sends every whitelisted row and, on success, re-describes the topic so
+// the table reflects the broker's accepted values. On failure the error is
+// shown and the user's edits are kept in place.
+async function save(): Promise<void> {
+  if (!detail.value || !props.topic || saving.value) return
+  saving.value = true
+  cfgError.value = null
+  try {
+    const entries = detail.value.configs.map((c) => ({ key: c.key, value: drafts.value[c.key] ?? '' }))
+    await getApi().alterTopicConfig({ connection_id: props.connectionId, topic: props.topic, entries })
+    editing.value = false
+    await load()
+  } catch (e) {
+    cfgError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    saving.value = false
+  }
+}
 
 function listText(nums: number[]): string {
   return nums.join(', ')
@@ -74,22 +117,62 @@ function listText(nums: number[]): string {
           </tbody>
         </table>
 
-        <h3 class="section-title">关键配置</h3>
-        <table v-if="detail.configs.length" class="table" data-test="cfg-table">
-          <thead>
-            <tr>
-              <th>配置项</th>
-              <th>值</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in detail.configs" :key="c.key" data-test="cfg-row">
-              <td class="mono" data-test="cfg-key">{{ c.key }}</td>
-              <td class="mono" data-test="cfg-value">{{ c.value }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-else class="state" data-test="config-empty">（无配置）</div>
+        <div class="cfg-head">
+          <h3 class="section-title">关键配置</h3>
+          <button
+            v-if="detail.configs.length > 0 && !editing"
+            class="btn ghost small"
+            type="button"
+            data-test="cfg-edit"
+            @click="startEdit"
+          >
+            编辑
+          </button>
+        </div>
+        <template v-if="editing">
+          <table class="table" data-test="cfg-table">
+            <thead>
+              <tr>
+                <th>配置项</th>
+                <th>值</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in detail.configs" :key="c.key" data-test="cfg-row">
+                <td class="mono" data-test="cfg-key">{{ c.key }}</td>
+                <td>
+                  <input v-model="drafts[c.key]" class="cfg-input" data-test="cfg-input" />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="cfgError" class="state err cfg-error" data-test="cfg-error">{{ cfgError }}</div>
+          <div class="cfg-actions">
+            <button class="btn ghost small" type="button" data-test="cfg-cancel" :disabled="saving" @click="cancelEdit">
+              取消
+            </button>
+            <button class="btn primary small" type="button" data-test="cfg-save" :disabled="saving" @click="save">
+              {{ saving ? '保存中…' : '保存' }}
+            </button>
+          </div>
+        </template>
+        <template v-else>
+          <table v-if="detail.configs.length" class="table" data-test="cfg-table">
+            <thead>
+              <tr>
+                <th>配置项</th>
+                <th>值</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in detail.configs" :key="c.key" data-test="cfg-row">
+                <td class="mono" data-test="cfg-key">{{ c.key }}</td>
+                <td class="mono" data-test="cfg-value">{{ c.value }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="state" data-test="config-empty">（无配置）</div>
+        </template>
       </template>
     </div>
   </div>
@@ -125,6 +208,8 @@ function listText(nums: number[]): string {
 .drawer-close { background: none; border: none; color: var(--text-tertiary); font-size: 16px; cursor: pointer; border-radius: 5px; padding: 1px 6px; flex: none; }
 .drawer-close:hover { background: var(--bg-hover); color: var(--text); }
 .drawer-body { padding: 16px 18px; overflow: auto; }
+.cfg-head { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; }
+.cfg-head .section-title { margin-top: 0; }
 .section-title {
   font-size: 12px; font-weight: 600; color: var(--text-secondary);
   text-transform: uppercase; letter-spacing: 0.04em; margin: 14px 0 8px;
@@ -141,6 +226,23 @@ function listText(nums: number[]): string {
 }
 .table td { padding: 5px 12px; border-bottom: 1px solid var(--border); }
 .mono { font-family: var(--mono); }
+.cfg-input {
+  width: 100%; box-sizing: border-box;
+  background: var(--bg-subtle); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text);
+  padding: 4px 8px; font-size: 13px; font-family: var(--mono);
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.cfg-input:focus { outline: none; border-color: var(--accent); background: var(--bg-elevated); box-shadow: 0 0 0 3px var(--accent-soft); }
+.cfg-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+.cfg-error { margin-top: 10px; }
 .state { color: var(--text-secondary); font-size: 13px; padding: 4px 0; }
 .state.err { color: var(--danger); }
+.btn { border-radius: 7px; padding: 7px 14px; font-size: 13px; cursor: pointer; border: 1px solid transparent; transition: background 0.15s ease, opacity 0.15s ease; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn.small { padding: 4px 12px; font-size: 12px; }
+.btn.primary { background: var(--accent); color: #fff; }
+.btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }
+.btn.ghost:hover:not(:disabled) { background: var(--bg-hover); }
 </style>

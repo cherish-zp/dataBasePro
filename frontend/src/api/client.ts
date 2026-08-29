@@ -18,6 +18,7 @@ import type {
   CreateTopicRequest,
   DeleteTopicRequest,
   DeleteTopicsRequest,
+  AlterTopicConfigRequest,
   TopicDeleteResult,
   DeleteConsumerGroupRequest,
   ActiveMembersRequest,
@@ -35,6 +36,7 @@ export interface Api {
   disconnect(id: string): Promise<void>
   listTopics(id: string): Promise<Topic[]>
   describeTopic(id: string, topic: string): Promise<TopicDetail>
+  alterTopicConfig(req: AlterTopicConfigRequest): Promise<void>
   describeCluster(id: string): Promise<ClusterHealth>
   listConsumerGroups(id: string): Promise<ConsumerGroup[]>
   describeGroup(id: string, group: string): Promise<GroupDetail>
@@ -84,6 +86,9 @@ export class WailsApi implements Api {
   }
   describeTopic(id: string, topic: string): Promise<TopicDetail> {
     return App.DescribeTopic(id, topic) as unknown as Promise<TopicDetail>
+  }
+  alterTopicConfig(req: AlterTopicConfigRequest): Promise<void> {
+    return App.AlterTopicConfig(req as unknown as never) as unknown as Promise<void>
   }
   describeCluster(id: string): Promise<ClusterHealth> {
     return App.DescribeCluster(id) as unknown as Promise<ClusterHealth>

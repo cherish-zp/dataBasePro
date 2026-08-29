@@ -150,6 +150,15 @@ export interface DeleteTopicsRequest {
   names: string[]
 }
 
+// Entries to apply to a topic's whitelisted configs (mirrors the backend
+// AlterTopicConfigRequest). Values are set verbatim; empty entries/values are
+// rejected by the backend.
+export interface AlterTopicConfigRequest {
+  connection_id: string
+  topic: string
+  entries: TopicConfigEntry[]
+}
+
 // Per-topic outcome of a batch delete; error is empty on success
 // (mirrors model.TopicDeleteResult).
 export interface TopicDeleteResult {
