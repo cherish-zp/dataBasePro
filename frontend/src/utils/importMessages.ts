@@ -41,6 +41,8 @@ function parseJsonl(text: string): BatchProduceItem[] {
   const items: BatchProduceItem[] = []
   const lines = text.split(/\r?\n/)
   for (let i = 0; i < lines.length; i++) {
+    // Clamp to COUNT_MAX, matching the array/CSV paths; do not validate beyond the cap.
+    if (items.length >= COUNT_MAX) break
     const line = lines[i].trim()
     if (line === '') continue
     let parsed: unknown

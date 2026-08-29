@@ -46,6 +46,16 @@ describe('parseImportFile', () => {
     it('throws with the line number on the first bad line', () => {
       expect(() => parseImportFile('{"ok":1}\nnot json\n{"n":3}', 'data.jsonl')).toThrow('第 2 行 JSON 解析失败')
     })
+
+    it('caps oversized JSONL at COUNT_MAX', () => {
+      const text = Array.from({ length: COUNT_MAX + 5 }, (_, i) => `{"n":${i}}`).join('\n')
+      expect(parseImportFile(text, 'data.jsonl')).toHaveLength(COUNT_MAX)
+    })
+
+    it('stops parsing at COUNT_MAX and ignores malformed lines beyond the cap', () => {
+      const good = Array.from({ length: COUNT_MAX }, (_, i) => `{"n":${i}}`).join('\n')
+      expect(parseImportFile(`${good}\nnot json`, 'data.jsonl')).toHaveLength(COUNT_MAX)
+    })
   })
 
   describe('CSV', () => {
