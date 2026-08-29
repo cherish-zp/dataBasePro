@@ -48,6 +48,18 @@ func (s *Service) GetConnection(ctx context.Context, id string) (*model.Connecti
 	return s.store.GetConnection(id)
 }
 
+// RecordAudit persists an audit entry for a dangerous operation. It is a pure
+// store delegation and never touches the Kafka cluster.
+func (s *Service) RecordAudit(ctx context.Context, e *model.AuditEntry) error {
+	return s.store.RecordAudit(e)
+}
+
+// ListAudit returns the most recent audit entries, newest first. A non-positive
+// limit falls back to the store default (200).
+func (s *Service) ListAudit(ctx context.Context, limit int) ([]*model.AuditEntry, error) {
+	return s.store.ListAudit(limit)
+}
+
 // TestConnection verifies connectivity to the given config without persisting.
 func (s *Service) TestConnection(ctx context.Context, cfg model.KafkaConfig) error {
 	if err := cfg.Validate(); err != nil {

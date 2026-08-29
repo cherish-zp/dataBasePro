@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -202,5 +203,139 @@ func TestStoreListEmptyReturnsSlice(t *testing.T) {
 	}
 	if string(b) != "[]" {
 		t.Fatalf("empty list must serialize to [] over JSON, got %s", b)
+	}
+}
+
+func sampleAudit(action, target string) *model.AuditEntry {
+	return &model.AuditEntry{
+		ConnectionID: "c1",
+		Action:       action,
+		Target:       target,
+		Result:       "ok",
+	}
+}
+
+func auditTargets(list []*model.AuditEntry) []string {
+	out := make([]string, 0, len(list))
+	for _, e := range list {
+		out = append(out, e.Target)
+	}
+	return out
+}
+
+func TestStoreAuditRoundTripNewestFirst(t *testing.T) {
+	s := newTestStore(t)
+	for i := 0; i < 3; i++ {
+		e := sampleAudit("create_topic", fmt.Sprintf("t%d", i))
+		e.Timestamp = int64(1000 + i)
+		if err := s.RecordAudit(e); err != nil {
+			t.Fatalf("RecordAudit #%d: %v", i, err)
+		}
+	}
+	list, err := s.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("expected 3 audit entries, got %d", len(list))
+	}
+	if got := auditTargets(list); got[0] != "t2" || got[1] != "t1" || got[2] != "t0" {
+		t.Fatalf("audit must list newest first, got %v", got)
+	}
+	if list[0].ID <= list[1].ID || list[1].ID <= list[2].ID {
+		t.Fatalf("audit ids must be descending, got %+v", list)
+	}
+}
+
+func TestStoreAuditAutoTimestamp(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.RecordAudit(sampleAudit("create_topic", "t1")); err != nil {
+		t.Fatalf("RecordAudit: %v", err)
+	}
+	list, err := s.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 audit entry, got %d", len(list))
+	}
+	e := list[0]
+	if e.Timestamp == 0 {
+		t.Fatal("zero timestamp must be auto-filled to unix ms")
+	}
+	if e.Action != "create_topic" || e.Result != "ok" || e.ConnectionID != "c1" {
+		t.Fatalf("fields not round-tripped: %+v", e)
+	}
+}
+
+func TestStoreAuditLimit(t *testing.T) {
+	s := newTestStore(t)
+	for i := 0; i < 10; i++ {
+		if err := s.RecordAudit(&model.AuditEntry{Action: "a", Target: fmt.Sprintf("t%d", i), Result: "ok"}); err != nil {
+			t.Fatalf("RecordAudit #%d: %v", i, err)
+		}
+	}
+	list, err := s.ListAudit(3)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(list) != 3 || list[0].Target != "t9" {
+		t.Fatalf("limit not applied: %d entries, newest %q", len(list), list[0].Target)
+	}
+	// A non-positive limit falls back to the store default cap.
+	def, err := s.ListAudit(0)
+	if err != nil {
+		t.Fatalf("ListAudit(0): %v", err)
+	}
+	if len(def) != 10 {
+		t.Fatalf("ListAudit(0) should fall back to the default, got %d", len(def))
+	}
+}
+
+func TestStoreAuditPersistenceAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.db")
+
+	s1, err := Open(path, "master")
+	if err != nil {
+		t.Fatalf("open 1 failed: %v", err)
+	}
+	if err := s1.RecordAudit(sampleAudit("delete_topic", "gone")); err != nil {
+		t.Fatalf("record failed: %v", err)
+	}
+	s1.Close()
+
+	s2, err := Open(path, "master")
+	if err != nil {
+		t.Fatalf("open 2 failed: %v", err)
+	}
+	defer s2.Close()
+	list, err := s2.ListAudit(10)
+	if err != nil {
+		t.Fatalf("list after reopen failed: %v", err)
+	}
+	if len(list) != 1 || list[0].Action != "delete_topic" || list[0].Target != "gone" {
+		t.Fatalf("audit must survive reopen: %+v", list)
+	}
+}
+
+func TestStoreAuditEmptyReturnsSlice(t *testing.T) {
+	s := newTestStore(t)
+	list, err := s.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if list == nil {
+		t.Fatal("ListAudit on an empty table must return a non-nil slice")
+	}
+	if len(list) != 0 {
+		t.Fatalf("expected 0 audit entries, got %d", len(list))
+	}
+	b, err := json.Marshal(list)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(b) != "[]" {
+		t.Fatalf("empty audit list must serialize to [] over JSON, got %s", b)
 	}
 }

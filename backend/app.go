@@ -9,6 +9,8 @@ package backend
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"dataBasePro/backend/internal/model"
@@ -33,6 +35,60 @@ func NewApp(svc *service.Service) *App {
 // methodTimeout.
 func (a *App) newContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), methodTimeout)
+}
+
+// auditResult classifies an operation outcome for the audit log.
+func auditResult(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "ok"
+}
+
+// auditDetail returns the failure detail, or an empty string on success.
+func auditDetail(err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// audit best-effort records a dangerous operation. A failed write must never
+// change the outcome of the operation being audited, so the error is dropped.
+func (a *App) audit(connectionID, action, target, result, detail string) {
+	_ = a.svc.RecordAudit(context.Background(), &model.AuditEntry{
+		ConnectionID: connectionID,
+		Action:       action,
+		Target:       target,
+		Result:       result,
+		Detail:       detail,
+	})
+}
+
+// joinAuditTargets renders topic names for the batch-delete audit target,
+// capping the joined list at 10 names followed by an ellipsis.
+func joinAuditTargets(names []string) string {
+	if len(names) <= 10 {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:10], ", ") + "…"
+}
+
+// connectionIDOf best-effort returns a connection's id, guarding nil input so
+// a malformed create request cannot panic in the audit path.
+func connectionIDOf(c *model.Connection) string {
+	if c == nil {
+		return ""
+	}
+	return c.ID
+}
+
+// nameOf best-effort returns a connection's name, guarding nil input.
+func nameOf(c *model.Connection) string {
+	if c == nil {
+		return ""
+	}
+	return c.Name
 }
 
 // ConsumeRequest carries the parameters for a message fetch.
@@ -117,36 +173,67 @@ type BatchProduceRequest struct {
 func (a *App) CreateTopic(req CreateTopicRequest) error {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	return a.svc.CreateTopic(ctx, req.ConnectionID, req.Topic, req.Partitions, req.ReplicationFactor)
+	err := a.svc.CreateTopic(ctx, req.ConnectionID, req.Topic, req.Partitions, req.ReplicationFactor)
+	a.audit(req.ConnectionID, "create_topic", req.Topic, auditResult(err), auditDetail(err))
+	return err
 }
 
 // DeleteTopic removes a topic from a connection's cluster.
 func (a *App) DeleteTopic(req DeleteTopicRequest) error {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	return a.svc.DeleteTopic(ctx, req.ConnectionID, req.Topic)
+	err := a.svc.DeleteTopic(ctx, req.ConnectionID, req.Topic)
+	a.audit(req.ConnectionID, "delete_topic", req.Topic, auditResult(err), auditDetail(err))
+	return err
 }
 
 // DeleteTopics removes several topics from a connection's cluster and returns
-// one result per topic.
+// one result per topic. The audit target is the joined topic names (capped at
+// 10) and the result is ok only when every topic was deleted.
 func (a *App) DeleteTopics(req DeleteTopicsRequest) ([]*model.TopicDeleteResult, error) {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	return a.svc.DeleteTopics(ctx, req.ConnectionID, req.Names)
+	target := joinAuditTargets(req.Names)
+	results, err := a.svc.DeleteTopics(ctx, req.ConnectionID, req.Names)
+	if err != nil {
+		a.audit(req.ConnectionID, "delete_topics", target, "error", auditDetail(err))
+		return nil, err
+	}
+	result := "ok"
+	var failures []string
+	for _, r := range results {
+		if r.Error != "" {
+			result = "error"
+			failures = append(failures, fmt.Sprintf("%s: %s", r.Name, r.Error))
+		}
+	}
+	if len(failures) > 10 {
+		failures = failures[:10]
+	}
+	a.audit(req.ConnectionID, "delete_topics", target, result, strings.Join(failures, "; "))
+	return results, nil
 }
 
 // DeleteConsumerGroup removes a consumer group from a connection's cluster.
 func (a *App) DeleteConsumerGroup(req DeleteConsumerGroupRequest) error {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	return a.svc.DeleteConsumerGroup(ctx, req.ConnectionID, req.Group)
+	err := a.svc.DeleteConsumerGroup(ctx, req.ConnectionID, req.Group)
+	a.audit(req.ConnectionID, "delete_consumer_group", req.Group, auditResult(err), auditDetail(err))
+	return err
 }
 
 // CreateConnection validates and saves a new connection.
 func (a *App) CreateConnection(c *model.Connection) (*model.Connection, error) {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	return a.svc.CreateConnection(ctx, c)
+	created, err := a.svc.CreateConnection(ctx, c)
+	if err != nil {
+		a.audit(connectionIDOf(c), "create_connection", nameOf(c), "error", auditDetail(err))
+		return nil, err
+	}
+	a.audit(created.ID, "create_connection", created.Name, "ok", "")
+	return created, nil
 }
 
 // ListConnections returns all saved connections.
@@ -167,7 +254,14 @@ func (a *App) GetConnection(id string) (*model.Connection, error) {
 func (a *App) DeleteConnection(id string) error {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	return a.svc.DeleteConnection(ctx, id)
+	// Prefer the human-readable name as the audit target when available.
+	target := id
+	if c, err := a.svc.GetConnection(ctx, id); err == nil && c.Name != "" {
+		target = c.Name
+	}
+	err := a.svc.DeleteConnection(ctx, id)
+	a.audit(id, "delete_connection", target, auditResult(err), auditDetail(err))
+	return err
 }
 
 // TestConnection verifies connectivity to a config without saving it.
@@ -209,7 +303,17 @@ func (a *App) DescribeTopic(id, topic string) (*model.TopicDetail, error) {
 func (a *App) AlterTopicConfig(req AlterTopicConfigRequest) error {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	return a.svc.AlterTopicConfig(ctx, req.ConnectionID, req.Topic, req.Entries)
+	err := a.svc.AlterTopicConfig(ctx, req.ConnectionID, req.Topic, req.Entries)
+	detail := auditDetail(err)
+	if err == nil {
+		keys := make([]string, 0, len(req.Entries))
+		for _, e := range req.Entries {
+			keys = append(keys, e.Key)
+		}
+		detail = strings.Join(keys, ", ")
+	}
+	a.audit(req.ConnectionID, "alter_topic_config", req.Topic, auditResult(err), detail)
+	return err
 }
 
 // DescribeCluster returns broker topology, controller, Kafka version and
@@ -274,7 +378,24 @@ func (a *App) ListActiveConsumers(req ActiveMembersRequest) ([]*model.ActiveCons
 func (a *App) ResetConsumerGroupOffset(req ResetOffsetRequest) error {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	return a.svc.ResetConsumerGroupOffset(ctx, req.ConnectionID, req.Group, req.Topic, req.Mode, req.TimestampMS)
+	err := a.svc.ResetConsumerGroupOffset(ctx, req.ConnectionID, req.Group, req.Topic, req.Mode, req.TimestampMS)
+	detail := auditDetail(err)
+	if err == nil {
+		detail = string(req.Mode)
+		if req.TimestampMS > 0 {
+			detail = fmt.Sprintf("%s(%d)", req.Mode, req.TimestampMS)
+		}
+	}
+	a.audit(req.ConnectionID, "reset_group_offset", req.Group+"/"+req.Topic, auditResult(err), detail)
+	return err
+}
+
+// ListAudit returns the most recent audit entries, newest first. A non-positive
+// limit falls back to the store default (200).
+func (a *App) ListAudit(limit int) ([]*model.AuditEntry, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.ListAudit(ctx, limit)
 }
 
 // ProduceMessage publishes a record to a connection.

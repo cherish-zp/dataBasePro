@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -479,5 +480,41 @@ func TestDescribeGroupDelegates(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("DescribeGroup must delegate to the data source, got %+v", got)
+	}
+}
+
+func TestServiceRecordAndListAudit(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	if err := svc.RecordAudit(ctx, &model.AuditEntry{
+		ConnectionID: "c1", Action: "create_topic", Target: "t1", Result: "ok",
+	}); err != nil {
+		t.Fatalf("RecordAudit: %v", err)
+	}
+	list, err := svc.ListAudit(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(list) != 1 || list[0].Action != "create_topic" || list[0].Target != "t1" {
+		t.Fatalf("unexpected audit list: %+v", list)
+	}
+}
+
+func TestServiceListAuditDefaultLimit(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		if err := svc.RecordAudit(ctx, &model.AuditEntry{Action: "a", Target: fmt.Sprintf("t%d", i), Result: "ok"}); err != nil {
+			t.Fatalf("record #%d: %v", i, err)
+		}
+	}
+	list, err := svc.ListAudit(ctx, 0)
+	if err != nil {
+		t.Fatalf("ListAudit(0): %v", err)
+	}
+	if len(list) != 5 || list[0].Target != "t4" {
+		t.Fatalf("expected all 5 entries newest-first via default limit, got %+v", list)
 	}
 }

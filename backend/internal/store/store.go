@@ -28,7 +28,19 @@ CREATE TABLE IF NOT EXISTS connections (
     created_at  INTEGER,
     updated_at  INTEGER
 );
+CREATE TABLE IF NOT EXISTS audit_log (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    connection_id TEXT NOT NULL DEFAULT '',
+    action        TEXT NOT NULL,
+    target        TEXT NOT NULL DEFAULT '',
+    result        TEXT NOT NULL,
+    detail        TEXT NOT NULL DEFAULT '',
+    ts            INTEGER NOT NULL
+);
 `
+
+// auditDefaultLimit caps unqualified audit listings.
+const auditDefaultLimit = 200
 
 // Store persists connection definitions to a local SQLite database.
 type Store struct {
@@ -219,4 +231,49 @@ func cloneConfig(cfg model.KafkaConfig) model.KafkaConfig {
 		out.TLS = &t
 	}
 	return out
+}
+
+// RecordAudit appends an audit entry for a dangerous operation. A zero
+// timestamp is replaced with the current unix-ms time.
+func (s *Store) RecordAudit(e *model.AuditEntry) error {
+	if e == nil {
+		return errors.New("audit entry must not be nil")
+	}
+	if e.Timestamp == 0 {
+		e.Timestamp = time.Now().UnixMilli()
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO audit_log (connection_id, action, target, result, detail, ts) VALUES (?, ?, ?, ?, ?, ?)`,
+		e.ConnectionID, e.Action, e.Target, e.Result, e.Detail, e.Timestamp,
+	)
+	if err != nil {
+		return fmt.Errorf("insert audit: %w", err)
+	}
+	return nil
+}
+
+// ListAudit returns the most recent audit entries, newest first. A
+// non-positive limit falls back to auditDefaultLimit.
+func (s *Store) ListAudit(limit int) ([]*model.AuditEntry, error) {
+	if limit <= 0 {
+		limit = auditDefaultLimit
+	}
+	rows, err := s.db.Query(
+		`SELECT id, connection_id, action, target, result, detail, ts FROM audit_log ORDER BY id DESC LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list audit: %w", err)
+	}
+	defer rows.Close()
+
+	out := []*model.AuditEntry{}
+	for rows.Next() {
+		var e model.AuditEntry
+		if err := rows.Scan(&e.ID, &e.ConnectionID, &e.Action, &e.Target, &e.Result, &e.Detail, &e.Timestamp); err != nil {
+			return nil, fmt.Errorf("scan audit: %w", err)
+		}
+		out = append(out, &e)
+	}
+	return out, rows.Err()
 }
