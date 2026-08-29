@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { reactive, ref, computed, watch } from 'vue'
 import { getApi } from '@/api/client'
-import { buildBatchMessages, clampCount, COUNT_MAX, loadTemplates, saveTemplate } from '@/utils/batchProduce'
+import { buildBatchMessages, clampCount, COUNT_MAX, loadTemplates, saveTemplate, type BatchProduceItem } from '@/utils/batchProduce'
+import { parseImportFile } from '@/utils/importMessages'
 
 const props = defineProps<{
   show: boolean
@@ -27,6 +28,13 @@ const batchSummary = ref<{ ok: number; failed: number } | null>(null)
 const batchFailures = ref<{ index: number; error: string }[]>([])
 const templates = ref<string[]>(loadTemplates())
 const showTemplates = ref(false)
+const importedMessages = ref<BatchProduceItem[] | null>(null)
+const importInput = ref<HTMLInputElement | null>(null)
+
+// 手动修改 value 后导入的消息即失效，避免新旧内容混淆。
+watch(() => form.value, () => {
+  importedMessages.value = null
+})
 
 // 面板随活跃 tab 常驻挂载：打开时用当前 topic 预填；打开状态下切换 tab 时跟随。
 // 其余时刻不回写，保证输入框仍可自由编辑。
@@ -45,14 +53,18 @@ const valueInvalid = computed(() => form.value.trim() === '')
 const batchMode = computed(() => form.count > 1 || form.randomKey)
 
 async function produce(): Promise<void> {
-  if (valueInvalid.value) return
+  if (valueInvalid.value && !importedMessages.value) return
   producing.value = true
   ok.value = false
   error.value = null
   batchSummary.value = null
   batchFailures.value = []
   try {
-    if (!batchMode.value) {
+    const imported = importedMessages.value
+    if (imported) {
+      // 导入模式：直接发送解析出的消息，跳过 buildBatchMessages 的 value/count/loop/randomKey 路径。
+      await sendBatch(imported)
+    } else if (!batchMode.value) {
       await getApi().produceMessage({
         connection_id: props.connectionId,
         topic: form.topic.trim(),
@@ -65,36 +77,77 @@ async function produce(): Promise<void> {
       form.key = ''
       form.value = ''
     } else {
-      const messages = buildBatchMessages({
-        value: form.value,
-        key: form.key,
-        count: clampCount(form.count),
-        randomKey: form.randomKey,
-        loop: form.loop,
-      })
-      const results = await getApi().produceMessages({
-        connection_id: props.connectionId,
-        topic: form.topic.trim(),
-        partition: form.partition,
-        messages,
-      })
-      const failed = results.filter((r) => r.error !== '')
-      batchSummary.value = { ok: results.length - failed.length, failed: failed.length }
-      // Cap rendered failures to COUNT_MAX so a huge failing batch cannot freeze the UI.
-      batchFailures.value = failed.slice(0, COUNT_MAX).map((r) => ({ index: r.index, error: r.error }))
-      // 只把成功发送的 value 记入最近模板（循环模式下值相同，自动去重）。
-      const sent: string[] = []
-      for (let i = 0; i < messages.length; i++) {
-        if (!failed.some((f) => f.index === i) && !sent.includes(messages[i].value)) {
-          sent.push(messages[i].value)
-        }
-      }
-      for (const v of sent) templates.value = saveTemplate(templates.value, v)
+      await sendBatch(
+        buildBatchMessages({
+          value: form.value,
+          key: form.key,
+          count: clampCount(form.count),
+          randomKey: form.randomKey,
+          loop: form.loop,
+        }),
+      )
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     producing.value = false
+  }
+}
+
+async function sendBatch(messages: BatchProduceItem[]): Promise<void> {
+  const results = await getApi().produceMessages({
+    connection_id: props.connectionId,
+    topic: form.topic.trim(),
+    partition: form.partition,
+    messages,
+  })
+  const failed = results.filter((r) => r.error !== '')
+  batchSummary.value = { ok: results.length - failed.length, failed: failed.length }
+  // Cap rendered failures to COUNT_MAX so a huge failing batch cannot freeze the UI.
+  batchFailures.value = failed.slice(0, COUNT_MAX).map((r) => ({ index: r.index, error: r.error }))
+  // 只把成功发送的 value 记入最近模板（循环模式下值相同，自动去重）。
+  const sent: string[] = []
+  for (let i = 0; i < messages.length; i++) {
+    if (!failed.some((f) => f.index === i) && !sent.includes(messages[i].value)) {
+      sent.push(messages[i].value)
+    }
+  }
+  for (const v of sent) templates.value = saveTemplate(templates.value, v)
+}
+
+function openImport(): void {
+  importInput.value?.click()
+}
+
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error ?? new Error('读取文件失败'))
+    reader.readAsText(file)
+  })
+}
+
+async function onImportInput(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    const text = await readFileAsText(file)
+    importedMessages.value = parseImportFile(text, file.name)
+    error.value = null
+    batchSummary.value = null
+    batchFailures.value = []
+  } catch (err) {
+    importedMessages.value = null
+    error.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    // 清空选择，允许再次选择同一文件。
+    try {
+      input.value = ''
+    } catch {
+      // jsdom 对 file input 赋值可能抛错，忽略。
+    }
   }
 }
 
@@ -139,6 +192,15 @@ function close(): void {
           </div>
         </div>
         <div class="field">
+          <div class="batch-row">
+            <button class="btn ghost" type="button" data-test="import-file" @click="openImport">导入文件</button>
+            <input ref="importInput" class="hidden-input" type="file" accept=".jsonl,.ndjson,.json,.csv,text/plain" data-test="import-input" @change="onImportInput" />
+          </div>
+          <div v-if="importedMessages" class="msg ok" data-test="import-summary">
+            已导入 {{ importedMessages.length }} 条消息，点击「发送」发送
+          </div>
+        </div>
+        <div class="field">
           <div class="value-head">
             <label class="label">Value <span class="req">*</span></label>
             <button v-if="templates.length > 0" class="btn ghost template-toggle" type="button" data-test="template-toggle" @click="showTemplates = !showTemplates">
@@ -151,7 +213,7 @@ function close(): void {
             </button>
           </div>
           <textarea v-model="form.value" data-test="input-value" class="input textarea" rows="6" placeholder='{"key":"value"}'></textarea>
-          <span v-if="valueInvalid" class="err" data-test="produce-error">消息内容不能为空</span>
+          <span v-if="valueInvalid && !importedMessages" class="err" data-test="produce-error">消息内容不能为空</span>
         </div>
 
         <div v-if="ok" class="msg ok" data-test="produce-ok">消息已发送</div>
@@ -165,7 +227,7 @@ function close(): void {
       </div>
       <div class="modal-footer">
         <button class="btn ghost" type="button" @click="close">取消</button>
-        <button class="btn primary" type="button" data-test="btn-produce" :disabled="producing || valueInvalid" @click="produce">
+        <button class="btn primary" type="button" data-test="btn-produce" :disabled="producing || (valueInvalid && !importedMessages)" @click="produce">
           {{ producing ? '发送中…' : '发送' }}
         </button>
       </div>
@@ -205,6 +267,7 @@ function close(): void {
 .count { width: 84px; }
 .check { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
 .check input { accent-color: var(--accent); }
+.hidden-input { display: none; }
 .value-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .template-toggle { padding: 2px 8px; font-size: 12px; border-radius: 6px; }
 .template-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
