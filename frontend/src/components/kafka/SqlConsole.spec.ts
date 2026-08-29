@@ -299,4 +299,52 @@ describe('SqlConsole', () => {
     expect(wrapper.find('[data-test="fav-item"]').exists()).toBe(false)
     expect(api.consumeMessages).not.toHaveBeenCalled()
   })
+
+  // --- ⌘Enter shortcut (4.3) -------------------------------------------------
+
+  it('runs the query on cmd+enter in the editor', async () => {
+    const { wrapper, api } = mountConsole({
+      consumeMessages: vi.fn(async () => [msg('k1', 'v1')]),
+    })
+    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter', metaKey: true })
+    await flushPromises()
+    expect(api.consumeMessages).toHaveBeenCalledWith(expect.objectContaining({ topic: 'orders' }))
+    expect(wrapper.findAll('[data-test="sql-row"]')).toHaveLength(1)
+  })
+
+  it('runs the query on ctrl+enter as the non-mac fallback', async () => {
+    const { wrapper, api } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter', ctrlKey: true })
+    await flushPromises()
+    expect(api.consumeMessages).toHaveBeenCalledWith(expect.objectContaining({ topic: 'orders' }))
+  })
+
+  it('does not run on a plain enter', async () => {
+    const { wrapper, api } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(api.consumeMessages).not.toHaveBeenCalled()
+  })
+
+  it('does not run while an IME composition is in progress', async () => {
+    const { wrapper, api } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').trigger('keydown', {
+      key: 'Enter',
+      metaKey: true,
+      isComposing: true,
+    })
+    await flushPromises()
+    expect(api.consumeMessages).not.toHaveBeenCalled()
+  })
+
+  it('does not run while the legacy IME keyCode 229 is set', async () => {
+    const { wrapper, api } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').trigger('keydown', {
+      key: 'Enter',
+      metaKey: true,
+      keyCode: 229,
+    })
+    await flushPromises()
+    expect(api.consumeMessages).not.toHaveBeenCalled()
+  })
 })

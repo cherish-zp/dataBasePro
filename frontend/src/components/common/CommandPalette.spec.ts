@@ -93,6 +93,12 @@ async function pressInputKey(key: string, init: KeyboardEventInit = {}): Promise
   await nextTick()
 }
 
+// Layout's global ⌘K handler toggles the palette through the exposed toggle().
+// Standalone, the spec drives it the same way.
+function togglePalette(wrapper: ReturnType<typeof mountPalette>['wrapper']): void {
+  ;(wrapper.vm as unknown as { toggle: () => void }).toggle()
+}
+
 const ITEMS = {
   topics: { a: [topic('orders'), topic('eu_orders')], b: [topic('ods_user')] },
   groups: { a: [group('grp_orders')], b: [group('grp_audit')] },
@@ -114,7 +120,7 @@ function mountPalette(connections: Connection[] = [conn('a'), conn('b')], overri
 
 async function openLoaded(connections: Connection[] = [conn('a'), conn('b')], overrides: Partial<Api> = {}) {
   const ctx = mountPalette(connections, overrides)
-  pressKey('k', { metaKey: true })
+  togglePalette(ctx.wrapper)
   await nextTick()
   await flushPromises()
   return ctx
@@ -125,26 +131,25 @@ describe('CommandPalette', () => {
     document.body.innerHTML = ''
   })
 
-  it('is hidden until cmd+k is pressed and toggles closed on a second cmd+k', async () => {
-    mountPalette()
+  it('is hidden until toggled open and closes on a second toggle', async () => {
+    const { wrapper } = mountPalette()
     expect(q('command-palette')).toBeNull()
-    pressKey('k', { metaKey: true })
+    togglePalette(wrapper)
     await nextTick()
     expect(q('command-palette')).not.toBeNull()
-    pressKey('k', { metaKey: true })
+    togglePalette(wrapper)
     await nextTick()
     expect(q('command-palette')).toBeNull()
   })
 
-  it('opens with ctrl+k on non-mac platforms', async () => {
+  it('does not self-bind cmd+k / ctrl+k: Layout owns the shortcut', async () => {
     mountPalette()
+    pressKey('k', { metaKey: true })
+    await nextTick()
+    expect(q('command-palette')).toBeNull()
     pressKey('k', { ctrlKey: true })
     await nextTick()
-    expect(q('command-palette')).not.toBeNull()
-  })
-
-  it('does not toggle on a plain k without the modifier', async () => {
-    mountPalette()
+    expect(q('command-palette')).toBeNull()
     pressKey('k')
     await nextTick()
     expect(q('command-palette')).toBeNull()
@@ -152,7 +157,7 @@ describe('CommandPalette', () => {
 
   it('teleports the palette to body', async () => {
     const { wrapper } = mountPalette()
-    pressKey('k', { metaKey: true })
+    togglePalette(wrapper)
     await nextTick()
     expect(wrapper.find('[data-test="command-palette"]').exists()).toBe(false)
     expect(q('command-palette')).not.toBeNull()
@@ -184,7 +189,7 @@ describe('CommandPalette', () => {
       listTopics: vi.fn((id: string) => (id === 'b' ? pending.promise : Promise.resolve([topic('a_topic')]))),
       listConsumerGroups: vi.fn(async () => []),
     })
-    pressKey('k', { metaKey: true })
+    togglePalette(wrapper)
     await nextTick()
     expect(qa('palette-loading').map((el) => el.textContent).some((t) => t?.includes('conn-b'))).toBe(true)
 
@@ -297,12 +302,12 @@ describe('CommandPalette', () => {
   })
 
   it('closes on backdrop click but stays open on clicks inside the panel', async () => {
-    await openLoaded()
+    const { wrapper } = await openLoaded()
     q('command-palette')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await nextTick()
     expect(q('command-palette')).toBeNull()
 
-    pressKey('k', { metaKey: true })
+    togglePalette(wrapper)
     await nextTick()
     q('palette-panel')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await nextTick()
@@ -312,7 +317,7 @@ describe('CommandPalette', () => {
   it('renders cached entries immediately on reopen and refreshes silently in the background', async () => {
     const refresh = deferred<Topic[]>()
     let calls = 0
-    const { api } = mountPalette([conn('a'), conn('b')], {
+    const { wrapper, api } = mountPalette([conn('a'), conn('b')], {
       listTopics: vi.fn((id: string) => {
         if (id !== 'a') return Promise.resolve([])
         calls++
@@ -320,7 +325,7 @@ describe('CommandPalette', () => {
       }),
       listConsumerGroups: vi.fn(async () => []),
     })
-    pressKey('k', { metaKey: true })
+    togglePalette(wrapper)
     await nextTick()
     await flushPromises()
     await typeQuery('orders')
@@ -328,7 +333,7 @@ describe('CommandPalette', () => {
 
     pressKey('Escape')
     await nextTick()
-    pressKey('k', { metaKey: true })
+    togglePalette(wrapper)
     await nextTick()
 
     // Cache hit: the stale list renders without waiting on any promise...

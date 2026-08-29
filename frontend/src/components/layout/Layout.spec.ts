@@ -59,7 +59,12 @@ function emitTree(wrapper: ReturnType<typeof mount>, event: string, ...args: unk
 }
 
 describe('Layout', () => {
-  beforeEach(() => setActivePinia(createPinia()))
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    // Teleported overlays (palette, context menu) and window listeners from a
+    // previous test must not survive into the next one.
+    document.body.innerHTML = ''
+  })
 
   it('shows the welcome view when no tab is open', () => {
     const { wrapper } = mountLayout([conn('a')])
@@ -439,5 +444,113 @@ describe('Layout', () => {
     await tab.trigger('dragend')
     await nextTick()
     expect(tab.classes()).not.toContain('dragging')
+  })
+
+  // --- Global shortcuts (4.3) ------------------------------------------------
+
+  it('refreshes the active topic on cmd+r and prevents the native refresh', async () => {
+    const { wrapper, api } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 'orders', [0, 1])
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+    })
+    const ev = new KeyboardEvent('keydown', { key: 'r', metaKey: true })
+    const prevented = vi.spyOn(ev, 'preventDefault')
+    window.dispatchEvent(ev)
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalledTimes(2)
+    })
+    expect(prevented).toHaveBeenCalled()
+  })
+
+  it('refreshes via ctrl+r as the non-mac fallback', async () => {
+    const { wrapper, api } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 'orders', [0, 1])
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+    })
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', ctrlKey: true }))
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('ignores cmd+r while the focus sits in an editable field', async () => {
+    const { wrapper, api } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 'orders', [0, 1])
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+    })
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    const ev = new KeyboardEvent('keydown', { key: 'r', metaKey: true, bubbles: true })
+    const prevented = vi.spyOn(ev, 'preventDefault')
+    input.dispatchEvent(ev)
+    input.remove()
+    await nextTick()
+    expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+    expect(prevented).not.toHaveBeenCalled()
+  })
+
+  it('closes the active tab on cmd+d and prevents the native bookmark', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 't1', [])
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(1)
+    })
+    const ev = new KeyboardEvent('keydown', { key: 'd', metaKey: true })
+    const prevented = vi.spyOn(ev, 'preventDefault')
+    window.dispatchEvent(ev)
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="home-view"]').exists()).toBe(true)
+    })
+    expect(prevented).toHaveBeenCalled()
+  })
+
+  it('ignores cmd+d while the focus sits in an editable field', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 't1', [])
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(1)
+    })
+    const input = document.createElement('textarea')
+    document.body.appendChild(input)
+    const ev = new KeyboardEvent('keydown', { key: 'd', metaKey: true, bubbles: true })
+    input.dispatchEvent(ev)
+    input.remove()
+    await nextTick()
+    expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(1)
+  })
+
+  it('toggles the command palette with a single cmd+k press', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="command-palette"]')).not.toBeNull()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="command-palette"]')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('opens the command palette with ctrl+k as the non-mac fallback', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="command-palette"]')).not.toBeNull()
+    wrapper.unmount()
+  })
+
+  it('does not trigger cmd+r or cmd+d during an IME composition', async () => {
+    const { wrapper, api } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 'orders', [0, 1])
+    await vi.waitFor(() => {
+      expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+    })
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', metaKey: true, isComposing: true }))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', metaKey: true, keyCode: 229 }))
+    await nextTick()
+    expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+    expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(1)
   })
 })
