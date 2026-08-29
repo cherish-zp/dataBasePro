@@ -82,6 +82,14 @@ type DeleteTopicsRequest struct {
 	Names        []string `json:"names"`
 }
 
+// AlterTopicConfigRequest carries the parameters for editing a topic's
+// whitelisted configs.
+type AlterTopicConfigRequest struct {
+	ConnectionID string                   `json:"connection_id"`
+	Topic        string                   `json:"topic"`
+	Entries      []model.TopicConfigEntry `json:"entries"`
+}
+
 // DeleteConsumerGroupRequest carries the parameters for deleting a consumer group.
 type DeleteConsumerGroupRequest struct {
 	ConnectionID string `json:"connection_id"`
@@ -195,6 +203,13 @@ func (a *App) DescribeTopic(id, topic string) (*model.TopicDetail, error) {
 	ctx, cancel := a.newContext()
 	defer cancel()
 	return a.svc.DescribeTopic(ctx, id, topic)
+}
+
+// AlterTopicConfig applies the whitelisted topic config values in req.
+func (a *App) AlterTopicConfig(req AlterTopicConfigRequest) error {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.AlterTopicConfig(ctx, req.ConnectionID, req.Topic, req.Entries)
 }
 
 // DescribeCluster returns broker topology, controller, Kafka version and

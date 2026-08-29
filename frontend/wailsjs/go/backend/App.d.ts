@@ -3,6 +3,8 @@
 import {backend} from '../models';
 import {model} from '../models';
 
+export function AlterTopicConfig(arg1:backend.AlterTopicConfigRequest):Promise<void>;
+
 export function Connect(arg1:string):Promise<void>;
 
 export function ConsumeMessages(arg1:backend.ConsumeRequest):Promise<Array<model.Message>>;

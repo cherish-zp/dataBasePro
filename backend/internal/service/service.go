@@ -154,6 +154,16 @@ func (s *Service) DescribeTopic(ctx context.Context, id, name string) (*model.To
 	return kds.DescribeTopic(ctx, name)
 }
 
+// AlterTopicConfig applies whitelisted topic config values on the connection's
+// cluster, auto-connecting if needed.
+func (s *Service) AlterTopicConfig(ctx context.Context, id, topic string, entries []model.TopicConfigEntry) error {
+	d, err := s.kafka(ctx, id)
+	if err != nil {
+		return err
+	}
+	return d.AlterTopicConfig(ctx, topic, entries)
+}
+
 // DescribeCluster returns the cluster health snapshot (brokers, controller,
 // Kafka version, under-replicated partitions), auto-connecting if needed.
 func (s *Service) DescribeCluster(ctx context.Context, id string) (*model.ClusterHealth, error) {

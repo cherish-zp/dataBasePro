@@ -171,6 +171,39 @@ func (c *Client) DescribeTopic(ctx context.Context, name string) (*model.TopicDe
 	return out, nil
 }
 
+// AlterTopicConfig applies the given whitelisted topic config values via an
+// incremental alter (SET semantics). Any key outside describeTopicConfigKeys,
+// an empty entry list, or an empty value fails the whole call before any
+// alter is issued.
+func (c *Client) AlterTopicConfig(ctx context.Context, name string, entries []model.TopicConfigEntry) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if len(entries) == 0 {
+		return errors.New("无配置修改")
+	}
+	configs := make([]kadm.AlterConfig, 0, len(entries))
+	for _, e := range entries {
+		if _, ok := describeTopicConfigKeys[e.Key]; !ok {
+			return fmt.Errorf("配置项 %q 不在可编辑白名单", e.Key)
+		}
+		if e.Value == "" {
+			return fmt.Errorf("配置值不能为空: %q", e.Key)
+		}
+		v := e.Value
+		configs = append(configs, kadm.AlterConfig{Op: kadm.SetConfig, Name: e.Key, Value: &v})
+	}
+	resp, err := c.admin.AlterTopicConfigs(ctx, configs, name)
+	if err != nil {
+		return fmt.Errorf("alter topic %q configs: %w", name, err)
+	}
+	for _, r := range resp {
+		if r.Err != nil {
+			return fmt.Errorf("alter topic %q configs: %w", name, r.Err)
+		}
+	}
+	return nil
+}
+
 // mapTopicConfigs keeps only the whitelisted keys of a described topic config
 // resource and sorts the survivors by key for stable display.
 func mapTopicConfigs(rc kadm.ResourceConfig) []model.TopicConfigEntry {

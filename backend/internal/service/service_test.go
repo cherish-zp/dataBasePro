@@ -77,6 +77,9 @@ func (f *fakeKafka) ListActiveConsumers(context.Context, string, string) ([]*mod
 func (f *fakeKafka) DescribeTopic(context.Context, string) (*model.TopicDetail, error) {
 	return f.detail, nil
 }
+func (f *fakeKafka) AlterTopicConfig(context.Context, string, []model.TopicConfigEntry) error {
+	return nil
+}
 func (f *fakeKafka) DescribeCluster(context.Context) (*model.ClusterHealth, error) {
 	return f.health, nil
 }
@@ -382,6 +385,19 @@ func TestDescribeTopicDelegates(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("DescribeTopic must delegate to the data source, got %+v", got)
+	}
+}
+
+func TestAlterTopicConfigDelegates(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	c, err := svc.CreateConnection(ctx, sampleConn())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	entries := []model.TopicConfigEntry{{Key: "retention.ms", Value: "123456789"}}
+	if err := svc.AlterTopicConfig(ctx, c.ID, "t1", entries); err != nil {
+		t.Fatalf("AlterTopicConfig: %v", err)
 	}
 }
 
