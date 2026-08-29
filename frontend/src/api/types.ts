@@ -244,3 +244,15 @@ export interface ActiveMembersRequest {
   group: string
   topic: string
 }
+
+// One row of the operation audit trail shown in the settings page
+// (mirrors model.AuditEntry). result is 'ok' | 'error'.
+export interface AuditEntry {
+  id?: number
+  connection_id: string
+  action: string
+  target: string
+  result: string
+  detail?: string
+  timestamp: number // unix ms
+}

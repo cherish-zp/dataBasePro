@@ -74,6 +74,10 @@ export function ListActiveProducers(arg1) {
   return window['go']['backend']['App']['ListActiveProducers'](arg1);
 }
 
+export function ListAudit(arg1) {
+  return window['go']['backend']['App']['ListAudit'](arg1);
+}
+
 export function ListConnections() {
   return window['go']['backend']['App']['ListConnections']();
 }

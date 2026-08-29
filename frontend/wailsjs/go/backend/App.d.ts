@@ -39,6 +39,8 @@ export function ListActiveConsumers(arg1:backend.ActiveMembersRequest):Promise<A
 
 export function ListActiveProducers(arg1:backend.ActiveMembersRequest):Promise<Array<model.ActiveProducer>>;
 
+export function ListAudit(arg1:number):Promise<Array<model.AuditEntry>>;
+
 export function ListConnections():Promise<Array<model.Connection>>;
 
 export function ListConsumerGroups(arg1:string):Promise<Array<model.ConsumerGroup>>;

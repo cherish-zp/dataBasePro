@@ -255,6 +255,30 @@ export namespace model {
 	        this.leader = source["leader"];
 	    }
 	}
+	export class AuditEntry {
+	    id?: number;
+	    connection_id: string;
+	    action: string;
+	    target: string;
+	    result: string;
+	    detail?: string;
+	    timestamp: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AuditEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.connection_id = source["connection_id"];
+	        this.action = source["action"];
+	        this.target = source["target"];
+	        this.result = source["result"];
+	        this.detail = source["detail"];
+	        this.timestamp = source["timestamp"];
+	    }
+	}
 	export class BatchProduceMessage {
 	    key: string;
 	    value: string;

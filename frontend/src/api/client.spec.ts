@@ -20,6 +20,9 @@ vi.mock('../../wailsjs/go/backend/App', () => ({
   ListConnections: vi.fn(async () => []),
   DescribeGroup: vi.fn(async () => ({ group: 'g1', state: 'Stable', protocol_type: 'consumer', members: [] })),
   DeleteTopics: vi.fn(async () => [{ name: 't1', error: '' }]),
+  ListAudit: vi.fn(async () => [
+    { connection_id: 'c1', action: 'create_topic', target: 't1', result: 'ok', timestamp: 1700000000000 },
+  ]),
 }))
 
 import * as App from '../../wailsjs/go/backend/App'
@@ -81,6 +84,17 @@ describe('WailsApi delegation', () => {
     const got = await api.deleteTopics(req)
     expect(mocked.DeleteTopics).toHaveBeenCalledWith(req)
     expect(got[0]).toEqual({ name: 't1', error: '' })
+  })
+
+  it('delegates listAudit, defaulting the limit to the store cap', async () => {
+    const got = await api.listAudit()
+    expect(mocked.ListAudit).toHaveBeenCalledWith(200)
+    expect(got[0]).toMatchObject({ action: 'create_topic', result: 'ok' })
+  })
+
+  it('delegates listAudit with an explicit limit', async () => {
+    await api.listAudit(50)
+    expect(mocked.ListAudit).toHaveBeenCalledWith(50)
   })
 })
 
