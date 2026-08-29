@@ -273,4 +273,91 @@ describe('ProducerPanel', () => {
     await flushPromises()
     expect(JSON.parse(localStorage.getItem('dbclient.produce-templates.v1') ?? '[]')).toEqual(['good'])
   })
+
+  describe('import file', () => {
+    async function importFile(wrapper: ReturnType<typeof mountPanel>['wrapper'], name: string, content: string) {
+      const file = new File([content], name)
+      Object.defineProperty(wrapper.find('[data-test="import-input"]').element, 'files', {
+        value: [file],
+        configurable: true,
+      })
+      await wrapper.find('[data-test="import-input"]').trigger('change')
+      // FileReader 通过事件循环异步回调，等待其 handler 完成后再断言。
+      await new Promise((r) => setTimeout(r, 20))
+      await flushPromises()
+    }
+
+    it('renders the import button and hidden file input', () => {
+      const { wrapper } = mountPanel()
+      expect(wrapper.find('[data-test="import-file"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="import-input"]').exists()).toBe(true)
+    })
+
+    it('shows the imported message count after selecting a file', async () => {
+      const { wrapper } = mountPanel()
+      await importFile(wrapper, 'data.jsonl', '{"a":1}\n{"b":2}\n')
+      expect(wrapper.find('[data-test="import-summary"]').text()).toContain('已导入 2 条消息')
+    })
+
+    it('sends imported messages through produceMessages and skips the single-send path', async () => {
+      const { wrapper, api } = mountPanel({
+        produceMessages: vi.fn(async () => [
+          { index: 0, partition: 0, offset: 0, error: '' },
+          { index: 1, partition: 0, offset: 1, error: '' },
+        ]),
+      })
+      await importFile(wrapper, 'data.jsonl', '"alpha"\n"beta"\n')
+      await wrapper.find('[data-test="btn-produce"]').trigger('click')
+      await flushPromises()
+      expect(api.produceMessage).not.toHaveBeenCalled()
+      expect(api.produceMessages).toHaveBeenCalledWith({
+        connection_id: 'c',
+        topic: 'orders',
+        partition: -1,
+        messages: [
+          { key: '', value: 'alpha' },
+          { key: '', value: 'beta' },
+        ],
+      })
+      expect(wrapper.find('[data-test="batch-summary"]').text()).toContain('成功 2 / 失败 0')
+    })
+
+    it('allows sending imported messages even when the value field is empty', async () => {
+      const { wrapper, api } = mountPanel({
+        produceMessages: vi.fn(async () => [{ index: 0, partition: 0, offset: 0, error: '' }]),
+      })
+      await importFile(wrapper, 'data.jsonl', '"only"\n')
+      await wrapper.find('[data-test="btn-produce"]').trigger('click')
+      await flushPromises()
+      expect(api.produceMessages).toHaveBeenCalled()
+    })
+
+    it('renders per-message failures after sending imported messages', async () => {
+      const { wrapper } = mountPanel({
+        produceMessages: vi.fn(async () => [
+          { index: 0, partition: 0, offset: 0, error: '' },
+          { index: 1, partition: 0, offset: -1, error: 'boom' },
+        ]),
+      })
+      await importFile(wrapper, 'data.jsonl', '"a"\n"b"\n')
+      await wrapper.find('[data-test="btn-produce"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-test="batch-summary"]').text()).toContain('成功 1 / 失败 1')
+      expect(wrapper.find('[data-test="batch-failures"]').text()).toContain('boom')
+    })
+
+    it('clears imported messages when the value field is edited', async () => {
+      const { wrapper } = mountPanel()
+      await importFile(wrapper, 'data.jsonl', '"a"\n"b"\n')
+      expect(wrapper.find('[data-test="import-summary"]').exists()).toBe(true)
+      await wrapper.find('[data-test="input-value"]').setValue('manual')
+      expect(wrapper.find('[data-test="import-summary"]').exists()).toBe(false)
+    })
+
+    it('surfaces import parse errors on the error banner', async () => {
+      const { wrapper } = mountPanel()
+      await importFile(wrapper, 'data.jsonl', '{"ok":1}\nbad line\n')
+      expect(wrapper.find('[data-test="produce-error"].msg.err').text()).toContain('第 2 行 JSON 解析失败')
+    })
+  })
 })
