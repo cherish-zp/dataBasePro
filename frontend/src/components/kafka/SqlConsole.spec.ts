@@ -112,15 +112,44 @@ describe('SqlConsole', () => {
     expect(api.consumeMessages).toHaveBeenLastCalledWith(expect.objectContaining({ topic: 'bad_t81_test' }))
   })
 
-  // Documents current watcher semantics: an in-progress user edit is discarded
-  // on topic change (no dirty-state guard), so any future guard would surface
-  // here instead of silently changing behavior.
-  it('overwrites a user-edited query when the topic changes', async () => {
+  // Per-topic draft cache (BL-007): switching to a topic with no saved draft
+  // still rebinds the template, but the edited query is kept as that topic's
+  // draft and restored when switching back.
+  it('shows the template for a topic without a saved draft', async () => {
     const { wrapper } = mountConsole()
     await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'k1'")
     await wrapper.setProps({ topic: 'bad_t81_test' })
     expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
       'SELECT * FROM bad_t81_test LIMIT 100',
+    )
+  })
+
+  it('restores the unrun draft when switching back to the topic', async () => {
+    const { wrapper } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'k1'")
+    await wrapper.setProps({ topic: 'bad_t81_test' })
+    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
+      'SELECT * FROM bad_t81_test LIMIT 100',
+    )
+    await wrapper.setProps({ topic: 'orders' })
+    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
+      "SELECT * FROM orders WHERE key = 'k1'",
+    )
+  })
+
+  it('drops the saved draft when the editor is cleared before switching', async () => {
+    const { wrapper } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'k1'")
+    await wrapper.setProps({ topic: 'bad_t81_test' })
+    await wrapper.setProps({ topic: 'orders' })
+    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
+      "SELECT * FROM orders WHERE key = 'k1'",
+    )
+    await wrapper.find('[data-test="input-sql"]').setValue('   ')
+    await wrapper.setProps({ topic: 'bad_t81_test' })
+    await wrapper.setProps({ topic: 'orders' })
+    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
+      'SELECT * FROM orders LIMIT 100',
     )
   })
 
@@ -364,6 +393,46 @@ describe('SqlConsole', () => {
     resolve([msg('k1', 'v1')])
     await flushPromises()
     await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter', metaKey: true })
+    await flushPromises()
+    expect(api.consumeMessages).toHaveBeenCalledTimes(2)
+  })
+
+  // History/favorites application goes through applyQuery; like the ⌘Enter
+  // guard it must not start a second fetch while a query is in flight.
+  it('ignores a history item click while a query is already running', async () => {
+    let resolve!: (rows: Message[]) => void
+    const { wrapper, api } = mountConsole({
+      consumeMessages: vi.fn(() => new Promise<Message[]>((r) => { resolve = r })),
+    })
+    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 10')
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await wrapper.find('[data-test="history-toggle"]').trigger('click')
+    await wrapper.findAll('[data-test="history-item"]')[0].trigger('click')
+    expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+    // 运行结束后再点历史项 → 正常触发。
+    resolve([msg('k1', 'v1')])
+    await flushPromises()
+    await wrapper.findAll('[data-test="history-item"]')[0].trigger('click')
+    await flushPromises()
+    expect(api.consumeMessages).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores a favorite item click while a query is already running', async () => {
+    let resolve!: (rows: Message[]) => void
+    const { wrapper, api } = mountConsole({
+      consumeMessages: vi.fn(() => new Promise<Message[]>((r) => { resolve = r })),
+    })
+    useSqlHistoryStore().saveFavorite('fav1', 'SELECT * FROM orders LIMIT 5')
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await wrapper.find('[data-test="history-toggle"]').trigger('click')
+    await wrapper.find('[data-test="fav-item"]').trigger('click')
+    expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
+      'SELECT * FROM orders LIMIT 100',
+    )
+    resolve([msg('k1', 'v1')])
+    await flushPromises()
+    await wrapper.find('[data-test="fav-item"]').trigger('click')
     await flushPromises()
     expect(api.consumeMessages).toHaveBeenCalledTimes(2)
   })
