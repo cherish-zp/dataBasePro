@@ -20,10 +20,25 @@ const running = ref(false)
 const error = ref<string | null>(null)
 const results = ref<Message[]>([])
 
+// Per-topic SQL draft cache (BL-007): unrun editor content survives a topic
+// switch. Component-local only — drafts are dropped on unmount and never
+// persisted. A draft is written when leaving a topic (unless the editor is
+// blank, which means the user cleared it), read back when returning, and
+// dropped once the query runs successfully or the editor is emptied.
+const draftByTopic: Record<string, string> = {}
+
 watch(
   () => props.topic,
-  (t) => {
-    sql.value = `SELECT * FROM ${t} LIMIT 100`
+  (t, old) => {
+    if (old) {
+      if (sql.value.trim()) {
+        draftByTopic[old] = sql.value
+      } else {
+        // Editor was cleared to blank → the old draft is obsolete.
+        delete draftByTopic[old]
+      }
+    }
+    sql.value = draftByTopic[t] ?? `SELECT * FROM ${t} LIMIT 100`
     results.value = []
   },
 )
@@ -54,6 +69,9 @@ async function run(): Promise<void> {
     let out = fetched.filter((m) => matchesWhere(m, parsed.where))
     if (parsed.limit != null) out = out.slice(0, parsed.limit)
     results.value = out
+    // A successful run validates the query: no longer a pending draft for the
+    // current topic.
+    delete draftByTopic[props.topic]
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -97,8 +115,10 @@ const favFormOpen = ref(false)
 const favName = ref('')
 
 // applyQuery fills the editor with the picked query and executes it right
-// away (回填触发执行), closing the menu.
+// away (回填触发执行), closing the menu. Like the ⌘Enter guard, it must not
+// start a second fetch while a query is in flight (BL-006).
 function applyQuery(q: string): void {
+  if (running.value) return
   historyOpen.value = false
   sql.value = q
   void run()
