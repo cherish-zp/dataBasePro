@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount, type VueWrapper } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
@@ -717,6 +717,43 @@ describe('ConnectionTree', () => {
       expect(wrapper.findAll('[data-test="topic-name"]').map((n) => n.text())).toEqual(['t3'])
     })
     expect(wrapper.find('[data-test="batch-delete-topics"]').text()).toContain('删除(0)')
+  })
+
+  it('skips feedback and reload when the connection collapses before the batch delete finishes', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 't1', partitions: [] },
+      { name: 't2', partitions: [] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    let resolveDelete!: (v: { name: string; error: string }[]) => void
+    ;(api.deleteTopics as ReturnType<typeof vi.fn>).mockImplementation(
+      () =>
+        new Promise((res) => {
+          resolveDelete = res
+        }),
+    )
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="select-mode-toggle"]').trigger('click')
+    await wrapper.find('[data-test="topic-check-t1"]').trigger('click')
+    await wrapper.find('[data-test="batch-delete-topics"]').trigger('click')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(api.deleteTopics).toHaveBeenCalledWith({ connection_id: 'a', names: ['t1'] })
+    })
+    // 删除在途时折叠连接：完成回调应跳过反馈与 reload。
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    expect(wrapper.find('[data-test="conn-caret"]').classes()).not.toContain('open')
+    resolveDelete([{ name: 't1', error: '' }])
+    await flushPromises()
+    // 跳过 reload：展开时那次加载是唯一的 listTopics 调用。
+    expect(vi.mocked(api.listTopics).mock.calls.length).toBe(1)
+    // 重新展开后也不出现残留的删除反馈。
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(2)
+    })
+    expect(wrapper.find('[data-test="batch-delete-summary"]').exists()).toBe(false)
   })
 
   it('skips batch deletion when confirmation is declined', async () => {
