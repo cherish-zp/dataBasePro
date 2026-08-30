@@ -27,6 +27,10 @@ export interface BrowseState {
   lastOffset: number
   hasMore: boolean
   target: JumpTarget | null
+  // Monotonic counter bumped after each successful jump so consumers can
+  // re-scroll to the target even when its key is unchanged (e.g. jumping to
+  // the same offset again after the view scrolled away).
+  scrollRequest: number
 }
 
 function message(e: unknown): string {
@@ -51,6 +55,7 @@ export const useBrowseStore = defineStore('browse', () => {
         lastOffset: -1,
         hasMore: false,
         target: null,
+        scrollRequest: 0,
       }
     }
     return states.value[tabId]
@@ -66,9 +71,9 @@ export const useBrowseStore = defineStore('browse', () => {
     const st = stateFor(tabId)
     if (opts?.jumpOffset != null) {
       // A jump runs the offset query path from the entered offset (any time
-      // range does not apply) and records the highlight target.
+      // range does not apply). The highlight target is recorded only once the
+      // fetch succeeds, so a failed jump leaves any previous highlight intact.
       st.query = { ...st.query, offset: opts.jumpOffset, timestampMs: null, endTimeMs: null }
-      st.target = { offset: opts.jumpOffset }
     } else {
       // Regular queries clear any previous jump highlight.
       st.target = null
@@ -100,6 +105,10 @@ export const useBrowseStore = defineStore('browse', () => {
       st.lastOffset = msgs.length ? msgs[msgs.length - 1].offset : -1
       // Cross-partition ("All") fetches do not paginate by offset yet.
       st.hasMore = st.query.partition >= 0 && msgs.length === st.query.limit
+      if (opts?.jumpOffset != null) {
+        st.target = { offset: opts.jumpOffset }
+        st.scrollRequest += 1
+      }
     } catch (e) {
       st.error = message(e)
     } finally {

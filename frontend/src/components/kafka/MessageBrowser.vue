@@ -99,16 +99,24 @@ function isTarget(m: Message): boolean {
   return targetKey.value === `${m.partition}:${m.offset}`
 }
 
-// Scroll the jump-target row into view whenever the target changes. The
+// Scroll the jump-target row into view whenever the target changes or a jump
+// completes. The second part of the key (scrollRequest) makes a repeat jump to
+// the same offset re-scroll even though the resolved target key is unchanged.
+// Concatenating into a primitive string compares by value, so pagination
+// appends that leave the target untouched do not re-trigger a scroll. The
 // optional call keeps environments without scrollIntoView (jsdom) safe; the
 // highlight itself survives load-more appends without re-scrolling.
 const tableWrap = ref<HTMLElement | null>(null)
 
-watch(targetKey, async (key) => {
-  if (!key) return
-  await nextTick()
-  tableWrap.value?.querySelector('[data-test="target-row"]')?.scrollIntoView?.({ block: 'center' })
-})
+watch(
+  () => `${targetKey.value}|${st.value.scrollRequest}`,
+  async () => {
+    const key = targetKey.value
+    if (!key) return
+    await nextTick()
+    tableWrap.value?.querySelector('[data-test="target-row"]')?.scrollIntoView?.({ block: 'center' })
+  },
+)
 
 function openDetail(m: Message): void {
   store.select(props.tabId, m)
