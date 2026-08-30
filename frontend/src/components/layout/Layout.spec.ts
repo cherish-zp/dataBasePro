@@ -8,6 +8,7 @@ import type { Connection } from '@/api/types'
 import Layout from './Layout.vue'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
 import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
+import { useConnectionsStore } from '@/store/connections'
 import { useTabsStore } from '@/store/tabs'
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
@@ -71,6 +72,20 @@ describe('Layout', () => {
     const { wrapper } = mountLayout([conn('a')])
     expect(wrapper.find('[data-test="home-view"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="connection-tree"]').exists()).toBe(true)
+  })
+
+  it('mounts the bottom status bar and live-updates from the connections store', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    const statusBar = wrapper.find('[data-test="status-bar"]')
+    expect(statusBar.exists()).toBe(true)
+    expect(statusBar.find('[data-test="status-count"]').text()).toBe('连接 0 · 在线 0')
+    // The status bar reads the connections store, not the Layout prop, so it
+    // reflects store mutations without a remount.
+    const store = useConnectionsStore()
+    store.connections.push(conn('b'))
+    store.setStatus('b', 'connected')
+    await nextTick()
+    expect(statusBar.find('[data-test="status-count"]').text()).toBe('连接 1 · 在线 1')
   })
 
   it('opens a topic tab from the tree and renders the message browser', async () => {
