@@ -368,9 +368,13 @@ async function executeDelete(): Promise<void> {
 
 // executeBatchDelete deletes the given topics in one call. Per-topic failures
 // are surfaced as feedback while the tree reloads regardless, so topics whose
-// deletion failed stay listed.
+// deletion failed stay listed. If the connection was collapsed while the call
+// was in flight, the completion skips both feedback and reload: the collapse
+// already discarded the multi-select state, and writing to an invisible node
+// only resurfaces stale feedback on the next expand.
 async function executeBatchDelete(conn: Connection, names: string[]): Promise<void> {
   const results = await getApi().deleteTopics({ connection_id: conn.id, names })
+  if (!isExpanded(conn.id)) return
   const failures = results
     .filter((r) => r.error)
     .map((r) => ({ name: r.name, error: r.error }))
