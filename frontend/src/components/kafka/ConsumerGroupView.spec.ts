@@ -296,10 +296,10 @@ describe('ConsumerGroupView', () => {
   })
 
   it('guards against double-confirming a reset while one is in flight', async () => {
-    let resolveReset!: (v: unknown) => void
+    let resolveReset!: (v: void) => void
     const reset = vi.fn(
       () =>
-        new Promise((res) => {
+        new Promise<void>((res) => {
           resolveReset = res
         }),
     )
