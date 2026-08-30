@@ -120,6 +120,9 @@ async function reset(): Promise<void> {
 }
 
 async function confirmReset(): Promise<void> {
+  // 与 running/applyQuery 守卫同语义：确认在途时再触发确认直接忽略，避免
+  // 双击重复调用（幂等但无谓地打 broker 两次）。
+  if (st.value.resetting) return
   await reset()
   previewRows.value = null
 }
@@ -189,7 +192,7 @@ onMounted(refresh)
     <div class="members-panel" data-test="members-panel">
       <div class="members-header">
         <span class="members-title">成员拓扑</span>
-        <span v-if="groupDetail" class="mono members-state" data-test="members-state">{{ groupDetail.state }}</span>
+        <span v-if="groupDetail && groupDetail.members.length > 0" class="mono members-state" data-test="members-state">{{ groupDetail.state }}</span>
       </div>
       <div v-if="membersNote" class="members-note" data-test="members-note">{{ membersNote }}</div>
       <div v-else-if="!groupDetail || groupDetail.members.length === 0" class="members-empty" data-test="members-empty">
