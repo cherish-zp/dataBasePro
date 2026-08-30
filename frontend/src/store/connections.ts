@@ -61,6 +61,9 @@ export const useConnectionsStore = defineStore('connections', () => {
     error.value = null
     await getApi().deleteConnection(id)
     connections.value = connections.value.filter((c) => c.id !== id)
+    // Drop the per-connection status so the status bar's online count does not
+    // stay inflated by a stale 'connected' entry for the removed connection.
+    delete statusById.value[id]
   }
 
   async function testConnection(cfg: KafkaConfig): Promise<void> {

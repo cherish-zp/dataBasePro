@@ -79,9 +79,11 @@ describe('connections store', () => {
     ;(api.listConnections as ReturnType<typeof vi.fn>).mockResolvedValue([conn('a'), conn('b')])
     const store = useConnectionsStore()
     await store.load()
+    store.setStatus('a', 'connected')
     await store.remove('a')
     expect(api.deleteConnection).toHaveBeenCalledWith('a')
     expect(store.connections.map((c) => c.id)).toEqual(['b'])
+    expect(store.statusById['a']).toBeUndefined()
   })
 
   it('connect and disconnect delegate to the api', async () => {
