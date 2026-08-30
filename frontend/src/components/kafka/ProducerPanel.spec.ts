@@ -275,6 +275,44 @@ describe('ProducerPanel', () => {
     expect(JSON.parse(localStorage.getItem('dbclient.produce-templates.v1') ?? '[]')).toEqual(['good'])
   })
 
+  it('clears the stale ok banner when the panel is reopened', async () => {
+    const { wrapper } = mountPanel()
+    await wrapper.find('[data-test="input-value"]').setValue('v')
+    await wrapper.find('[data-test="btn-produce"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="produce-ok"]').exists()).toBe(true)
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    expect(wrapper.find('[data-test="produce-ok"]').exists()).toBe(false)
+  })
+
+  it('clears the stale error banner when the panel is reopened', async () => {
+    const { wrapper } = mountPanel({
+      produceMessage: vi.fn(async () => {
+        throw new Error('boom')
+      }),
+    })
+    await wrapper.find('[data-test="input-value"]').setValue('v')
+    await wrapper.find('[data-test="btn-produce"]').trigger('click')
+    await flushPromises()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="produce-error"].msg.err').text()).toContain('boom')
+    })
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    expect(wrapper.find('[data-test="produce-error"].msg.err').exists()).toBe(false)
+  })
+
+  it('keeps the ok banner while the panel stays open', async () => {
+    const { wrapper } = mountPanel()
+    await wrapper.find('[data-test="input-value"]').setValue('v')
+    await wrapper.find('[data-test="btn-produce"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="produce-ok"]').exists()).toBe(true)
+    await wrapper.find('[data-test="input-value"]').setValue('v2')
+    expect(wrapper.find('[data-test="produce-ok"]').exists()).toBe(true)
+  })
+
   describe('import file', () => {
     async function importFile(wrapper: ReturnType<typeof mountPanel>['wrapper'], name: string, content: string) {
       const file = new File([content], name)
