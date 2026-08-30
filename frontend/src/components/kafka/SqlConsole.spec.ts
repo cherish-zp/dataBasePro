@@ -153,6 +153,48 @@ describe('SqlConsole', () => {
     )
   })
 
+  // Clear-on-success must be observable (BL-007): after a successful run the
+  // topic's draft is gone, so a full A→B→A round-trip returns to the template
+  // instead of resurrecting the just-run SQL via the switch-back watch.
+  it('shows the template after a successful run round-trips A→B→A', async () => {
+    const { wrapper } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 10')
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await flushPromises()
+    await wrapper.setProps({ topic: 'bad_t81_test' })
+    await wrapper.setProps({ topic: 'orders' })
+    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
+      'SELECT * FROM orders LIMIT 100',
+    )
+  })
+
+  // Running clears the draft, but editing afterwards is a new pending change
+  // that must still survive the round-trip.
+  it('restores an edited draft after a run when switching back to the topic', async () => {
+    const { wrapper } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 10')
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 20')
+    await wrapper.setProps({ topic: 'bad_t81_test' })
+    await wrapper.setProps({ topic: 'orders' })
+    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
+      'SELECT * FROM orders LIMIT 20',
+    )
+  })
+
+  // Drafts are keyed by connection, so two sql tabs on different connections
+  // that share a topic name do not leak each other's draft.
+  it('keeps the draft separate for the same topic on a different connection', async () => {
+    const { wrapper } = mountConsole()
+    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'k1'")
+    await wrapper.setProps({ topic: 'bad_t81_test' })
+    await wrapper.setProps({ connectionId: 'other-conn', topic: 'orders' })
+    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
+      'SELECT * FROM orders LIMIT 100',
+    )
+  })
+
   it('runs a query and applies a WHERE key filter', async () => {
     const { wrapper, api } = mountConsole({
       consumeMessages: vi.fn(async () => [msg('k1', 'v1'), msg('k2', 'v2'), msg('k1', 'v3')]),

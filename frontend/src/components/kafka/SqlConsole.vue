@@ -23,22 +23,33 @@ const results = ref<Message[]>([])
 // Per-topic SQL draft cache (BL-007): unrun editor content survives a topic
 // switch. Component-local only — drafts are dropped on unmount and never
 // persisted. A draft is written when leaving a topic (unless the editor is
-// blank, which means the user cleared it), read back when returning, and
-// dropped once the query runs successfully or the editor is emptied.
+// blank, which means the user cleared it, or the content equals the last
+// successfully-run query, which means nothing is pending), read back when
+// returning, and dropped once the query runs successfully. Drafts are keyed by
+// `${connectionId}:${topic}` so sql tabs on different connections sharing a
+// topic name do not share a draft.
 const draftByTopic: Record<string, string> = {}
+const lastRunByTopic: Record<string, string> = {}
+
+function draftKey(connectionId: string, topic: string): string {
+  return `${connectionId}:${topic}`
+}
 
 watch(
   () => props.topic,
   (t, old) => {
     if (old) {
+      const oldKey = draftKey(props.connectionId, old)
       if (sql.value.trim()) {
-        draftByTopic[old] = sql.value
+        if (sql.value !== lastRunByTopic[oldKey]) {
+          draftByTopic[oldKey] = sql.value
+        }
       } else {
         // Editor was cleared to blank → the old draft is obsolete.
-        delete draftByTopic[old]
+        delete draftByTopic[oldKey]
       }
     }
-    sql.value = draftByTopic[t] ?? `SELECT * FROM ${t} LIMIT 100`
+    sql.value = draftByTopic[draftKey(props.connectionId, t)] ?? `SELECT * FROM ${t} LIMIT 100`
     results.value = []
   },
 )
@@ -56,7 +67,8 @@ async function run(): Promise<void> {
   const topic = parsed.topic ?? props.topic
   // Record at submission: the query was accepted for execution, regardless of
   // whether the broker later returns rows or errors (simple console behavior).
-  sqlHistory.record(sql.value)
+  const submitted = sql.value
+  sqlHistory.record(submitted)
   running.value = true
   try {
     const fetched = await getApi().consumeMessages({
@@ -70,8 +82,11 @@ async function run(): Promise<void> {
     if (parsed.limit != null) out = out.slice(0, parsed.limit)
     results.value = out
     // A successful run validates the query: no longer a pending draft for the
-    // current topic.
-    delete draftByTopic[props.topic]
+    // current topic. Remember what was run so the topic-switch watch skips
+    // re-saving it (which would otherwise resurrect the just-run SQL).
+    const key = draftKey(props.connectionId, props.topic)
+    lastRunByTopic[key] = submitted
+    delete draftByTopic[key]
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
