@@ -11,6 +11,7 @@ import SqlConsole from '@/components/kafka/SqlConsole.vue'
 import GlobalLagView from '@/components/kafka/GlobalLagView.vue'
 import ClusterHealthPanel from '@/components/kafka/ClusterHealthPanel.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
+import StatusBar from '@/components/layout/StatusBar.vue'
 import HomeView from '@/views/HomeView.vue'
 
 const props = defineProps<{ connections: Connection[] }>()
@@ -335,6 +336,8 @@ function onTabDragEnd(): void {
         </div>
       </main>
     </div>
+
+    <StatusBar />
 
     <ProducerPanel
       v-if="activeTopic"
