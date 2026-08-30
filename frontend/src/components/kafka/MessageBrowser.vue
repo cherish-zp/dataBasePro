@@ -198,7 +198,14 @@ onMounted(runQuery)
       </label>
       <label class="filter-item">
         结束时间
-        <input v-model="endTime" data-test="filter-end-time" type="datetime-local" class="input" />
+        <input
+          v-model="endTime"
+          data-test="filter-end-time"
+          type="datetime-local"
+          class="input"
+          :disabled="!startTime"
+          :title="startTime ? undefined : '起始时间为空时结束时间无效'"
+        />
       </label>
       <label class="filter-item">
         条数
