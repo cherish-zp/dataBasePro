@@ -191,6 +191,23 @@ describe('MessageBrowser', () => {
     })
   })
 
+  it('disables the end-time filter until a start time is set', async () => {
+    const { wrapper } = mountBrowser()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="browse-empty"]').exists()).toBe(true)
+    })
+    const endInput = wrapper.find('[data-test="filter-end-time"]')
+    // No start time: the end time is unusable and explains why.
+    expect(endInput.attributes('disabled')).toBeDefined()
+    expect(endInput.attributes('title')).toContain('起始时间为空')
+    // Setting a start time enables the end time.
+    await wrapper.find('[data-test="filter-start-time"]').setValue('2023-11-15T08:30:00')
+    expect(wrapper.find('[data-test="filter-end-time"]').attributes('disabled')).toBeUndefined()
+    // Clearing the start time disables it again.
+    await wrapper.find('[data-test="filter-start-time"]').setValue('')
+    expect(wrapper.find('[data-test="filter-end-time"]').attributes('disabled')).toBeDefined()
+  })
+
   it('restores the offset query after the time range is cleared', async () => {
     const consume = vi.fn(async () => [msg(0)])
     const startInput = '2023-11-15T08:30:00'
@@ -308,6 +325,23 @@ describe('MessageBrowser', () => {
     expect(wrapper.find('[data-test="btn-jump-offset"]').attributes('disabled')).toBeUndefined()
   })
 
+  it('rejects fractional offsets: keeps the jump disabled and skips the fetch', async () => {
+    const { wrapper, api } = mountBrowser()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="browse-empty"]').exists()).toBe(true)
+    })
+    const consume = api.consumeMessages as ReturnType<typeof vi.fn>
+    const input = wrapper.find('[data-test="jump-offset-input"]')
+    const callsBefore = consume.mock.calls.length
+    await input.setValue(42.5)
+    expect(wrapper.find('[data-test="btn-jump-offset"]').attributes('disabled')).toBeDefined()
+    await wrapper.find('[data-test="btn-jump-offset"]').trigger('click')
+    expect(consume.mock.calls.length).toBe(callsBefore)
+    // An integer offset is accepted as before.
+    await input.setValue(43)
+    expect(wrapper.find('[data-test="btn-jump-offset"]').attributes('disabled')).toBeUndefined()
+  })
+
   it('jumps to the entered offset and highlights the target row', async () => {
     const consume = vi.fn(async () => [msg(40), msg(41), msg(42)])
     const { wrapper, api } = mountBrowser({ consumeMessages: consume })
@@ -368,6 +402,41 @@ describe('MessageBrowser', () => {
     }
   })
 
+  it('re-scrolls to the target when jumping to the same offset again', async () => {
+    const original = window.HTMLElement.prototype.scrollIntoView
+    let scrollCalls = 0
+    window.HTMLElement.prototype.scrollIntoView = vi.fn(function (this: Element) {
+      scrollCalls += 1
+    })
+    try {
+      const consume = vi.fn(async () => [msg(40), msg(42)])
+      const { wrapper } = mountBrowser({ consumeMessages: consume })
+      await vi.waitFor(() => {
+        expect(wrapper.findAll('[data-test="message-row"]')).toHaveLength(2)
+      })
+      // First jump positions the target.
+      await wrapper.find('[data-test="jump-offset-input"]').setValue(42)
+      await wrapper.find('[data-test="btn-jump-offset"]').trigger('click')
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="target-row"]').exists()).toBe(true)
+      })
+      await flushPromises()
+      expect(scrollCalls).toBeGreaterThanOrEqual(1)
+      const afterFirstJump = scrollCalls
+      // Jumping again to the same offset (target row already rendered) must
+      // still scroll it back into view.
+      await wrapper.find('[data-test="btn-jump-offset"]').trigger('click')
+      await vi.waitFor(() => {
+        expect(consume).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 42 }))
+      })
+      await flushPromises()
+      expect(scrollCalls).toBeGreaterThan(afterFirstJump)
+    } finally {
+      if (original) window.HTMLElement.prototype.scrollIntoView = original
+      else delete (window.HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView
+    }
+  })
+
   it('keeps the target highlighted after load more appends rows', async () => {
     const consume = vi.fn(async () => [msg(1), msg(2), msg(3)])
     const { wrapper } = mountBrowser({ consumeMessages: consume })
@@ -388,6 +457,40 @@ describe('MessageBrowser', () => {
     // The jump highlight survives the pagination append.
     expect(wrapper.findAll('[data-test="target-row"]')).toHaveLength(1)
     expect(wrapper.find('[data-test="target-row"]').text()).toContain('k1')
+  })
+
+  it('does not re-scroll the target when load more appends rows', async () => {
+    const original = window.HTMLElement.prototype.scrollIntoView
+    let scrollCalls = 0
+    window.HTMLElement.prototype.scrollIntoView = vi.fn(function (this: Element) {
+      scrollCalls += 1
+    })
+    try {
+      const consume = vi.fn(async () => [msg(1), msg(2), msg(3)])
+      const { wrapper } = mountBrowser({ consumeMessages: consume })
+      await wrapper.find('[data-test="filter-partition"]').setValue(0)
+      await wrapper.find('[data-test="filter-limit"]').setValue(3)
+      await wrapper.find('[data-test="jump-offset-input"]').setValue(1)
+      await wrapper.find('[data-test="btn-jump-offset"]').trigger('click')
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="target-row"]').text()).toContain('k1')
+      })
+      await flushPromises()
+      expect(scrollCalls).toBeGreaterThanOrEqual(1)
+      const afterJump = scrollCalls
+      expect(wrapper.find('[data-test="btn-load-more"]').exists()).toBe(true)
+      consume.mockResolvedValueOnce([msg(4)])
+      await wrapper.find('[data-test="btn-load-more"]').trigger('click')
+      await flushPromises()
+      await vi.waitFor(() => {
+        expect(wrapper.findAll('tbody tr')).toHaveLength(4)
+      })
+      // Appending rows below the target must not yank the view back to it.
+      expect(scrollCalls).toBe(afterJump)
+    } finally {
+      if (original) window.HTMLElement.prototype.scrollIntoView = original
+      else delete (window.HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView
+    }
   })
 
   it('re-fetches when the unified refresh request increments', async () => {

@@ -246,4 +246,44 @@ describe('browse store', () => {
     expect(store.stateFor('t1').messages.map((m) => m.offset)).toEqual([42, 43, 44])
     expect(store.targetKey('t1')).toBe('0:42')
   })
+
+  it('bumps the scroll request on every successful jump, even for the same offset', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([msg(42)])
+    const store = useBrowseStore()
+    await store.jumpToOffset('t1', 'c', 'topic-a', 42)
+    expect(store.stateFor('t1').scrollRequest).toBe(1)
+    // Re-jumping the same offset still signals consumers to re-scroll, because
+    // the resolved target key is unchanged and would otherwise not retrigger.
+    await store.jumpToOffset('t1', 'c', 'topic-a', 42)
+    expect(store.stateFor('t1').scrollRequest).toBe(2)
+  })
+
+  it('does not bump the scroll request for a plain query', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockResolvedValue([msg(0)])
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, offset: OffsetEarliest, limit: 10 })
+    expect(store.stateFor('t1').scrollRequest).toBe(0)
+  })
+
+  it('keeps the previous jump target when a later jump fetch fails', async () => {
+    const consume = api.consumeMessages as ReturnType<typeof vi.fn>
+    consume.mockResolvedValue([msg(42)])
+    const store = useBrowseStore()
+    await store.jumpToOffset('t1', 'c', 'topic-a', 42)
+    expect(store.stateFor('t1').target).toEqual({ offset: 42 })
+    consume.mockRejectedValueOnce(new Error('broker down'))
+    await store.jumpToOffset('t1', 'c', 'topic-a', 7)
+    // A failed jump must not move or clear the highlight.
+    expect(store.stateFor('t1').target).toEqual({ offset: 42 })
+    expect(store.stateFor('t1').scrollRequest).toBe(1)
+  })
+
+  it('leaves the target null and no scroll signal when the very first jump fails', async () => {
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('broker down'))
+    const store = useBrowseStore()
+    await store.jumpToOffset('t1', 'c', 'topic-a', 42)
+    expect(store.stateFor('t1').target).toBeNull()
+    expect(store.stateFor('t1').scrollRequest).toBe(0)
+    expect(store.stateFor('t1').error).toBe('broker down')
+  })
 })
