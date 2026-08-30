@@ -34,9 +34,14 @@ const valueText = computed(() => (valueFormatted.value ? valueView.value.text : 
 // Collapse cap: .value.collapsed caps height at 18em = 12 lines at line-height
 // 1.5; the toggle only appears past that threshold so short values stay clean.
 // It is derived from the view's canonical text (pretty or raw passthrough) so
-// the control stays visible across raw/formatted switches.
+// the control stays visible across raw/formatted switches. A character bound
+// catches single-line blobs (base64/hex) that never exceed the line cap.
 const LONG_LINES = 12
-const valueLong = computed(() => valueView.value.text.split('\n').length > LONG_LINES)
+const COLLAPSE_CHAR_THRESHOLD = 2000
+const valueLong = computed(() => {
+  const text = valueView.value.text
+  return text.length > COLLAPSE_CHAR_THRESHOLD || text.split('\n').length > LONG_LINES
+})
 
 function toggleKeyMode(): void {
   keyMode.value = keyMode.value === 'formatted' ? 'raw' : 'formatted'
@@ -61,7 +66,7 @@ function toggleValueMode(): void {
       <div class="kv">
         <div class="kv-head">
           <span class="label">Key</span>
-          <button v-if="keyView.ok" class="mode-btn" data-test="key-mode" type="button" @click="toggleKeyMode">
+          <button v-if="keyView.ok" class="mode-btn" data-test="key-mode" type="button" :aria-pressed="keyMode === 'formatted'" @click="toggleKeyMode">
             {{ keyMode === 'formatted' ? '原始' : '格式化' }}
           </button>
         </div>
@@ -71,7 +76,7 @@ function toggleValueMode(): void {
         <div class="kv-head">
           <span class="label">Value</span>
           <span class="kv-actions">
-            <button v-if="valueView.ok" class="mode-btn" data-test="value-mode" type="button" @click="toggleValueMode">
+            <button v-if="valueView.ok" class="mode-btn" data-test="value-mode" type="button" :aria-pressed="valueMode === 'formatted'" @click="toggleValueMode">
               {{ valueMode === 'formatted' ? '原始' : '格式化' }}
             </button>
             <button v-if="valueLong" class="mode-btn" data-test="value-expand" type="button" @click="valueExpanded = !valueExpanded">
@@ -96,11 +101,11 @@ function toggleValueMode(): void {
   right: 0;
   bottom: 0;
   width: 460px;
-  background: rgba(255, 255, 255, 0.86);
+  background: var(--glass-bg);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
   border-left: 1px solid var(--border);
-  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--glass-shadow);
   z-index: 1000;
   display: flex;
   flex-direction: column;
