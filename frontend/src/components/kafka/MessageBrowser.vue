@@ -80,12 +80,12 @@ async function loadMore(): Promise<void> {
 // input — a time query highlights its first returned record (see targetKey).
 const jumpOffsetInput = ref<number | ''>('')
 const jumpValid = computed(
-  () => typeof jumpOffsetInput.value === 'number' && Number.isFinite(jumpOffsetInput.value) && jumpOffsetInput.value >= 0,
+  () => typeof jumpOffsetInput.value === 'number' && Number.isInteger(jumpOffsetInput.value) && jumpOffsetInput.value >= 0,
 )
 
 async function jumpToOffset(): Promise<void> {
   const offset = jumpOffsetInput.value
-  if (typeof offset !== 'number' || !Number.isFinite(offset) || offset < 0) return
+  if (typeof offset !== 'number' || !Number.isInteger(offset) || offset < 0) return
   await store.jumpToOffset(props.tabId, props.connectionId, props.topic, offset, {
     partition: partition.value,
     limit: limit.value,
