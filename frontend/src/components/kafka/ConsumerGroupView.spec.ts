@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
@@ -268,6 +268,55 @@ describe('ConsumerGroupView', () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="members-empty"]').exists()).toBe(true)
     })
+  })
+
+  it('does not render the members-state badge when the group has no members', async () => {
+    const describeGroup = vi.fn(async () => ({
+      group: 'grp-1', state: 'Stable', protocol_type: 'consumer', members: [],
+    }))
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), describeGroup })
+    // 等待 describeGroup 真正解析（members-empty 在加载前也会显示，不能作为就绪信号）。
+    await vi.waitFor(() => {
+      expect(describeGroup).toHaveBeenCalledWith('c', 'grp-1')
+    })
+    expect(wrapper.find('[data-test="members-empty"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="members-state"]').exists()).toBe(false)
+  })
+
+  it('renders the members-state badge when the group has active members', async () => {
+    const describeGroup = vi.fn(async () => ({
+      group: 'grp-1', state: 'Stable', protocol_type: 'consumer',
+      members: [{ member_id: 'm-1', client_id: 'c-1', host: '/h', assignment: { orders: [0] } }],
+    }))
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), describeGroup })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="members-state"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="members-state"]').text()).toBe('Stable')
+  })
+
+  it('guards against double-confirming a reset while one is in flight', async () => {
+    let resolveReset!: (v: unknown) => void
+    const reset = vi.fn(
+      () =>
+        new Promise((res) => {
+          resolveReset = res
+        }),
+    )
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), resetConsumerGroupOffset: reset })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    await wrapper.find('[data-test="btn-dry-run"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="dry-run-table"]').exists()).toBe(true)
+    })
+    // 首次确认在途时双击：第二次应被 resetting 守卫拦截，只调一次 api。
+    await wrapper.find('[data-test="btn-confirm-reset"]').trigger('click')
+    await wrapper.find('[data-test="btn-confirm-reset"]').trigger('click')
+    resolveReset(undefined)
+    await flushPromises()
+    expect(reset).toHaveBeenCalledTimes(1)
   })
 
   it('renders the lag trend fed by the summed partition lag', async () => {
