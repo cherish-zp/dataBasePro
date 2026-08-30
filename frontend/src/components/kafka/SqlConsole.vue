@@ -66,6 +66,8 @@ async function run(): Promise<void> {
 // the IME keeps the key; a plain Enter stays a newline in the editor.
 function onEditorKeydown(e: KeyboardEvent): void {
   if (e.isComposing || e.keyCode === 229) return
+  // 与「执行」按钮的 :disabled="running" 守卫一致：运行中连按 ⌘Enter 不重复 fetch / 不重复记历史。
+  if (running.value) return
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
     e.preventDefault()
     void run()

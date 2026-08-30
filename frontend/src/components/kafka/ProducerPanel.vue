@@ -31,8 +31,9 @@ const showTemplates = ref(false)
 const importedMessages = ref<BatchProduceItem[] | null>(null)
 const importInput = ref<HTMLInputElement | null>(null)
 
-// 手动修改 value 后导入的消息即失效，避免新旧内容混淆。
-watch(() => form.value, () => {
+// 手动修改 value 或切换 topic 后导入的消息即失效：避免新旧内容混淆，也避免
+// 面板常驻挂载时把某个 topic 的导入列表误发到另一个 topic。
+watch([() => form.value, () => props.topic], () => {
   importedMessages.value = null
 })
 
@@ -63,7 +64,8 @@ async function produce(): Promise<void> {
     const imported = importedMessages.value
     if (imported) {
       // 导入模式：直接发送解析出的消息，跳过 buildBatchMessages 的 value/count/loop/randomKey 路径。
-      await sendBatch(imported)
+      // 文件导入的批量值不算手输内容，不写入最近模板。
+      await sendBatch(imported, false)
     } else if (!batchMode.value) {
       await getApi().produceMessage({
         connection_id: props.connectionId,
@@ -94,7 +96,7 @@ async function produce(): Promise<void> {
   }
 }
 
-async function sendBatch(messages: BatchProduceItem[]): Promise<void> {
+async function sendBatch(messages: BatchProduceItem[], recordTemplates = true): Promise<void> {
   const results = await getApi().produceMessages({
     connection_id: props.connectionId,
     topic: form.topic.trim(),
@@ -106,6 +108,8 @@ async function sendBatch(messages: BatchProduceItem[]): Promise<void> {
   // Cap rendered failures to COUNT_MAX so a huge failing batch cannot freeze the UI.
   batchFailures.value = failed.slice(0, COUNT_MAX).map((r) => ({ index: r.index, error: r.error }))
   // 只把成功发送的 value 记入最近模板（循环模式下值相同，自动去重）。
+  // 最近模板属于手输批量值（3.1）；文件导入的批量值不写入。
+  if (!recordTemplates) return
   const sent: string[] = []
   for (let i = 0; i < messages.length; i++) {
     if (!failed.some((f) => f.index === i) && !sent.includes(messages[i].value)) {

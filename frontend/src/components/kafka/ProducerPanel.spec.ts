@@ -360,5 +360,36 @@ describe('ProducerPanel', () => {
       await importFile(wrapper, 'data.jsonl', '{"ok":1}\nbad line\n')
       expect(wrapper.find('[data-test="produce-error"].msg.err').text()).toContain('第 2 行 JSON 解析失败')
     })
+
+    it('clears imported messages when the topic changes', async () => {
+      const { wrapper, api } = mountPanel()
+      await importFile(wrapper, 'data.jsonl', '"alpha"\n"beta"\n')
+      expect(wrapper.find('[data-test="import-summary"]').exists()).toBe(true)
+      // 面板常驻挂载，切 topic 只改 prop；导入列表属于读取它的那个 topic，必须一并清空。
+      await wrapper.setProps({ topic: 'other' })
+      expect(wrapper.find('[data-test="import-summary"]').exists()).toBe(false)
+      // 清空后普通发送走单条路径，旧导入列表不会被发到新 topic。
+      await wrapper.find('[data-test="input-value"]').setValue('manual')
+      await wrapper.find('[data-test="btn-produce"]').trigger('click')
+      await flushPromises()
+      expect(api.produceMessages).not.toHaveBeenCalled()
+      expect(api.produceMessage).toHaveBeenCalledWith({
+        connection_id: 'c', topic: 'other', partition: -1, key: '', value: 'manual',
+      })
+    })
+
+    it('does not record imported values as recent templates', async () => {
+      localStorage.clear()
+      const { wrapper } = mountPanel({
+        produceMessages: vi.fn(async () => [
+          { index: 0, partition: 0, offset: 0, error: '' },
+          { index: 1, partition: 0, offset: 1, error: '' },
+        ]),
+      })
+      await importFile(wrapper, 'data.jsonl', '"alpha"\n"beta"\n')
+      await wrapper.find('[data-test="btn-produce"]').trigger('click')
+      await flushPromises()
+      expect(JSON.parse(localStorage.getItem('dbclient.produce-templates.v1') ?? '[]')).toEqual([])
+    })
   })
 })

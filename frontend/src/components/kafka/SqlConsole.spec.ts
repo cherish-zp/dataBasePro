@@ -348,4 +348,23 @@ describe('SqlConsole', () => {
     await flushPromises()
     expect(api.consumeMessages).not.toHaveBeenCalled()
   })
+
+  it('ignores cmd+enter while a query is already running', async () => {
+    let resolve!: (rows: Message[]) => void
+    const { wrapper, api } = mountConsole({
+      consumeMessages: vi.fn(() => new Promise<Message[]>((r) => { resolve = r })),
+    })
+    // 第一次 ⌘Enter 开始执行，promise 未决 → running 为 true。
+    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter', metaKey: true })
+    // 运行中再按 ⌘Enter 不应重复 fetch / 重复记历史。
+    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter', metaKey: true })
+    expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+    expect(useSqlHistoryStore().history).toEqual(['SELECT * FROM orders LIMIT 100'])
+    // 运行结束后 ⌘Enter 恢复可用。
+    resolve([msg('k1', 'v1')])
+    await flushPromises()
+    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter', metaKey: true })
+    await flushPromises()
+    expect(api.consumeMessages).toHaveBeenCalledTimes(2)
+  })
 })
