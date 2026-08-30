@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import MessageDetailDrawer from './MessageDetailDrawer.vue'
@@ -116,5 +118,43 @@ describe('MessageDetailDrawer', () => {
     await wrapper.setProps({ message: { ...longMsg, offset: 43 } })
     expect(find(wrapper, 'value-mode').text()).toBe('原始')
     expect(find(wrapper, 'value-body').classes()).toContain('collapsed')
+  })
+
+  it('keeps the glass panel styling via theme tokens instead of a hardcoded white', () => {
+    const wrapper = mount(MessageDetailDrawer, { props: { message: msg, show: true } })
+    const drawer = find(wrapper, 'message-drawer')
+    expect(drawer.classes()).toContain('drawer')
+    // jsdom 不解析 CSS 自定义属性，故以样式表层面守卫：抽屉必须引用玻璃
+    // token，且不再出现旧的硬编码白色背景/阴影。
+    const source = readFileSync(resolve(process.cwd(), 'src/components/kafka/MessageDetailDrawer.vue'), 'utf8')
+    expect(source).toContain('background: var(--glass-bg)')
+    expect(source).toContain('box-shadow: var(--glass-shadow)')
+    expect(source).not.toMatch(/rgba\(\s*255\s*,\s*255\s*,\s*255/)
+  })
+
+  it('collapses a long single-line value even without newlines', () => {
+    const longBlob: Message = { ...msg, value: 'A'.repeat(2500) }
+    const wrapper = mount(MessageDetailDrawer, { props: { message: longBlob, show: true } })
+    expect(find(wrapper, 'value-body').classes()).toContain('collapsed')
+    expect(find(wrapper, 'value-expand').exists()).toBe(true)
+  })
+
+  it('does not collapse a short single-line value', () => {
+    const wrapper = mount(MessageDetailDrawer, { props: { message: plainMsg, show: true } })
+    expect(find(wrapper, 'value-body').classes()).not.toContain('collapsed')
+    expect(find(wrapper, 'value-expand').exists()).toBe(false)
+  })
+
+  it('exposes the active mode via aria-pressed on the mode toggles', async () => {
+    const wrapper = mount(MessageDetailDrawer, { props: { message: msg, show: true } })
+    const toggle = find(wrapper, 'value-mode')
+    expect(toggle.attributes('aria-pressed')).toBe('true')
+    await toggle.trigger('click')
+    expect(find(wrapper, 'value-mode').attributes('aria-pressed')).toBe('false')
+    await find(wrapper, 'value-mode').trigger('click')
+    expect(find(wrapper, 'value-mode').attributes('aria-pressed')).toBe('true')
+    const jsonKey: Message = { ...msg, key: '{"id":7}' }
+    const wrapper2 = mount(MessageDetailDrawer, { props: { message: jsonKey, show: true } })
+    expect(find(wrapper2, 'key-mode').attributes('aria-pressed')).toBe('true')
   })
 })
