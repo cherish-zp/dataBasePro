@@ -38,9 +38,14 @@ watch([() => form.value, () => props.topic], () => {
 })
 
 // 面板随活跃 tab 常驻挂载：打开时用当前 topic 预填；打开状态下切换 tab 时跟随。
-// 其余时刻不回写，保证输入框仍可自由编辑。
+// 其余时刻不回写，保证输入框仍可自由编辑。面板常驻挂载，重新打开时旧一轮的
+// ok/error 横幅会残留，故 show 变 true 时一并清空。
 watch([() => props.show, () => props.topic], ([show]) => {
-  if (show) form.topic = props.topic
+  if (show) {
+    form.topic = props.topic
+    ok.value = false
+    error.value = null
+  }
 })
 
 const partitionOptions = computed(() => [
