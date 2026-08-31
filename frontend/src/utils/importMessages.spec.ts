@@ -43,6 +43,15 @@ describe('parseImportFile', () => {
       expect(parseImportFile('{"k":"v"}', 'data.txt')).toEqual([{ key: '', value: '{"k":"v"}' }])
     })
 
+    it('treats a single-line object as one message whose value is the raw JSON', () => {
+      expect(parseImportFile('{"a":1,"b":2}', 'data.txt')).toEqual([{ key: '', value: '{"a":1,"b":2}' }])
+    })
+
+    it('treats a pretty-printed (multi-line) object as one message', () => {
+      const pretty = '{\n  "a": 1,\n  "b": 2\n}'
+      expect(parseImportFile(pretty, 'data.txt')).toEqual([{ key: '', value: '{"a":1,"b":2}' }])
+    })
+
     it('throws with the line number on the first bad line', () => {
       expect(() => parseImportFile('{"ok":1}\nnot json\n{"n":3}', 'data.jsonl')).toThrow('第 2 行 JSON 解析失败')
     })
