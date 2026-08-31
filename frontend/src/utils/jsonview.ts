@@ -1,6 +1,7 @@
 // jsonview renders a JSON-ish text as a pretty-printed, span-classified view
 // used by the message detail drawer. Pure functions only — highlighting is a
 // rendering concern handled by the component via token type CSS classes.
+import { prettyJSON } from './format'
 
 export type JsonTokenType = 'key' | 'string' | 'number' | 'boolean' | 'null' | 'plain'
 
@@ -52,12 +53,15 @@ function tokenize(pretty: string): JsonToken[] {
 }
 
 export function renderJsonView(input: string): JsonView {
-  let parsed: unknown
   try {
-    parsed = JSON.parse(input)
+    JSON.parse(input)
   } catch {
     return { ok: false, text: input, tokens: [{ text: input, type: 'plain' }] }
   }
-  const pretty = JSON.stringify(parsed, null, 2)
+  // Delegate the pretty-print step to prettyJSON so both JSON renderers share
+  // one formatting implementation. The input already parsed above, so the
+  // parse inside prettyJSON cannot fail here and it returns the same 2-space
+  // form the drawer previously computed inline (behavior unchanged).
+  const pretty = prettyJSON(input)
   return { ok: true, text: pretty, tokens: tokenize(pretty) }
 }
