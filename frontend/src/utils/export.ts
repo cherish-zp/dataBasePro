@@ -56,7 +56,9 @@ export function downloadFile(filename: string, content: string, mime: string): v
   document.body.appendChild(a)
   a.click()
   a.remove()
-  URL.revokeObjectURL(url)
+  // Defer the revoke to the next tick: WKWebView can abort a download if the
+  // object URL is revoked before the fetch has started.
+  setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
 // MESSAGE_EXPORT_COLUMNS is the column set shared by the message browse table
