@@ -14,18 +14,27 @@ import (
 // fakeKafka implements KafkaDataSource for service-layer tests.
 type fakeKafka struct {
 	fakeDataSource
-	topics      []*model.Topic
-	msgs        []*model.Message
-	lag         map[int32]int64
-	group       []*model.ConsumerGroup
-	producers   []*model.ActiveProducer
-	consumers   []*model.ActiveConsumer
-	resetCalls  []model.ResetOffsetMode
-	detail      *model.TopicDetail
-	health      *model.ClusterHealth
-	groupDg     *model.GroupDetail
-	batchCalls  [][]model.BatchProduceMessage
-	deleteCalls [][]string
+	topics       []*model.Topic
+	msgs         []*model.Message
+	lag          map[int32]int64
+	group        []*model.ConsumerGroup
+	producers    []*model.ActiveProducer
+	consumers    []*model.ActiveConsumer
+	resetCalls   []model.ResetOffsetMode
+	preview      map[int32]int64
+	previewCalls []previewResetCall
+	detail       *model.TopicDetail
+	health       *model.ClusterHealth
+	groupDg      *model.GroupDetail
+	batchCalls   [][]model.BatchProduceMessage
+	deleteCalls  [][]string
+}
+
+// previewResetCall records the parameters of a PreviewResetOffset delegation.
+type previewResetCall struct {
+	topic       string
+	mode        model.ResetOffsetMode
+	timestampMS int64
 }
 
 func (f *fakeKafka) ListTopics(context.Context) ([]*model.Topic, error)      { return f.topics, nil }
@@ -56,6 +65,10 @@ func (f *fakeKafka) GetPartitionLag(context.Context, string, string) (map[int32]
 func (f *fakeKafka) ResetConsumerGroupOffset(_ context.Context, _, _ string, mode model.ResetOffsetMode, _ int64) error {
 	f.resetCalls = append(f.resetCalls, mode)
 	return nil
+}
+func (f *fakeKafka) PreviewResetOffset(_ context.Context, topic string, mode model.ResetOffsetMode, timestampMS int64) (map[int32]int64, error) {
+	f.previewCalls = append(f.previewCalls, previewResetCall{topic: topic, mode: mode, timestampMS: timestampMS})
+	return f.preview, nil
 }
 func (f *fakeKafka) ProduceMessage(_ context.Context, _ string, _ int32, _, _ []byte) error {
 	return nil
@@ -268,6 +281,28 @@ func TestResetConsumerGroupOffsetDelegates(t *testing.T) {
 	}
 	if len(f.k.resetCalls) != 1 || f.k.resetCalls[0] != model.ResetOffsetEarliest {
 		t.Fatalf("unexpected reset calls: %+v", f.k.resetCalls)
+	}
+}
+
+func TestPreviewResetOffsetDelegates(t *testing.T) {
+	svc, f := newTestService(t)
+	ctx := context.Background()
+	c, _ := svc.CreateConnection(ctx, sampleConn())
+	f.k.preview = map[int32]int64{0: 3, 1: 8}
+
+	got, err := svc.PreviewResetOffset(ctx, c.ID, "t1", model.ResetOffsetTime, 1700000000000)
+	if err != nil {
+		t.Fatalf("PreviewResetOffset: %v", err)
+	}
+	if got[0] != 3 || got[1] != 8 {
+		t.Fatalf("unexpected preview: %+v", got)
+	}
+	if len(f.k.previewCalls) != 1 {
+		t.Fatalf("expected 1 preview call, got %d", len(f.k.previewCalls))
+	}
+	call := f.k.previewCalls[0]
+	if call.topic != "t1" || call.mode != model.ResetOffsetTime || call.timestampMS != 1700000000000 {
+		t.Fatalf("preview must be delegated verbatim, got %+v", call)
 	}
 }
 

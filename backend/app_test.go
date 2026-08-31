@@ -266,6 +266,7 @@ func TestAppEndToEnd(t *testing.T) {
 // (no kfake loopback binding).
 type fakeBatchKafka struct {
 	failures []*model.TopicDeleteResult
+	preview  map[int32]int64
 }
 
 func (f *fakeBatchKafka) Connect(context.Context) error { return nil }
@@ -313,6 +314,9 @@ func (f *fakeBatchKafka) ListActiveConsumers(context.Context, string, string) ([
 }
 func (f *fakeBatchKafka) ResetConsumerGroupOffset(context.Context, string, string, model.ResetOffsetMode, int64) error {
 	return nil
+}
+func (f *fakeBatchKafka) PreviewResetOffset(context.Context, string, model.ResetOffsetMode, int64) (map[int32]int64, error) {
+	return f.preview, nil
 }
 func (f *fakeBatchKafka) ProduceMessage(context.Context, string, int32, []byte, []byte) error {
 	return nil
@@ -416,6 +420,31 @@ func TestAppAuditsDeleteTopicsFailureDetailFull(t *testing.T) {
 	}
 	if want := joinFailureLines(failures); list[0].Detail != want {
 		t.Fatalf("detail must join all failures under the cap, got %q want %q", list[0].Detail, want)
+	}
+}
+
+func TestAppPreviewResetOffsetDelegates(t *testing.T) {
+	fake := &fakeBatchKafka{preview: map[int32]int64{0: 0, 1: 15}}
+	app := newTestAppWithFactory(t, service.ClientFactoryFunc(
+		func(context.Context, model.KafkaConfig) (service.KafkaDataSource, error) { return fake, nil },
+	))
+	conn, err := app.CreateConnection(&model.Connection{
+		Name:   "local",
+		Type:   model.ConnectionTypeKafka,
+		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConnection: %v", err)
+	}
+
+	got, err := app.PreviewResetOffset(ResetOffsetRequest{
+		ConnectionID: conn.ID, Group: "grp-1", Topic: "orders", Mode: model.ResetOffsetEarliest,
+	})
+	if err != nil {
+		t.Fatalf("PreviewResetOffset: %v", err)
+	}
+	if got[0] != 0 || got[1] != 15 {
+		t.Fatalf("unexpected preview: %+v", got)
 	}
 }
 

@@ -259,6 +259,16 @@ func (s *Service) ResetConsumerGroupOffset(ctx context.Context, id, group, topic
 	return kds.ResetConsumerGroupOffset(ctx, group, topic, mode, timestampMS)
 }
 
+// PreviewResetOffset returns the per-partition target offsets a reset would
+// commit (read-only dry-run), auto-connecting if needed.
+func (s *Service) PreviewResetOffset(ctx context.Context, id, topic string, mode model.ResetOffsetMode, timestampMS int64) (map[int32]int64, error) {
+	kds, err := s.kafka(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return kds.PreviewResetOffset(ctx, topic, mode, timestampMS)
+}
+
 // ProduceMessage publishes a record to the connection.
 func (s *Service) ProduceMessage(ctx context.Context, id, topic string, partition int32, key, value []byte) error {
 	kds, err := s.kafka(ctx, id)

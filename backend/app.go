@@ -399,6 +399,16 @@ func (a *App) ResetConsumerGroupOffset(req ResetOffsetRequest) error {
 	return err
 }
 
+// PreviewResetOffset returns the per-partition target offsets a reset in the
+// given mode would commit, without altering anything (read-only dry-run
+// preview). It reuses the ResetOffsetRequest wire shape; the group is context
+// only and is never modified.
+func (a *App) PreviewResetOffset(req ResetOffsetRequest) (map[int32]int64, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.PreviewResetOffset(ctx, req.ConnectionID, req.Topic, req.Mode, req.TimestampMS)
+}
+
 // ListAudit returns the most recent audit entries, newest first. A non-positive
 // limit falls back to the store default (200).
 func (a *App) ListAudit(limit int) ([]*model.AuditEntry, error) {

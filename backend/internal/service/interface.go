@@ -36,6 +36,7 @@ type KafkaDataSource interface {
 	ListActiveProducers(ctx context.Context, topic string) ([]*model.ActiveProducer, error)
 	ListActiveConsumers(ctx context.Context, group, topic string) ([]*model.ActiveConsumer, error)
 	ResetConsumerGroupOffset(ctx context.Context, group, topic string, mode model.ResetOffsetMode, timestampMS int64) error
+	PreviewResetOffset(ctx context.Context, topic string, mode model.ResetOffsetMode, timestampMS int64) (map[int32]int64, error)
 	ProduceMessage(ctx context.Context, topic string, partition int32, key, value []byte) error
 	ProduceMessages(ctx context.Context, topic string, partition int32, messages []model.BatchProduceMessage) ([]*model.ProduceResult, error)
 }

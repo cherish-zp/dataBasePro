@@ -434,6 +434,40 @@ func (c *Client) ResetConsumerGroupOffset(ctx context.Context, group, topic stri
 	return nil
 }
 
+// PreviewResetOffset returns the per-partition target offsets a reset in the
+// given mode would commit, without altering anything (read-only dry-run).
+// Earliest returns the log start offset, timestamp the first offset at or
+// after timestampMS. Latest is intentionally unsupported: the frontend already
+// previews log end offsets from its lag data.
+func (c *Client) PreviewResetOffset(ctx context.Context, topic string, mode model.ResetOffsetMode, timestampMS int64) (map[int32]int64, error) {
+	var (
+		list kadm.ListedOffsets
+		err  error
+	)
+	switch mode {
+	case model.ResetOffsetEarliest:
+		list, err = c.admin.ListStartOffsets(ctx, topic)
+	case model.ResetOffsetTime:
+		list, err = c.admin.ListOffsetsAfterMilli(ctx, timestampMS, topic)
+	default:
+		return nil, fmt.Errorf("unsupported preview reset mode %q", mode)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list offsets for preview: %w", err)
+	}
+	if err := list.Error(); err != nil {
+		return nil, fmt.Errorf("list offsets for preview: %w", err)
+	}
+	out := map[int32]int64{}
+	for p, lo := range list[topic] {
+		if lo.Err != nil {
+			continue
+		}
+		out[p] = lo.Offset
+	}
+	return out, nil
+}
+
 // ListActiveProducers returns the producers currently producing to a topic.
 func (c *Client) ListActiveProducers(ctx context.Context, topic string) ([]*model.ActiveProducer, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
