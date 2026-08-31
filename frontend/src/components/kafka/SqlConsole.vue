@@ -153,6 +153,16 @@ function confirmSave(): void {
   favName.value = ''
 }
 
+// Closing the history menu (toggle off, outside click, or applying a query)
+// must also dismiss the inline favorite form and clear its draft name, so
+// reopening the menu never shows a stale half-typed favorite (BL-034).
+watch(historyOpen, (open) => {
+  if (!open) {
+    favFormOpen.value = false
+    favName.value = ''
+  }
+})
+
 // onDocClick closes either menu on clicks landing outside of it.
 function onDocClick(e: MouseEvent): void {
   if (exportOpen.value && exportRoot.value && !exportRoot.value.contains(e.target as Node)) {
