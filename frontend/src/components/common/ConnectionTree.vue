@@ -4,7 +4,7 @@ import { getApi } from '@/api/client'
 import type { Connection, Topic, ConsumerGroup, TopicMessageCounts } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
 import { formatCount } from '@/utils/format'
-import { CSV_MIME, downloadFile, exportCsv, type ExportColumn } from '@/utils/export'
+import { CSV_MIME, exportCsv, saveFile, type ExportColumn } from '@/utils/export'
 import { useConnectionsStore, type ConnectionStatus } from '@/store/connections'
 import ConfirmDialog from './ConfirmDialog.vue'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
@@ -527,7 +527,7 @@ const TOPIC_EXPORT_COLUMNS: ExportColumn<Topic>[] = [
 // filtered view and not just the selection), named after the connection.
 function exportTopics(conn: Connection): void {
   const topics = topicsByConn.value[conn.id] ?? []
-  downloadFile(`topics-${conn.name}`, exportCsv(topics, TOPIC_EXPORT_COLUMNS), CSV_MIME)
+  void saveFile(`topics-${conn.name}`, exportCsv(topics, TOPIC_EXPORT_COLUMNS), CSV_MIME)
 }
 </script>
 

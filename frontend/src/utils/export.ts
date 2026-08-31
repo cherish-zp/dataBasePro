@@ -1,6 +1,7 @@
-// Client-side export helpers: pure CSV/JSONL string builders plus one DOM
-// trigger. Builders are framework-free so they can be fully unit tested; only
-// downloadFile touches the document.
+// Client-side export helpers: pure CSV/JSONL string builders plus the save
+// triggers. Builders are framework-free so they can be fully unit tested; only
+// saveFile/downloadFile touch the DOM or the backend.
+import { getApi } from '@/api/client'
 import type { Message } from '@/api/types'
 
 // ExportColumn describes one CSV column: its header label and how to read the
@@ -59,6 +60,21 @@ export function downloadFile(filename: string, content: string, mime: string): v
   // Defer the revoke to the next tick: WKWebView can abort a download if the
   // object URL is revoked before the fetch has started.
   setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+// saveFile stores an export via the backend's native save dialog. This is the
+// primary path because WKWebView (the macOS Wails runtime) has no download
+// delegate: <a download> anchor clicks are silently dropped, which made the
+// packaged app's exports do nothing. A cancelled dialog (empty path) is a
+// silent no-op; a failed backend call (e.g. plain-browser dev without the
+// Wails bridge) falls back to the anchor download.
+export async function saveFile(filename: string, content: string, mime: string): Promise<void> {
+  try {
+    // An empty path means the user dismissed the native dialog: a no-op.
+    await getApi().saveTextFile({ filename, content, mime })
+  } catch {
+    downloadFile(filename, content, mime)
+  }
 }
 
 // MESSAGE_EXPORT_COLUMNS is the column set shared by the message browse table

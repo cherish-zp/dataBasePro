@@ -258,6 +258,15 @@ export interface ProduceResult {
 export const OffsetEarliest = -2
 export const OffsetLatest = -1
 
+// One file to store through the backend's native save dialog (mirrors the
+// backend SaveTextFileRequest). Exports must bypass the WebView: WKWebView
+// silently drops <a download> clicks, so downloads go over the bridge.
+export interface SaveTextFileRequest {
+  filename: string
+  content: string
+  mime?: string
+}
+
 export interface ActiveProducer {
   topic: string
   partition: number

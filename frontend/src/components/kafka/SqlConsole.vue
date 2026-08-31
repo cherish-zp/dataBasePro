@@ -5,7 +5,7 @@ import type { Message } from '@/api/types'
 import { OffsetEarliest } from '@/api/types'
 import { parseSelect, matchesWhere } from '@/utils/sql'
 import { formatTime, displayValue } from '@/utils/format'
-import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
+import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, exportCsv, exportJsonl, saveFile } from '@/utils/export'
 import ExportDropdown from '@/components/common/ExportDropdown.vue'
 import { useSqlHistoryStore } from '@/store/sqlhistory'
 
@@ -112,9 +112,9 @@ function onEditorKeydown(e: KeyboardEvent): void {
 // dropdown component owns its open state and outside-click closing.
 function exportAs(format: 'csv' | 'jsonl'): void {
   if (format === 'csv') {
-    downloadFile('query-results', exportCsv(results.value, MESSAGE_EXPORT_COLUMNS), CSV_MIME)
+    void saveFile('query-results', exportCsv(results.value, MESSAGE_EXPORT_COLUMNS), CSV_MIME)
   } else {
-    downloadFile('query-results', exportJsonl(results.value), JSONL_MIME)
+    void saveFile('query-results', exportJsonl(results.value), JSONL_MIME)
   }
 }
 

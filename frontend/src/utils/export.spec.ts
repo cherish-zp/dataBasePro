@@ -1,6 +1,7 @@
 import { beforeAll, afterAll, describe, expect, it, vi, type MockInstance } from 'vitest'
 import type { Message } from '@/api/types'
-import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from './export'
+import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl, saveFile } from './export'
+import { getApi, setApi, type Api } from '@/api/client'
 
 interface Row {
   name: string
@@ -216,4 +217,63 @@ describe('downloadFile', () => {
       fr.readAsText(blob)
     })
   }
+})
+
+// saveFile routes exports through the backend's native save dialog, because
+// WKWebView (the macOS Wails runtime) has no download delegate and silently
+// drops <a download> clicks — the old export path did nothing in the packaged
+// app.
+describe('saveFile', () => {
+  const createObjectURL = vi.fn((_obj: Blob | MediaSource) => 'blob:mock')
+  const revokeObjectURL = vi.fn()
+  const realCreateObjectURL = URL.createObjectURL
+  const realRevokeObjectURL = URL.revokeObjectURL
+  let clickSpy: MockInstance
+
+  beforeAll(() => {
+    URL.createObjectURL = createObjectURL
+    URL.revokeObjectURL = revokeObjectURL
+    clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  })
+
+  afterAll(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    URL.createObjectURL = realCreateObjectURL
+    URL.revokeObjectURL = realRevokeObjectURL
+    clickSpy.mockRestore()
+    vi.restoreAllMocks()
+  })
+
+  function backendSavesTo(path: string | null, fail = false): void {
+    const saveTextFile = vi.fn(async () => {
+      if (fail) throw new Error('no backend dialog')
+      return path ?? ''
+    })
+    setApi({ saveTextFile } as unknown as Api)
+  }
+
+  it('routes the payload through the backend save dialog', async () => {
+    backendSavesTo('/tmp/out.csv')
+    await saveFile('messages-events', 'a,b', CSV_MIME)
+    expect(getApi().saveTextFile).toHaveBeenCalledWith({
+      filename: 'messages-events',
+      content: 'a,b',
+      mime: CSV_MIME,
+    })
+    // The anchor fallback must stay silent when the dialog handled the file.
+    expect(clickSpy).not.toHaveBeenCalled()
+  })
+
+  it('treats a cancelled dialog (empty path) as a silent no-op', async () => {
+    backendSavesTo(null)
+    await expect(saveFile('messages-events', 'a,b', CSV_MIME)).resolves.toBeUndefined()
+    expect(clickSpy).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the anchor download when the backend call fails (plain browser dev)', async () => {
+    backendSavesTo(null, true)
+    await saveFile('query-results', 'a,b', CSV_MIME)
+    expect(clickSpy).toHaveBeenCalled()
+    expect(createObjectURL).toHaveBeenCalled()
+  })
 })

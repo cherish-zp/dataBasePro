@@ -29,6 +29,7 @@ import type {
   ActiveProducer,
   ActiveConsumer,
   AuditEntry,
+  SaveTextFileRequest,
 } from './types'
 
 export interface Api {
@@ -61,6 +62,7 @@ export interface Api {
   produceMessage(req: ProduceRequest): Promise<void>
   produceMessages(req: BatchProduceRequest): Promise<ProduceResult[]>
   listAudit(limit?: number): Promise<AuditEntry[]>
+  saveTextFile(req: SaveTextFileRequest): Promise<string>
 }
 
 // The Wails binding generator models Go `[]byte` fields as `number[]`, but
@@ -155,6 +157,9 @@ export class WailsApi implements Api {
   }
   listAudit(limit?: number): Promise<AuditEntry[]> {
     return App.ListAudit(limit ?? 200) as unknown as Promise<AuditEntry[]>
+  }
+  saveTextFile(req: SaveTextFileRequest): Promise<string> {
+    return App.SaveTextFile(req as unknown as never) as unknown as Promise<string>
   }
 }
 

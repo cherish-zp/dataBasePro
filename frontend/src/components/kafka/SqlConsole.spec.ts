@@ -5,14 +5,14 @@ import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Message } from '@/api/types'
 import { useSqlHistoryStore } from '@/store/sqlhistory'
-import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
+import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, exportCsv, exportJsonl, saveFile } from '@/utils/export'
 import SqlConsole from './SqlConsole.vue'
 
 // Stub the DOM download trigger but keep the real CSV/JSONL builders, so the
-// assertions check exactly what the component passes to downloadFile.
+// assertions check exactly what the component passes to saveFile.
 vi.mock('@/utils/export', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/utils/export')>()
-  return { ...actual, downloadFile: vi.fn() }
+  return { ...actual, downloadFile: vi.fn(), saveFile: vi.fn(async () => {}) }
 })
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
@@ -40,6 +40,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     resetConsumerGroupOffset: vi.fn(async () => {}),
     previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
+    saveTextFile: vi.fn(async () => ''),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
     deleteTopics: vi.fn(async () => []),
@@ -268,7 +269,7 @@ describe('SqlConsole', () => {
     expect(toggle.attributes('disabled')).toBeUndefined()
     await toggle.trigger('click')
     await wrapper.find('[data-test="export-csv"]').trigger('click')
-    expect(vi.mocked(downloadFile)).toHaveBeenCalledWith(
+    expect(vi.mocked(saveFile)).toHaveBeenCalledWith(
       'query-results',
       exportCsv(messages, MESSAGE_EXPORT_COLUMNS),
       CSV_MIME,
@@ -285,7 +286,7 @@ describe('SqlConsole', () => {
     await flushPromises()
     await wrapper.find('[data-test="export-toggle"]').trigger('click')
     await wrapper.find('[data-test="export-jsonl"]').trigger('click')
-    expect(vi.mocked(downloadFile)).toHaveBeenCalledWith(
+    expect(vi.mocked(saveFile)).toHaveBeenCalledWith(
       'query-results',
       exportJsonl(messages),
       JSONL_MIME,

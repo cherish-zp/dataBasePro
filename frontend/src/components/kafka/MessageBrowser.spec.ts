@@ -4,14 +4,14 @@ import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Message } from '@/api/types'
-import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
+import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, exportCsv, exportJsonl, saveFile } from '@/utils/export'
 import MessageBrowser from './MessageBrowser.vue'
 
 // Stub the DOM download trigger but keep the real CSV/JSONL builders, so the
-// assertions check exactly what the component passes to downloadFile.
+// assertions check exactly what the component passes to saveFile.
 vi.mock('@/utils/export', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/utils/export')>()
-  return { ...actual, downloadFile: vi.fn() }
+  return { ...actual, downloadFile: vi.fn(), saveFile: vi.fn(async () => {}) }
 })
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
@@ -39,6 +39,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     resetConsumerGroupOffset: vi.fn(async () => {}),
     previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
+    saveTextFile: vi.fn(async () => ''),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
     deleteTopics: vi.fn(async () => []),
@@ -65,7 +66,7 @@ function mountBrowser(overrides: Partial<Api> = {}) {
 
 describe('MessageBrowser', () => {
   beforeEach(() => {
-    vi.mocked(downloadFile).mockClear()
+    vi.mocked(saveFile).mockClear()
   })
 
   it('fetches earliest messages on mount and renders rows', async () => {
@@ -279,7 +280,7 @@ describe('MessageBrowser', () => {
     expect(wrapper.find('[data-test="export-toggle"]').attributes('disabled')).toBeUndefined()
     await wrapper.find('[data-test="export-toggle"]').trigger('click')
     await wrapper.find('[data-test="export-csv"]').trigger('click')
-    expect(vi.mocked(downloadFile)).toHaveBeenCalledWith(
+    expect(vi.mocked(saveFile)).toHaveBeenCalledWith(
       'messages-events',
       exportCsv(messages, MESSAGE_EXPORT_COLUMNS),
       CSV_MIME,
@@ -298,7 +299,7 @@ describe('MessageBrowser', () => {
     })
     await wrapper.find('[data-test="export-toggle"]').trigger('click')
     await wrapper.find('[data-test="export-jsonl"]').trigger('click')
-    expect(vi.mocked(downloadFile)).toHaveBeenCalledWith(
+    expect(vi.mocked(saveFile)).toHaveBeenCalledWith(
       'messages-events',
       exportJsonl(messages),
       JSONL_MIME,

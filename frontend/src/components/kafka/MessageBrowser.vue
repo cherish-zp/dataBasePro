@@ -5,7 +5,7 @@ import type { MessageQuery } from '@/store/browse'
 import { OffsetEarliest, OffsetLatest } from '@/api/types'
 import type { Message } from '@/api/types'
 import { formatTime, displayValue } from '@/utils/format'
-import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
+import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, exportCsv, exportJsonl, saveFile } from '@/utils/export'
 import ExportDropdown from '@/components/common/ExportDropdown.vue'
 import MessageDetailDrawer from './MessageDetailDrawer.vue'
 
@@ -129,13 +129,14 @@ function closeDetail(): void {
   store.select(props.tabId, null)
 }
 
-// exportAs downloads the loaded messages in the picked format. The dropdown
-// component owns its open state and outside-click closing.
+// exportAs stores the loaded messages in the picked format via the native
+// save dialog. The dropdown component owns its open state and outside-click
+// closing.
 function exportAs(format: 'csv' | 'jsonl'): void {
   if (format === 'csv') {
-    downloadFile(`messages-${props.topic}`, exportCsv(st.value.messages, MESSAGE_EXPORT_COLUMNS), CSV_MIME)
+    void saveFile(`messages-${props.topic}`, exportCsv(st.value.messages, MESSAGE_EXPORT_COLUMNS), CSV_MIME)
   } else {
-    downloadFile(`messages-${props.topic}`, exportJsonl(st.value.messages), JSONL_MIME)
+    void saveFile(`messages-${props.topic}`, exportJsonl(st.value.messages), JSONL_MIME)
   }
 }
 

@@ -4,15 +4,15 @@ import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Connection } from '@/api/types'
-import { CSV_MIME, downloadFile } from '@/utils/export'
+import { CSV_MIME, saveFile } from '@/utils/export'
 import { useConnectionsStore } from '@/store/connections'
 import ConnectionTree from './ConnectionTree.vue'
 
 // Stub the DOM download trigger but keep the real CSV builders, so the
-// assertions check exactly what the component passes to downloadFile.
+// assertions check exactly what the component passes to saveFile.
 vi.mock('@/utils/export', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/utils/export')>()
-  return { ...actual, downloadFile: vi.fn() }
+  return { ...actual, downloadFile: vi.fn(), saveFile: vi.fn(async () => {}) }
 })
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
@@ -40,6 +40,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     resetConsumerGroupOffset: vi.fn(async () => {}),
     previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
+    saveTextFile: vi.fn(async () => ''),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
     deleteTopics: vi.fn(async () => []),
@@ -1018,13 +1019,13 @@ describe('ConnectionTree', () => {
     expect(wrapper.findAll('[data-test="topic-node"]')).toHaveLength(0)
 
     await wrapper.find('[data-test="export-topics"]').trigger('click')
-    expect(vi.mocked(downloadFile)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(downloadFile)).toHaveBeenCalledWith(
+    expect(vi.mocked(saveFile)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(saveFile)).toHaveBeenCalledWith(
       'topics-conn-a',
       expect.stringContaining('topic,partitions'),
       CSV_MIME,
     )
-    const csv = vi.mocked(downloadFile).mock.calls[0][1]
+    const csv = vi.mocked(saveFile).mock.calls[0][1]
     expect(csv).toContain('t1,1')
     expect(csv).toContain('t2,3')
   })
