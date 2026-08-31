@@ -17,6 +17,7 @@ vi.mock('../../wailsjs/go/backend/App', () => ({
   ConsumeMessages: vi.fn(async () => [{ partition: 0, offset: 1, timestamp: 1, key: 'k', value: 'v', headers: [] }]),
   CreateConnection: vi.fn(async (c: unknown) => ({ id: 'x', ...(c as object) })),
   GetPartitionLag: vi.fn(async () => ({ 0: 5 })),
+  PreviewResetOffset: vi.fn(async () => ({ 0: 0, 1: 15 })),
   ListConnections: vi.fn(async () => []),
   DescribeGroup: vi.fn(async () => ({ group: 'g1', state: 'Stable', protocol_type: 'consumer', members: [] })),
   DeleteTopics: vi.fn(async () => [{ name: 't1', error: '' }]),
@@ -27,7 +28,7 @@ vi.mock('../../wailsjs/go/backend/App', () => ({
 
 import * as App from '../../wailsjs/go/backend/App'
 import { WailsApi, getApi, setApi } from './client'
-import type { ConsumeRequest, DeleteTopicsRequest } from './types'
+import type { ConsumeRequest, DeleteTopicsRequest, PreviewOffsetRequest } from './types'
 
 const mocked = vi.mocked(App, true)
 
@@ -55,6 +56,19 @@ describe('WailsApi delegation', () => {
     const lag = await api.getPartitionLag('c', 't', 'g')
     expect(mocked.GetPartitionLag).toHaveBeenCalledWith('c', 't', 'g')
     expect(lag[0]).toBe(5)
+  })
+
+  it('delegates previewResetOffset with the request payload', async () => {
+    const req: PreviewOffsetRequest = {
+      connection_id: 'c',
+      group: 'grp-1',
+      topic: 'orders',
+      mode: 'earliest',
+    }
+    const offsets = await api.previewResetOffset(req)
+    expect(mocked.PreviewResetOffset).toHaveBeenCalledWith(req)
+    expect(offsets[0]).toBe(0)
+    expect(offsets[1]).toBe(15)
   })
 
   it('delegates describeTopic with connection id and topic', async () => {

@@ -27,6 +27,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     listActiveProducers: vi.fn(async () => []),
     listActiveConsumers: vi.fn(async () => []),
     resetConsumerGroupOffset: vi.fn(async () => {}),
+    previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
@@ -223,6 +224,92 @@ describe('ConsumerGroupView', () => {
     await wrapper.find('[data-test="btn-cancel-preview"]').trigger('click')
     expect(wrapper.find('[data-test="dry-run-table"]').exists()).toBe(false)
     expect(reset).not.toHaveBeenCalled()
+  })
+
+  it('backfills dry-run new offsets from the preview API in earliest mode', async () => {
+    const previewResetOffset = vi.fn(async () => ({ 0: 0, 1: 15 }))
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), previewResetOffset })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    await wrapper.find('[data-test="select-reset-mode"]').setValue('earliest')
+    await wrapper.find('[data-test="btn-dry-run"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(previewResetOffset).toHaveBeenCalled()
+    })
+    expect(previewResetOffset).toHaveBeenCalledWith({
+      connection_id: 'c',
+      group: 'grp-1',
+      topic: 'orders',
+      mode: 'earliest',
+      timestamp_ms: undefined,
+    })
+    await vi.waitFor(() => {
+      const rows = wrapper.findAll('[data-test="dry-run-row"]')
+      expect(rows[0].find('[data-test="dry-run-new-offset"]').text()).toBe('0')
+      expect(rows[1].find('[data-test="dry-run-new-offset"]').text()).toBe('15')
+    })
+  })
+
+  it('backfills new offsets from the preview API in timestamp mode', async () => {
+    const previewResetOffset = vi.fn(async () => ({ 0: 3 }))
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), previewResetOffset })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    await wrapper.find('[data-test="select-reset-mode"]').setValue('timestamp')
+    await wrapper.find('[data-test="input-reset-timestamp"]').setValue('1700000000000')
+    await wrapper.find('[data-test="btn-dry-run"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(previewResetOffset).toHaveBeenCalled()
+    })
+    expect(previewResetOffset).toHaveBeenCalledWith({
+      connection_id: 'c',
+      group: 'grp-1',
+      topic: 'orders',
+      mode: 'timestamp',
+      timestamp_ms: 1700000000000,
+    })
+    const rows = wrapper.findAll('[data-test="dry-run-row"]')
+    // Partition 0 was previewed; partition 1 has no entry -> stays null -> '—'.
+    expect(rows[0].find('[data-test="dry-run-new-offset"]').text()).toBe('3')
+    expect(rows[1].find('[data-test="dry-run-new-offset"]').text()).toBe('—')
+  })
+
+  it('does not call the preview API in latest mode', async () => {
+    const previewResetOffset = vi.fn(async () => ({ 0: 99 }))
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), previewResetOffset })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    // Latest is the default mode: log end offsets preview verbatim, no API call.
+    await wrapper.find('[data-test="btn-dry-run"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="dry-run-table"]').exists()).toBe(true)
+    })
+    expect(previewResetOffset).not.toHaveBeenCalled()
+    const rows = wrapper.findAll('[data-test="dry-run-row"]')
+    expect(rows[0].find('[data-test="dry-run-new-offset"]').text()).toBe('20')
+    expect(rows[1].find('[data-test="dry-run-new-offset"]').text()).toBe('15')
+  })
+
+  it('degrades to null offsets when the preview API fails', async () => {
+    const previewResetOffset = vi.fn(async () => {
+      throw new Error('list offsets failed')
+    })
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]), previewResetOffset })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    await wrapper.find('[data-test="select-reset-mode"]').setValue('earliest')
+    await wrapper.find('[data-test="btn-dry-run"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(previewResetOffset).toHaveBeenCalled()
+    })
+    // The preview still renders; a failed fetch leaves new_offset null -> '—'.
+    const rows = wrapper.findAll('[data-test="dry-run-row"]')
+    expect(rows[0].find('[data-test="dry-run-new-offset"]').text()).toBe('—')
+    expect(rows[1].find('[data-test="dry-run-new-offset"]').text()).toBe('—')
   })
 
   it('clears a stale preview when the reset mode changes', async () => {
