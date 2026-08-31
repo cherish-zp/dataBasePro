@@ -16,18 +16,29 @@ const drafts = ref<Record<string, string>>({})
 const saving = ref(false)
 const cfgError = ref<string | null>(null)
 
+// requestSeq guards against last-write-wins on a quick topic/connection switch
+// and makes close/timeout void any in-flight callbacks: every load tags itself
+// with a fresh sequence and a response whose seq is no longer current (a stale
+// topic, or a save whose drawer was already closed) is dropped before it can
+// touch the drawer state.
+let requestSeq = 0
+
 // load fetches the partition topology and key configs of the selected topic.
 async function load(): Promise<void> {
   if (!props.topic) return
+  const seq = ++requestSeq
   loading.value = true
   error.value = null
   detail.value = null
   try {
-    detail.value = await getApi().describeTopic(props.connectionId, props.topic)
+    const data = await getApi().describeTopic(props.connectionId, props.topic)
+    if (seq !== requestSeq) return
+    detail.value = data
   } catch (e) {
+    if (seq !== requestSeq) return
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
-    loading.value = false
+    if (seq === requestSeq) loading.value = false
   }
 }
 
@@ -35,6 +46,9 @@ watch(
   () => [props.show, props.connectionId, props.topic] as const,
   ([show]) => {
     if (!show) {
+      // Closing the drawer voids any in-flight load/save so a late callback
+      // can never render on the hidden drawer (reopening re-fetches).
+      requestSeq += 1
       detail.value = null
       error.value = null
       loading.value = false
@@ -65,17 +79,23 @@ function cancelEdit(): void {
 
 // save sends every whitelisted row and, on success, re-describes the topic so
 // the table reflects the broker's accepted values. On failure the error is
-// shown and the user's edits are kept in place.
+// shown and the user's edits are kept in place. If the drawer was closed or
+// the topic switched while the save was in flight, the trailing load() is
+// dropped (requestSeq was bumped in the meantime); the reopened drawer pulls
+// fresh data on its own.
 async function save(): Promise<void> {
   if (!detail.value || !props.topic || saving.value) return
   saving.value = true
   cfgError.value = null
+  const seq = requestSeq
   try {
     const entries = detail.value.configs.map((c) => ({ key: c.key, value: drafts.value[c.key] ?? '' }))
     await getApi().alterTopicConfig({ connection_id: props.connectionId, topic: props.topic, entries })
+    if (seq !== requestSeq) return
     editing.value = false
     await load()
   } catch (e) {
+    if (seq !== requestSeq) return
     cfgError.value = e instanceof Error ? e.message : String(e)
   } finally {
     saving.value = false

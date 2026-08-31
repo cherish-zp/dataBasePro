@@ -15,15 +15,24 @@ const loading = ref(false)
 const error = ref<string | null>(null)
 const query = ref('')
 
+// requestSeq guards against last-write-wins on a quick connection switch: a
+// slow response from the previous connection must never overwrite the data of
+// the current one, so each fetch tags itself and stale results are dropped.
+let requestSeq = 0
+
 async function refresh(): Promise<void> {
+  const seq = ++requestSeq
   loading.value = true
   error.value = null
   try {
-    groups.value = await getApi().listConsumerGroups(props.connectionId)
+    const data = await getApi().listConsumerGroups(props.connectionId)
+    if (seq !== requestSeq) return
+    groups.value = data
   } catch (e) {
+    if (seq !== requestSeq) return
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
-    loading.value = false
+    if (seq === requestSeq) loading.value = false
   }
 }
 

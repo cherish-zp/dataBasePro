@@ -37,6 +37,11 @@ const entriesByConn = reactive<Record<string, ConnEntries>>({})
 const loadingByConn = reactive<Record<string, boolean>>({})
 const errorByConn = reactive<Record<string, string>>({})
 
+// fetchSeqByConn tags each connection's fetch with a monotonic sequence so a
+// stale in-flight refresh that lands late (rapid open/close) can never
+// overwrite the entries written by a newer fetch for the same connection.
+const fetchSeqByConn: Record<string, number> = {}
+
 const kafkaConns = computed(() => connStore.connections.filter((c) => c.type === 'kafka'))
 const hasQuery = computed(() => query.value.trim().length > 0)
 
@@ -77,12 +82,15 @@ const activeIndex = computed(() => {
 })
 
 // fetchConn loads both entry kinds of one connection in parallel. Failures
-// propagate so callers can decide whether to surface them.
+// propagate so callers can decide whether to surface them. Only the latest
+// fetch for a connection may commit its result (see fetchSeqByConn).
 async function fetchConn(connId: string): Promise<void> {
+  const seq = (fetchSeqByConn[connId] = (fetchSeqByConn[connId] ?? 0) + 1)
   const [topics, groups] = await Promise.all([
     getApi().listTopics(connId),
     getApi().listConsumerGroups(connId),
   ])
+  if (seq !== fetchSeqByConn[connId]) return
   entriesByConn[connId] = { topics, groups }
 }
 

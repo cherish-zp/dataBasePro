@@ -12,17 +12,27 @@ const health = ref<ClusterHealth | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 
+// requestSeq guards against last-write-wins on a quick connection switch or
+// refresh burst: a slow response must never overwrite the snapshot belonging
+// to the current request, so each load tags itself and stale results are
+// dropped before they touch the panel state.
+let requestSeq = 0
+
 // load fetches the cluster health snapshot of the connection.
 async function load(): Promise<void> {
+  const seq = ++requestSeq
   loading.value = true
   error.value = null
   try {
-    health.value = await getApi().describeCluster(props.connectionId)
+    const data = await getApi().describeCluster(props.connectionId)
+    if (seq !== requestSeq) return
+    health.value = data
   } catch (e) {
+    if (seq !== requestSeq) return
     health.value = null
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
-    loading.value = false
+    if (seq === requestSeq) loading.value = false
   }
 }
 
