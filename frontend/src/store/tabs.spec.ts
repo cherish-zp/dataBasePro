@@ -167,7 +167,6 @@ describe('tabs store', () => {
     store.move(-1, 1)
     expect(store.openTabs.map((t) => t.id)).toEqual([a.id, b.id])
   })
-})
 
   it('stores partition metadata on topic tabs', () => {
     const store = useTabsStore()
@@ -177,3 +176,4 @@ describe('tabs store', () => {
     expect(reopened.id).toBe(tab.id)
     expect(reopened.partitions).toEqual([5])
   })
+})
