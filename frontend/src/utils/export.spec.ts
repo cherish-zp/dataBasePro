@@ -59,6 +59,20 @@ describe('exportCsv', () => {
     expect(out).toContain('你好，世界')
   })
 
+  it('keeps emoji, star and special unicode verbatim behind the BOM', () => {
+    const rows: Row[] = [{ name: '★ 星', note: '🎉 emoji — ✨' }]
+    const out = exportCsv(rows, cols)
+    expect(out.startsWith('\uFEFF')).toBe(true)
+    expect(out).toBe('\uFEFFName,Note\n★ 星,🎉 emoji — ✨')
+  })
+
+  it('quotes fields mixing emoji with commas while keeping the emoji intact', () => {
+    const rows: Row[] = [{ name: '👋,bye', note: 'x' }]
+    const out = exportCsv(rows, cols)
+    expect(out.startsWith('\uFEFF')).toBe(true)
+    expect(out).toBe('\uFEFFName,Note\n"👋,bye",x')
+  })
+
   it('renders only the header for empty rows', () => {
     expect(exportCsv([], cols)).toBe('\uFEFFName,Note')
   })
@@ -80,6 +94,11 @@ describe('exportJsonl', () => {
   it('keeps Chinese text as-is and escapes control chars via JSON', () => {
     const rows = [{ k: '中文', v: 'line1\nline2' }]
     expect(exportJsonl(rows)).toBe('{"k":"中文","v":"line1\\nline2"}')
+  })
+
+  it('keeps emoji and star unicode verbatim in JSON', () => {
+    const rows = [{ k: '👋', v: '★' }]
+    expect(exportJsonl(rows)).toBe('{"k":"👋","v":"★"}')
   })
 })
 
@@ -115,6 +134,11 @@ describe('downloadFile', () => {
   const createObjectURL = vi.fn((_obj: Blob | MediaSource) => 'blob:mock')
   const revokeObjectURL = vi.fn()
   const realCreateElement = document.createElement.bind(document)
+  // createObjectURL/revokeObjectURL are stubbed by direct assignment (jsdom
+  // lacks a real Blob URL store), so they must be restored by hand — unlike
+  // vi.spyOn mocks which vi.restoreAllMocks() resets.
+  const realCreateObjectURL = URL.createObjectURL
+  const realRevokeObjectURL = URL.revokeObjectURL
   let clickSpy: MockInstance
   let createElementSpy: MockInstance
 
@@ -125,7 +149,13 @@ describe('downloadFile', () => {
     createElementSpy = vi.spyOn(document, 'createElement').mockImplementation(realCreateElement)
   })
 
-  afterAll(() => {
+  afterAll(async () => {
+    // Flush any deferred (setTimeout 0) revoke callbacks still queued from
+    // earlier tests while the stubs are installed, so restoring the real
+    // jsdom values cannot trip over a callback calling revokeObjectURL.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    URL.createObjectURL = realCreateObjectURL
+    URL.revokeObjectURL = realRevokeObjectURL
     clickSpy.mockRestore()
     vi.restoreAllMocks()
   })
@@ -138,7 +168,21 @@ describe('downloadFile', () => {
     const blob = createObjectURL.mock.calls[0][0] as Blob
     expect(blob.type).toBe(CSV_MIME)
     expect(await blobText(blob)).toBe('a,b')
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock')
+  })
+
+  it('defers revoking the object URL until the next tick (WKWebView)', () => {
+    vi.useFakeTimers()
+    try {
+      revokeObjectURL.mockClear()
+      downloadFile('query-results', 'a,b', CSV_MIME)
+      // The revoke must not run synchronously: WKWebView can abort the
+      // download if the object URL is revoked before the fetch has started.
+      expect(revokeObjectURL).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(0)
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('saves JSONL content under <name>.jsonl', () => {
