@@ -31,7 +31,7 @@
 
 ## 提交与 PR 规范
 
-- 使用 Conventional Commits（如 `feat:`、`fix:`、`test:`、`docs:`）并以祈使语气书写；可参考现有提交历史（`git log`）。
+- 使用 Conventional Commits（如 `feat:`、`fix:`、`test:`、`docs:`），**提交描述与正文必须使用中文**（type 前缀保留英文），并以祈使语气书写；可参考现有提交历史（`git log`）。示例：`feat: 新增 Topic 扩充分区 API`。
 - PR 需说明：改了什么、为什么改、如何验证（附上测试命令），如涉及需求文档请链接对应章节。
 
 ## 改动后工作流（打包验证 → 用户确认 → 提交推送）
@@ -46,7 +46,7 @@
 
 打包/关闭/安装/启动/清理**不需要等待确认**，代码验证通过后即可执行；但**提交与推送必须等待用户明确确认**（确认应用可用、无问题）后再执行，不要擅自提交未确认的改动：
 
-- 提交信息使用 Conventional Commits（如 `feat:`、`fix:`、`test:`、`docs:`）并以祈使语气书写，必要时附简短正文说明改动原因与验证方式。
+- 提交信息使用 Conventional Commits（如 `feat:`、`fix:`、`test:`、`docs:`），**提交描述与正文必须使用中文**（type 前缀保留英文），并以祈使语气书写，必要时附简短正文说明改动原因与验证方式。
 - 提交范围遵循 `.gitignore`，禁止混入构建产物、本地配置或凭据。
 - 提交后同步推送到远程（本仓库 `origin` 指向 `git@gitee.com:princess-zp/dataBasePro.git`，默认分支 `main`）。
 
