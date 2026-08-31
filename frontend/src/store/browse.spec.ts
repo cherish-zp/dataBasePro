@@ -161,6 +161,19 @@ describe('browse store', () => {
     expect(api.consumeMessages).toHaveBeenCalledTimes(1)
   })
 
+  it('clamps an oversized fetchMore response to the page limit (defensive)', async () => {
+    // A single fetchMore response with more records than the requested limit
+    // (currently unreachable — the backend returns at most `limit`) must not
+    // grow the page past the limit: only the first `limit` records append.
+    ;(api.consumeMessages as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([msg(0), msg(1)])
+      .mockResolvedValueOnce([msg(2), msg(3), msg(4)])
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, offset: OffsetEarliest, limit: 2 })
+    await store.fetchMore('t1', 'c', 'topic-a')
+    expect(store.stateFor('t1').messages.map((m) => m.offset)).toEqual([0, 1, 2, 3])
+  })
+
   it('select stores the highlighted message and clear drops state', async () => {
     const store = useBrowseStore()
     await store.fetch('t1', 'c', 'topic-a', { partition: 0, offset: OffsetEarliest, limit: 10 })
