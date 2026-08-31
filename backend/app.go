@@ -65,13 +65,25 @@ func (a *App) audit(connectionID, action, target, result, detail string) {
 	})
 }
 
+// joinAuditList renders items for an audit field, capping the joined list at
+// 10 items followed by an ellipsis.
+func joinAuditList(items []string, sep string) string {
+	if len(items) <= 10 {
+		return strings.Join(items, sep)
+	}
+	return strings.Join(items[:10], sep) + "…"
+}
+
 // joinAuditTargets renders topic names for the batch-delete audit target,
 // capping the joined list at 10 names followed by an ellipsis.
 func joinAuditTargets(names []string) string {
-	if len(names) <= 10 {
-		return strings.Join(names, ", ")
-	}
-	return strings.Join(names[:10], ", ") + "…"
+	return joinAuditList(names, ", ")
+}
+
+// joinAuditFailureDetails renders per-topic failure details for the batch-delete
+// audit detail, capping the joined list at 10 entries followed by an ellipsis.
+func joinAuditFailureDetails(failures []string) string {
+	return joinAuditList(failures, "; ")
 }
 
 // connectionIDOf best-effort returns a connection's id, guarding nil input so
@@ -207,10 +219,7 @@ func (a *App) DeleteTopics(req DeleteTopicsRequest) ([]*model.TopicDeleteResult,
 			failures = append(failures, fmt.Sprintf("%s: %s", r.Name, r.Error))
 		}
 	}
-	if len(failures) > 10 {
-		failures = failures[:10]
-	}
-	a.audit(req.ConnectionID, "delete_topics", target, result, strings.Join(failures, "; "))
+	a.audit(req.ConnectionID, "delete_topics", target, result, joinAuditFailureDetails(failures))
 	return results, nil
 }
 
