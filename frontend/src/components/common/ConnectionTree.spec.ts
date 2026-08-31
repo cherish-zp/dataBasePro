@@ -28,6 +28,8 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     describeTopic: vi.fn(async () => ({ name: "", partitions: [], configs: [] })),
     describeCluster: vi.fn(async () => ({ cluster_id: "", controller_id: -1, kafka_version: "", brokers: [], under_replicated_partitions: 0 })),
     alterTopicConfig: vi.fn(async () => {}),
+    alterTopicPartitions: vi.fn(async () => {}),
+    getTopicMessageCounts: vi.fn(async () => ({})),
     listConsumerGroups: vi.fn(async () => []),
     describeGroup: vi.fn(async () => ({ group: '', state: '', protocol_type: '', members: [] })),
     consumeMessages: vi.fn(async () => []),
@@ -289,11 +291,205 @@ describe('ConnectionTree', () => {
     expect(wrapper.find('[data-test="btn-topic-info"]').exists()).toBe(true)
     await wrapper.find('[data-test="btn-topic-info"]').trigger('click')
     expect(api.describeTopic).toHaveBeenCalledWith('a', 'user-log')
-    // The drawer closes again and stays closed.
-    await wrapper.find('[data-test="drawer-close"]').trigger('click')
+    // The drawer closes again and stays closed. The drawer teleports to body,
+    // so its close button lives outside the wrapper's element tree.
+    ;(document.body.querySelector('[data-test="drawer-close"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="topic-detail-drawer"]')).toBeNull()
+    })
     await wrapper.find('[data-test="btn-topic-info"]').trigger('click')
     await vi.waitFor(() => {
       expect(api.describeTopic).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('renders the topic info entry as an inline svg icon instead of a text glyph', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    const btn = wrapper.find('[data-test="btn-topic-info"]')
+    expect(btn.exists()).toBe(true)
+    // A crafted stroke icon scales crisply and matches the tree's caret style;
+    // the bare ℹ character renders tiny and inconsistent across platforms.
+    expect(btn.find('svg').exists()).toBe(true)
+    expect(btn.text()).not.toContain('ℹ')
+  })
+
+  it('shows the retained message count badge for each topic after expanding', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'user-log', partitions: [] },
+      { name: 'order-db', partitions: [] },
+    ])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.getTopicMessageCounts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      'user-log': { retained: 1200000, total: 4500000 },
+      'order-db': { retained: 356, total: 356 },
+    })
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    // The badge shows the retained (within-retention) count, abbreviated.
+    await vi.waitFor(() => {
+      const badges = wrapper.findAll('[data-test="topic-count"]').map((b) => b.text())
+      expect(badges).toContain('1.2M')
+      expect(badges).toContain('356')
+    })
+    expect(api.getTopicMessageCounts).toHaveBeenCalledWith('a', ['user-log', 'order-db'])
+  })
+
+  it('hides the badge when counts are unavailable', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.getTopicMessageCounts as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await vi.waitFor(() => {
+      expect(api.getTopicMessageCounts).toHaveBeenCalled()
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-test="topic-count"]').exists()).toBe(false)
+  })
+
+  it('refetches message counts from the toolbar refresh button', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.getTopicMessageCounts as ReturnType<typeof vi.fn>).mockResolvedValue({})
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await vi.waitFor(() => {
+      expect(api.getTopicMessageCounts).toHaveBeenCalledTimes(1)
+    })
+    await wrapper.find('[data-test="btn-refresh-counts"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.getTopicMessageCounts).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('opens the reset-offset dialog with the topic fixed from the topic context menu', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'grp-1', state: 'Empty', topics: {} }])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="topic-node"]').trigger('contextmenu', { clientX: 120, clientY: 90 })
+    ;(document.body.querySelector('[data-test="context-item-reset-offset"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="reset-offset-dialog"]')).not.toBeNull()
+    })
+    // The topic is fixed to the right-clicked one.
+    const topicSelect = document.body.querySelector('[data-test="select-reset-topic"]') as HTMLSelectElement
+    expect(topicSelect.value).toBe('user-log')
+    expect(topicSelect.disabled).toBe(true)
+    void wrapper
+  })
+
+  it('opens the reset-offset dialog with the group prefilled from the group context menu', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'grp-1', state: 'Empty', topics: { 'user-log': [] } }])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await switchSection(wrapper, 'consumers')
+    await wrapper.find('[data-test="group-node"]').trigger('contextmenu', { clientX: 120, clientY: 90 })
+    ;(document.body.querySelector('[data-test="context-item-reset-offset-group"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="reset-offset-dialog"]')).not.toBeNull()
+    })
+    const groupSelect = document.body.querySelector('[data-test="select-reset-group"]') as HTMLSelectElement
+    expect(groupSelect.value).toBe('grp-1')
+    void wrapper
+  })
+
+  it('opens a topic context menu on right-click and emits open-topic from 打开消息浏览', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    expect(document.body.querySelector('[data-test="context-menu"]')).toBeNull()
+    await wrapper.find('[data-test="topic-node"]').trigger('contextmenu', { clientX: 120, clientY: 90 })
+    const menu = document.body.querySelector('[data-test="context-menu"]')
+    expect(menu).not.toBeNull()
+    // 打开消息浏览 is the same action as double-clicking the node.
+    ;(document.body.querySelector('[data-test="context-item-browse"]') as HTMLElement).click()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.emitted('open-topic')?.[0]).toEqual(['a', 'user-log', []])
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="context-menu"]')).toBeNull()
+    })
+  })
+
+  it('opens the drawer directly in edit mode from the 编辑配置 menu item', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue({
+      name: 'user-log',
+      partitions: [],
+      configs: [{ key: 'retention.ms', value: '604800000' }],
+    })
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="topic-node"]').trigger('contextmenu', { clientX: 120, clientY: 90 })
+    ;(document.body.querySelector('[data-test="context-item-edit-config"]') as HTMLElement).click()
+    // The drawer teleports to body; edit mode shows inputs, not the read-only values.
+    await vi.waitFor(() => {
+      const input = document.body.querySelector('[data-test="cfg-input"]') as HTMLInputElement | null
+      expect(input).not.toBeNull()
+      expect(input?.value).toBe('604800000')
+    })
+  })
+
+  it('expands partitions from the 扩充分区 menu item and reloads the tree', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [{ id: 0, leader: 1, replicas: [1], isr: [1] }] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const alter = (api.alterTopicPartitions as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    const callsBefore = (api.listTopics as ReturnType<typeof vi.fn>).mock.calls.length
+    await wrapper.find('[data-test="topic-node"]').trigger('contextmenu', { clientX: 120, clientY: 90 })
+    ;(document.body.querySelector('[data-test="context-item-expand"]') as HTMLElement).click()
+    // The prompt is prefilled with the current partition count.
+    await vi.waitFor(() => {
+      const input = document.body.querySelector('[data-test="prompt-input"]') as HTMLInputElement | null
+      expect(input).not.toBeNull()
+      expect(input?.value).toBe('1')
+    })
+    const input = document.body.querySelector('[data-test="prompt-input"]') as HTMLInputElement
+    input.value = '3'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.body.querySelector('[data-test="prompt-confirm"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(alter).toHaveBeenCalledWith({ connection_id: 'a', topic: 'user-log', partitions: 3 })
+    })
+    // The tree reloads so the new partition count shows up.
+    await vi.waitFor(() => {
+      expect((api.listTopics as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(callsBefore)
+    })
+  })
+
+  it('opens a group context menu on right-click and emits open-group from 打开消费组', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'grp-1', state: 'Empty', topics: {} }])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await switchSection(wrapper, 'consumers')
+    await wrapper.find('[data-test="group-node"]').trigger('contextmenu', { clientX: 120, clientY: 90 })
+    expect(document.body.querySelector('[data-test="context-menu"]')).not.toBeNull()
+    ;(document.body.querySelector('[data-test="context-item-open-group"]') as HTMLElement).click()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.emitted('open-group')?.[0]).toEqual(['a', 'grp-1'])
+  })
+
+  it('deletes a topic from the context menu through the confirm dialog', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    await wrapper.find('[data-test="topic-node"]').trigger('contextmenu', { clientX: 120, clientY: 90 })
+    ;(document.body.querySelector('[data-test="context-item-delete"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(api.deleteTopic).toHaveBeenCalledWith({ connection_id: 'a', topic: 'user-log' })
     })
   })
 

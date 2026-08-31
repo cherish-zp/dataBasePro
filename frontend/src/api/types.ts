@@ -55,6 +55,15 @@ export interface TopicDetail {
   configs: TopicConfigEntry[]
 }
 
+// Per-topic record counts derived from broker offsets (mirrors
+// model.TopicMessageCounts). retained = records still within retention
+// (sum of end-start); total = records ever produced (offsets survive
+// retention deletion).
+export interface TopicMessageCounts {
+  retained: number
+  total: number
+}
+
 // One broker surfaced by the cluster health panel.
 export interface BrokerInfo {
   id: number
@@ -131,7 +140,9 @@ export interface ResetPreviewRow {
   new_offset: number | null
 }
 
-export type ResetOffsetMode = 'earliest' | 'latest' | 'timestamp'
+// 'offset' commits the caller-supplied per-partition targets (precise replay);
+// the 'earliest'/'latest'/'timestamp' modes compute targets on the broker.
+export type ResetOffsetMode = 'earliest' | 'latest' | 'timestamp' | 'offset'
 
 export interface CreateTopicRequest {
   connection_id: string
@@ -157,6 +168,15 @@ export interface AlterTopicConfigRequest {
   connection_id: string
   topic: string
   entries: TopicConfigEntry[]
+}
+
+// Grow a topic to a final partition count (mirrors the backend
+// AlterTopicPartitionsRequest). Kafka cannot shrink partitions; targets below
+// the current count are rejected by the backend.
+export interface AlterTopicPartitionsRequest {
+  connection_id: string
+  topic: string
+  partitions: number
 }
 
 // Per-topic outcome of a batch delete; error is empty on success
@@ -186,6 +206,8 @@ export interface ResetOffsetRequest {
   topic: string
   mode: ResetOffsetMode
   timestamp_ms?: number
+  // Explicit per-partition targets for mode 'offset'; ignored otherwise.
+  per_partition_offsets?: Record<number, number>
 }
 
 // Request for the read-only reset-offset dry-run. The backend reuses the

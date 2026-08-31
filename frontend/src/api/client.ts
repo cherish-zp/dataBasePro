@@ -21,6 +21,8 @@ import type {
   DeleteTopicRequest,
   DeleteTopicsRequest,
   AlterTopicConfigRequest,
+  AlterTopicPartitionsRequest,
+  TopicMessageCounts,
   TopicDeleteResult,
   DeleteConsumerGroupRequest,
   ActiveMembersRequest,
@@ -40,6 +42,8 @@ export interface Api {
   listTopics(id: string): Promise<Topic[]>
   describeTopic(id: string, topic: string): Promise<TopicDetail>
   alterTopicConfig(req: AlterTopicConfigRequest): Promise<void>
+  alterTopicPartitions(req: AlterTopicPartitionsRequest): Promise<void>
+  getTopicMessageCounts(id: string, topics: string[]): Promise<Record<string, TopicMessageCounts>>
   describeCluster(id: string): Promise<ClusterHealth>
   listConsumerGroups(id: string): Promise<ConsumerGroup[]>
   describeGroup(id: string, group: string): Promise<GroupDetail>
@@ -94,6 +98,12 @@ export class WailsApi implements Api {
   }
   alterTopicConfig(req: AlterTopicConfigRequest): Promise<void> {
     return App.AlterTopicConfig(req as unknown as never) as unknown as Promise<void>
+  }
+  alterTopicPartitions(req: AlterTopicPartitionsRequest): Promise<void> {
+    return App.AlterTopicPartitions(req as unknown as never) as unknown as Promise<void>
+  }
+  getTopicMessageCounts(id: string, topics: string[]): Promise<Record<string, TopicMessageCounts>> {
+    return App.GetTopicMessageCounts(id, topics) as unknown as Promise<Record<string, TopicMessageCounts>>
   }
   describeCluster(id: string): Promise<ClusterHealth> {
     return App.DescribeCluster(id) as unknown as Promise<ClusterHealth>

@@ -31,6 +31,8 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
       async () => ({ cluster_id: '', controller_id: -1, kafka_version: '', brokers: [], under_replicated_partitions: 0 }) as never,
     ),
     alterTopicConfig: vi.fn(async () => {}),
+    alterTopicPartitions: vi.fn(async () => {}),
+    getTopicMessageCounts: vi.fn(async () => ({})),
     listConsumerGroups: vi.fn(async () => []),
     describeGroup: vi.fn(async () => ({ group: '', state: '', protocol_type: '', members: [] })),
     consumeMessages: vi.fn(async () => []),
@@ -63,6 +65,29 @@ const detail = (): TopicDetail => ({
   ],
 })
 
+// The drawer teleports to <body> so a backdrop-filter ancestor cannot confine
+// its fixed positioning; assertions and clicks therefore target document.body.
+function findEl(testId: string): HTMLElement | null {
+  return document.body.querySelector(`[data-test="${testId}"]`)
+}
+
+function findAllEls(testId: string): HTMLElement[] {
+  return Array.from(document.body.querySelectorAll(`[data-test="${testId}"]`))
+}
+
+function clickEl(testId: string): void {
+  findEl(testId)?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+}
+
+function setInput(el: HTMLElement, value: string): void {
+  ;(el as HTMLInputElement).value = value
+  el.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+function textOf(testId: string): string {
+  return findEl(testId)?.textContent ?? ''
+}
+
 describe('TopicDetailDrawer', () => {
   let api: Api
   beforeEach(() => {
@@ -70,31 +95,64 @@ describe('TopicDetailDrawer', () => {
     setApi(api)
   })
 
-  it('fetches the topic detail when shown', async () => {
+  it('teleports the drawer to body so the sidebar cannot confine its fixed positioning', async () => {
     ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
-    const wrapper = mount(TopicDetailDrawer, {
+    mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'user-log', show: true },
+    })
+    const el = await vi.waitFor(() => {
+      const el = document.body.querySelector(':scope > [data-test="topic-detail-drawer"]')
+      expect(el).not.toBeNull()
+      return el as Element
+    })
+    // Direct child of <body>: the sidebar's backdrop-filter would otherwise
+    // become the containing block for position:fixed and pin the drawer to the
+    // sidebar's right edge (left side of the window).
+    expect(el.parentElement).toBe(document.body)
+  })
+
+  it('shows the retained/total message stats bar for its topic', async () => {
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
+    ;(api.getTopicMessageCounts as ReturnType<typeof vi.fn>).mockResolvedValue({
+      'user-log': { retained: 1200000, total: 4500000 },
+    })
+    mount(TopicDetailDrawer, {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="topo-row"]').exists()).toBe(true)
+      const stats = document.body.querySelector('[data-test="drawer-stats"]')
+      expect(stats).not.toBeNull()
+      expect(stats?.textContent).toContain('1.2M')
+      expect(stats?.textContent).toContain('4.5M')
+    })
+    expect(api.getTopicMessageCounts).toHaveBeenCalledWith('a', ['user-log'])
+  })
+
+  it('fetches the topic detail when shown', async () => {
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
+    mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'user-log', show: true },
+    })
+    await vi.waitFor(() => {
+      expect(findEl('topo-row')).not.toBeNull()
     })
     expect(api.describeTopic).toHaveBeenCalledWith('a', 'user-log')
   })
 
   it('renders one leader/replica/isr row per partition', async () => {
     ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
-    const wrapper = mount(TopicDetailDrawer, {
+    mount(TopicDetailDrawer, {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.findAll('[data-test="topo-row"]')).toHaveLength(2)
+      expect(findAllEls('topo-row')).toHaveLength(2)
     })
     expect(
-      wrapper.findAll('[data-test="topo-row"]').map((r) => [
-        r.find('[data-test="row-partition"]').text(),
-        r.find('[data-test="row-leader"]').text(),
-        r.find('[data-test="row-replicas"]').text(),
-        r.find('[data-test="row-isr"]').text(),
+      findAllEls('topo-row').map((r) => [
+        r.querySelector('[data-test="row-partition"]')?.textContent,
+        r.querySelector('[data-test="row-leader"]')?.textContent,
+        r.querySelector('[data-test="row-replicas"]')?.textContent,
+        r.querySelector('[data-test="row-isr"]')?.textContent,
       ]),
     ).toEqual([
       ['0', '1', '1, 2', '1, 2'],
@@ -104,16 +162,16 @@ describe('TopicDetailDrawer', () => {
 
   it('renders the whitelisted config entries', async () => {
     ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
-    const wrapper = mount(TopicDetailDrawer, {
+    mount(TopicDetailDrawer, {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.findAll('[data-test="cfg-row"]')).toHaveLength(2)
+      expect(findAllEls('cfg-row')).toHaveLength(2)
     })
     expect(
-      wrapper.findAll('[data-test="cfg-row"]').map((r) => [
-        r.find('[data-test="cfg-key"]').text(),
-        r.find('[data-test="cfg-value"]').text(),
+      findAllEls('cfg-row').map((r) => [
+        r.querySelector('[data-test="cfg-key"]')?.textContent,
+        r.querySelector('[data-test="cfg-value"]')?.textContent,
       ]),
     ).toEqual([
       ['cleanup.policy', 'delete'],
@@ -123,19 +181,19 @@ describe('TopicDetailDrawer', () => {
 
   it('shows a loading state before the fetch settles', () => {
     ;(api.describeTopic as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}))
-    const wrapper = mount(TopicDetailDrawer, {
+    mount(TopicDetailDrawer, {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
-    expect(wrapper.find('[data-test="detail-loading"]').exists()).toBe(true)
+    expect(findEl('detail-loading')).not.toBeNull()
   })
 
   it('surfaces api errors instead of failing silently', async () => {
     ;(api.describeTopic as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
-    const wrapper = mount(TopicDetailDrawer, {
+    mount(TopicDetailDrawer, {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="detail-error"]').text()).toContain('boom')
+      expect(textOf('detail-error')).toContain('boom')
     })
   })
 
@@ -154,14 +212,14 @@ describe('TopicDetailDrawer', () => {
       props: { connectionId: 'a', topic: 'one', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.findAll('[data-test="topo-row"]')).toHaveLength(2)
+      expect(findAllEls('topo-row')).toHaveLength(2)
     })
     await wrapper.setProps({ connectionId: 'a', topic: 'two' })
     await vi.waitFor(() => {
       expect(api.describeTopic).toHaveBeenCalledWith('a', 'two')
     })
     await vi.waitFor(() => {
-      expect(wrapper.findAll('[data-test="topo-row"]')).toHaveLength(0)
+      expect(findAllEls('topo-row')).toHaveLength(0)
     })
   })
 
@@ -171,45 +229,85 @@ describe('TopicDetailDrawer', () => {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="topo-row"]').exists()).toBe(true)
+      expect(findEl('topo-row')).not.toBeNull()
     })
-    await wrapper.find('[data-test="drawer-close"]').trigger('click')
+    clickEl('drawer-close')
+    await flushPromises()
     expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
+  it('enters edit mode directly when the edit prop is set', async () => {
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
+    mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'user-log', show: true, edit: true },
+    })
+    // The 编辑配置 context-menu entry opens the drawer straight into editing:
+    // inputs pre-filled with the broker values, no manual 编辑 click needed.
+    await vi.waitFor(() => {
+      expect(findAllEls('cfg-input')).toHaveLength(2)
+    })
+    expect((findAllEls('cfg-input')[0] as HTMLInputElement).value).toBe('delete')
+    expect(findEl('cfg-save')).not.toBeNull()
+  })
+
+  it('does not re-enter edit mode after a successful save even with the edit prop set', async () => {
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
+    const alter = (api.alterTopicConfig as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+    mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'user-log', show: true, edit: true },
+    })
+    await vi.waitFor(() => {
+      expect(findAllEls('cfg-input')).toHaveLength(2)
+    })
+    clickEl('cfg-save')
+    await vi.waitFor(() => {
+      expect(alter).toHaveBeenCalled()
+    })
+    await vi.waitFor(() => {
+      expect(api.describeTopic).toHaveBeenCalledTimes(2)
+    })
+    // Back to read-only view after saving.
+    await vi.waitFor(() => {
+      expect(findEl('cfg-input')).toBeNull()
+      expect(findEl('cfg-edit')).not.toBeNull()
+    })
   })
 
   it('enters edit mode via cfg-edit turning rows into editable inputs', async () => {
     ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
-    const wrapper = mount(TopicDetailDrawer, {
+    mount(TopicDetailDrawer, {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+      expect(findEl('cfg-edit')).not.toBeNull()
     })
-    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
+    clickEl('cfg-edit')
+    await flushPromises()
 
-    const inputs = wrapper.findAll('[data-test="cfg-input"]')
+    const inputs = findAllEls('cfg-input')
     expect(inputs).toHaveLength(2)
-    expect((inputs[0].element as HTMLInputElement).value).toBe('delete')
-    expect((inputs[1].element as HTMLInputElement).value).toBe('604800000')
+    expect((inputs[0] as HTMLInputElement).value).toBe('delete')
+    expect((inputs[1] as HTMLInputElement).value).toBe('604800000')
     // In edit mode the edit button is hidden; only save/cancel are visible.
-    expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="cfg-save"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="cfg-cancel"]').exists()).toBe(true)
+    expect(findEl('cfg-edit')).toBeNull()
+    expect(findEl('cfg-save')).not.toBeNull()
+    expect(findEl('cfg-cancel')).not.toBeNull()
   })
 
   it('saves edited configs via alterTopicConfig then reloads', async () => {
     ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
     const alter = (api.alterTopicConfig as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
 
-    const wrapper = mount(TopicDetailDrawer, {
+    mount(TopicDetailDrawer, {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+      expect(findEl('cfg-edit')).not.toBeNull()
     })
-    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
-    await wrapper.findAll('[data-test="cfg-input"]')[1].setValue('604800001')
-    await wrapper.find('[data-test="cfg-save"]').trigger('click')
+    clickEl('cfg-edit')
+    await flushPromises()
+    setInput(findAllEls('cfg-input')[1], '604800001')
+    clickEl('cfg-save')
 
     await vi.waitFor(() => {
       expect(alter).toHaveBeenCalledWith({
@@ -226,7 +324,7 @@ describe('TopicDetailDrawer', () => {
       expect(api.describeTopic).toHaveBeenCalledTimes(2)
     })
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+      expect(findEl('cfg-edit')).not.toBeNull()
     })
   })
 
@@ -234,23 +332,24 @@ describe('TopicDetailDrawer', () => {
     ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
     const alter = (api.alterTopicConfig as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
 
-    const wrapper = mount(TopicDetailDrawer, {
+    mount(TopicDetailDrawer, {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+      expect(findEl('cfg-edit')).not.toBeNull()
     })
-    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
-    await wrapper.findAll('[data-test="cfg-input"]')[1].setValue('604800001')
-    await wrapper.find('[data-test="cfg-save"]').trigger('click')
+    clickEl('cfg-edit')
+    await flushPromises()
+    setInput(findAllEls('cfg-input')[1], '604800001')
+    clickEl('cfg-save')
 
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="cfg-error"]').text()).toContain('boom')
+      expect(textOf('cfg-error')).toContain('boom')
     })
     // The drawer must not reload on failure and the input keeps its value.
     expect(api.describeTopic).toHaveBeenCalledTimes(1)
-    expect((wrapper.findAll('[data-test="cfg-input"]')[1].element as HTMLInputElement).value).toBe('604800001')
-    expect(wrapper.find('[data-test="cfg-save"]').exists()).toBe(true)
+    expect((findAllEls('cfg-input')[1] as HTMLInputElement).value).toBe('604800001')
+    expect(findEl('cfg-save')).not.toBeNull()
   })
 
   it('disables save and cancel while the save is in flight', async () => {
@@ -258,38 +357,41 @@ describe('TopicDetailDrawer', () => {
     const alter = vi.fn((): Promise<void> => new Promise(() => {}))
     setApi({ ...fakeApi({ alterTopicConfig: alter, describeTopic: (api.describeTopic as ReturnType<typeof vi.fn>) }) })
 
-    const wrapper = mount(TopicDetailDrawer, {
+    mount(TopicDetailDrawer, {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+      expect(findEl('cfg-edit')).not.toBeNull()
     })
-    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
-    await wrapper.find('[data-test="cfg-save"]').trigger('click')
+    clickEl('cfg-edit')
+    await flushPromises()
+    clickEl('cfg-save')
 
     await vi.waitFor(() => {
-      expect((wrapper.find('[data-test="cfg-save"]').element as HTMLButtonElement).disabled).toBe(true)
+      expect((findEl('cfg-save') as HTMLButtonElement).disabled).toBe(true)
     })
-    expect((wrapper.find('[data-test="cfg-cancel"]').element as HTMLButtonElement).disabled).toBe(true)
+    expect((findEl('cfg-cancel') as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('cancels the edit without calling alterTopicConfig', async () => {
     ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
     const alter = (api.alterTopicConfig as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
 
-    const wrapper = mount(TopicDetailDrawer, {
+    mount(TopicDetailDrawer, {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+      expect(findEl('cfg-edit')).not.toBeNull()
     })
-    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
-    await wrapper.findAll('[data-test="cfg-input"]')[1].setValue('604800001')
-    await wrapper.find('[data-test="cfg-cancel"]').trigger('click')
+    clickEl('cfg-edit')
+    await flushPromises()
+    setInput(findAllEls('cfg-input')[1], '604800001')
+    clickEl('cfg-cancel')
+    await flushPromises()
 
     expect(alter).not.toHaveBeenCalled()
-    expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="cfg-save"]').exists()).toBe(false)
+    expect(findEl('cfg-edit')).not.toBeNull()
+    expect(findEl('cfg-save')).toBeNull()
   })
 
   it('discards a stale describeTopic that lands after a topic switch', async () => {
@@ -308,11 +410,11 @@ describe('TopicDetailDrawer', () => {
     // The old topic's response resolves last: it must not overwrite the drawer.
     dA.resolve({ ...detail(), name: 'one' })
     await flushPromises()
-    expect(wrapper.find('[data-test="topo-row"]').exists()).toBe(false)
+    expect(findEl('topo-row')).toBeNull()
     // The current topic's response lands and renders.
     dB.resolve({ ...detail(), name: 'two' })
     await flushPromises()
-    expect(wrapper.findAll('[data-test="topo-row"]')).toHaveLength(2)
+    expect(findAllEls('topo-row')).toHaveLength(2)
   })
 
   it('does not re-describe the topic when the drawer closes mid-save', async () => {
@@ -323,10 +425,11 @@ describe('TopicDetailDrawer', () => {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+      expect(findEl('cfg-edit')).not.toBeNull()
     })
-    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
-    await wrapper.find('[data-test="cfg-save"]').trigger('click')
+    clickEl('cfg-edit')
+    await flushPromises()
+    clickEl('cfg-save')
     await vi.waitFor(() => {
       expect(api.alterTopicConfig).toHaveBeenCalled()
     })
@@ -350,10 +453,11 @@ describe('TopicDetailDrawer', () => {
       props: { connectionId: 'a', topic: 'user-log', show: true },
     })
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+      expect(findEl('cfg-edit')).not.toBeNull()
     })
-    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
-    await wrapper.find('[data-test="cfg-save"]').trigger('click')
+    clickEl('cfg-edit')
+    await flushPromises()
+    clickEl('cfg-save')
     await vi.waitFor(() => {
       expect(api.alterTopicConfig).toHaveBeenCalled()
     })

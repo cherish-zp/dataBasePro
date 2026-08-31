@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
-import type { Connection, Topic, ConsumerGroup } from '@/api/types'
+import type { Connection, Topic, ConsumerGroup, TopicMessageCounts } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
+import { formatCount } from '@/utils/format'
 import { CSV_MIME, downloadFile, exportCsv, type ExportColumn } from '@/utils/export'
 import { useConnectionsStore, type ConnectionStatus } from '@/store/connections'
 import ConfirmDialog from './ConfirmDialog.vue'
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
+import PromptDialog from './PromptDialog.vue'
 import TopicDetailDrawer from '@/components/kafka/TopicDetailDrawer.vue'
+import ResetOffsetDialog from '@/components/kafka/ResetOffsetDialog.vue'
 
 const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
@@ -139,6 +143,29 @@ async function load(connId: string): Promise<void> {
   } finally {
     loadingByConn.value[connId] = false
   }
+  // Message counts load in the background: they cost one batched offset
+  // lookup, but must never delay or fail the tree itself.
+  void loadCounts(connId)
+}
+
+// countsByConn caches per-topic message counts per connection (retained =
+// records within retention). Unknown topics (fetch failed / not yet loaded)
+// simply have no badge.
+const countsByConn = ref<Record<string, Record<string, TopicMessageCounts>>>({})
+
+async function loadCounts(connId: string): Promise<void> {
+  const topics = topicsByConn.value[connId] ?? []
+  if (topics.length === 0) return
+  try {
+    const counts = await getApi().getTopicMessageCounts(connId, topics.map((t) => t.name))
+    countsByConn.value[connId] = counts
+  } catch {
+    countsByConn.value[connId] = {}
+  }
+}
+
+function retainedOf(connId: string, topic: string): number | null {
+  return countsByConn.value[connId]?.[topic]?.retained ?? null
 }
 
 function hasSearch(connId: string): boolean {
@@ -268,7 +295,109 @@ const confirmText = computed(() => {
 })
 
 // detailMeta holds the topic whose detail drawer is open; null hides it.
-const detailMeta = ref<{ connId: string; topic: string } | null>(null)
+// edit opens the drawer straight into config-editing mode (编辑配置 entry).
+const detailMeta = ref<{ connId: string; topic: string; edit: boolean } | null>(null)
+
+// --- Right-click context menus ----------------------------------------------
+
+// ctxMenu targets the right-clicked tree node; items differ per object kind.
+const ctxMenu = ref<{ x: number; y: number; kind: ObjectKind; connId: string; name: string; partitions: number } | null>(null)
+
+const ctxItems = computed<ContextMenuItem[]>(() => {
+  if (!ctxMenu.value) return []
+  if (ctxMenu.value.kind === 'topic') {
+    return [
+      { key: 'browse', label: '打开消息浏览' },
+      { key: 'detail', label: 'Topic 详情' },
+      { key: 'edit-config', label: '编辑配置…' },
+      { key: 'expand', label: '扩充分区…' },
+      { key: 'reset-offset', label: '重置消费位点…' },
+      { key: 'delete', label: '删除 Topic', danger: true },
+    ]
+  }
+  return [
+    { key: 'open-group', label: '打开消费组' },
+    { key: 'reset-offset-group', label: '重置消费位点…' },
+    { key: 'delete-group', label: '删除消费组', danger: true },
+  ]
+})
+
+function openTopicMenu(e: MouseEvent, connId: string, name: string, partitions: number): void {
+  ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'topic', connId, name, partitions }
+}
+
+function openGroupMenu(e: MouseEvent, connId: string, name: string): void {
+  ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'group', connId, name, partitions: 0 }
+}
+
+function closeCtxMenu(): void {
+  ctxMenu.value = null
+}
+
+function onCtxSelect(key: string): void {
+  const m = ctxMenu.value
+  if (!m) return
+  switch (key) {
+    case 'browse':
+      emit('open-topic', m.connId, m.name, (topicsByConn.value[m.connId] ?? []).find((t) => t.name === m.name)?.partitions.map((p) => p.id) ?? [])
+      break
+    case 'detail':
+      detailMeta.value = { connId: m.connId, topic: m.name, edit: false }
+      break
+    case 'edit-config':
+      detailMeta.value = { connId: m.connId, topic: m.name, edit: true }
+      break
+    case 'expand':
+      expandMeta.value = { connId: m.connId, topic: m.name, target: m.partitions }
+      expandError.value = null
+      break
+    case 'reset-offset':
+      resetMeta.value = { connId: m.connId, topic: m.name, group: null }
+      break
+    case 'reset-offset-group':
+      resetMeta.value = { connId: m.connId, topic: null, group: m.name }
+      break
+    case 'delete':
+      askDelete(props.connections.find((c) => c.id === m.connId)!, 'topic', m.name)
+      break
+    case 'open-group':
+      emit('open-group', m.connId, m.name)
+      break
+    case 'delete-group':
+      askDelete(props.connections.find((c) => c.id === m.connId)!, 'group', m.name)
+      break
+  }
+}
+
+// expandMeta drives the 扩充分区 prompt, prefilled with the current count.
+const expandMeta = ref<{ connId: string; topic: string; target: number } | null>(null)
+const expanding = ref(false)
+const expandError = ref<string | null>(null)
+
+// resetMeta drives the reset-offset dialog: topic is fixed when entered from a
+// topic node; group is prefilled when entered from a consumer group node.
+const resetMeta = ref<{ connId: string; topic: string | null; group: string | null } | null>(null)
+
+async function submitExpand(value: string): Promise<void> {
+  const m = expandMeta.value
+  if (!m || expanding.value) return
+  const target = Number(value)
+  if (!Number.isInteger(target) || target < 1) {
+    expandError.value = '请输入正整数分区数'
+    return
+  }
+  expanding.value = true
+  expandError.value = null
+  try {
+    await getApi().alterTopicPartitions({ connection_id: m.connId, topic: m.topic, partitions: target })
+    expandMeta.value = null
+    await load(m.connId)
+  } catch (e) {
+    expandError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    expanding.value = false
+  }
+}
 
 function askDelete(conn: Connection, kind: ObjectKind, name: string): void {
   confirm.value = { connId: conn.id, kind, name }
@@ -543,6 +672,13 @@ function exportTopics(conn: Connection): void {
                 >删除({{ selectedOf(conn.id).length }})</button>
               </template>
               <button class="tool-btn" type="button" data-test="export-topics" title="导出 Topic 列表为 CSV" @click="exportTopics(conn)">导出列表</button>
+              <button
+                class="tool-btn"
+                type="button"
+                data-test="btn-refresh-counts"
+                title="重新统计各 Topic 的消息数（一次批量 offset 查询）"
+                @click="loadCounts(conn.id)"
+              >↻ 消息数</button>
             </div>
 
             <div v-if="col.key === 'topics' && batchFeedback(conn.id)" class="batch-result">
@@ -576,6 +712,7 @@ function exportTopics(conn: Connection): void {
                 data-test="topic-node"
                 :title="`${t.name} (${t.partitions.length} 分区)`"
                 @dblclick="emit('open-topic', conn.id, t.name, t.partitions.map((p) => p.id))"
+                @contextmenu.prevent.stop="openTopicMenu($event, conn.id, t.name, t.partitions.length)"
               >
                 <input
                   v-if="isSelectMode(conn.id)"
@@ -587,13 +724,26 @@ function exportTopics(conn: Connection): void {
                   @dblclick.stop
                 />
                 <span class="leaf-name" data-test="topic-name">{{ t.name }}</span>
+                <span
+                  v-if="retainedOf(conn.id, t.name) !== null"
+                  class="leaf-count"
+                  data-test="topic-count"
+                  :title="`保留期内 ${retainedOf(conn.id, t.name)!.toLocaleString()} 条`"
+                >{{ formatCount(retainedOf(conn.id, t.name)!) }}</span>
                 <button
                   class="leaf-info"
                   type="button"
                   data-test="btn-topic-info"
                   title="Topic 详情"
-                  @click.stop="detailMeta = { connId: conn.id, topic: t.name }"
-                >ℹ</button>
+                  aria-label="Topic 详情"
+                  @click.stop="detailMeta = { connId: conn.id, topic: t.name, edit: false }"
+                >
+                  <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+                    <circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="8" cy="5.2" r="1" fill="currentColor" />
+                    <path d="M8 7.4v3.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                </button>
                 <button
                   class="leaf-del"
                   type="button"
@@ -614,6 +764,7 @@ function exportTopics(conn: Connection): void {
                 class="leaf"
                 data-test="group-node"
                 @dblclick="emit('open-group', conn.id, g.name)"
+                @contextmenu.prevent.stop="openGroupMenu($event, conn.id, g.name)"
               >
                 <span class="leaf-name">{{ g.name }}</span>
                 <button
@@ -640,7 +791,32 @@ function exportTopics(conn: Connection): void {
       :show="!!detailMeta"
       :connection-id="detailMeta?.connId ?? ''"
       :topic="detailMeta?.topic ?? ''"
+      :edit="detailMeta?.edit ?? false"
       @close="detailMeta = null"
+    />
+    <ContextMenu
+      :show="!!ctxMenu"
+      :x="ctxMenu?.x ?? 0"
+      :y="ctxMenu?.y ?? 0"
+      :items="ctxItems"
+      @select="onCtxSelect"
+      @close="closeCtxMenu"
+    />
+    <PromptDialog
+      :show="!!expandMeta"
+      title="扩充分区"
+      :label="`Topic「${expandMeta?.topic ?? ''}」目标分区数`"
+      :value="expandMeta?.target ?? 1"
+      :hint="expandError ?? 'Kafka 仅支持扩容分区，不能缩减；新分区的数据不会自动重平衡。'"
+      @confirm="submitExpand"
+      @cancel="expandMeta = null"
+    />
+    <ResetOffsetDialog
+      :show="!!resetMeta"
+      :connection-id="resetMeta?.connId ?? ''"
+      :topic="resetMeta?.topic ?? null"
+      :group="resetMeta?.group ?? null"
+      @close="resetMeta = null"
     />
     <ConfirmDialog
       :show="!!confirm"
@@ -774,12 +950,21 @@ function exportTopics(conn: Connection): void {
 .leaf:hover .leaf-del { opacity: 1; }
 .leaf-del:hover { color: var(--danger); background: var(--danger-soft); }
 .leaf-info {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; box-sizing: border-box;
   background: none; border: none; color: var(--text-tertiary); cursor: pointer;
-  border-radius: 4px; padding: 0 3px; flex: none; opacity: 0;
+  border-radius: 6px; padding: 0; flex: none;
   transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
 .leaf:hover .leaf-info { opacity: 1; }
+.leaf-count {
+  flex: none; font-size: 11px; color: var(--text-tertiary);
+  background: var(--bg-hover); border-radius: 99px; padding: 0 7px; line-height: 17px;
+  font-family: var(--mono);
+}
 .leaf-info:hover { color: var(--info); background: var(--info-soft); }
+.leaf-info:active { transform: scale(0.92); }
+.leaf-info:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
 .create-form {
   margin: 6px 0 2px; padding: 8px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--bg-subtle); display: flex; flex-direction: column; gap: 7px;

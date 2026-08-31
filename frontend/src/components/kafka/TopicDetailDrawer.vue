@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { getApi } from '@/api/client'
-import type { TopicDetail } from '@/api/types'
+import type { TopicDetail, TopicMessageCounts } from '@/api/types'
+import { formatCount } from '@/utils/format'
 
-const props = defineProps<{ connectionId: string; topic: string | null; show: boolean }>()
+const props = defineProps<{ connectionId: string; topic: string | null; show: boolean; edit?: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const detail = ref<TopicDetail | null>(null)
@@ -15,6 +16,24 @@ const editing = ref(false)
 const drafts = ref<Record<string, string>>({})
 const saving = ref(false)
 const cfgError = ref<string | null>(null)
+// pendingEdit consumes the `edit` prop exactly once per drawer opening, so a
+// save's trailing reload returns to the read-only view instead of flipping
+// back into edit mode.
+const pendingEdit = ref(false)
+
+// counts holds the offset-derived message stats for the open topic (retained
+// within retention + total ever produced); null renders nothing.
+const counts = ref<TopicMessageCounts | null>(null)
+
+async function loadCounts(): Promise<void> {
+  if (!props.connectionId || !props.topic) return
+  try {
+    const map = await getApi().getTopicMessageCounts(props.connectionId, [props.topic])
+    counts.value = map[props.topic] ?? null
+  } catch {
+    counts.value = null
+  }
+}
 
 // requestSeq guards against last-write-wins on a quick topic/connection switch
 // and makes close/timeout void any in-flight callbacks: every load tags itself
@@ -34,6 +53,10 @@ async function load(): Promise<void> {
     const data = await getApi().describeTopic(props.connectionId, props.topic)
     if (seq !== requestSeq) return
     detail.value = data
+    if (pendingEdit.value && data.configs.length > 0) {
+      pendingEdit.value = false
+      startEdit()
+    }
   } catch (e) {
     if (seq !== requestSeq) return
     error.value = e instanceof Error ? e.message : String(e)
@@ -56,9 +79,13 @@ watch(
       saving.value = false
       cfgError.value = null
       drafts.value = {}
+      pendingEdit.value = false
       return
     }
+    pendingEdit.value = !!props.edit
+    counts.value = null
     void load()
+    void loadCounts()
   },
   { immediate: true },
 )
@@ -108,7 +135,11 @@ function listText(nums: number[]): string {
 </script>
 
 <template>
-  <div v-if="show && topic" class="drawer" data-test="topic-detail-drawer">
+  <Teleport to="body">
+    <!-- Teleported: the sidebar's backdrop-filter would otherwise become the
+         containing block for position:fixed and pin the drawer to the sidebar
+         edge instead of the window's right side. -->
+    <div v-if="show && topic" class="drawer" data-test="topic-detail-drawer">
     <div class="drawer-header">
       <span class="drawer-title">Topic 详情 <span class="drawer-topic">{{ topic }}</span></span>
       <button class="drawer-close" data-test="drawer-close" type="button" @click="emit('close')">✕</button>
@@ -117,6 +148,13 @@ function listText(nums: number[]): string {
       <div v-if="loading" class="state" data-test="detail-loading">加载中…</div>
       <div v-else-if="error" class="state err" data-test="detail-error">{{ error }}</div>
       <template v-else-if="detail">
+        <div v-if="counts" class="stats" data-test="drawer-stats">
+          <span class="stat"><span class="stat-num" data-test="stat-retained">{{ formatCount(counts.retained) }}</span> 保留期内</span>
+          <span class="stat-sep">·</span>
+          <span class="stat"><span class="stat-num" data-test="stat-total">{{ formatCount(counts.total) }}</span> 累计生产</span>
+          <span class="stat-sep">·</span>
+          <span class="stat"><span class="stat-num">{{ detail.partitions.length }}</span> 分区</span>
+        </div>
         <h3 class="section-title">分区拓扑</h3>
         <table class="table" data-test="topo-table">
           <thead>
@@ -195,7 +233,8 @@ function listText(nums: number[]): string {
         </template>
       </template>
     </div>
-  </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -228,6 +267,14 @@ function listText(nums: number[]): string {
 .drawer-close { background: none; border: none; color: var(--text-tertiary); font-size: 16px; cursor: pointer; border-radius: 5px; padding: 1px 6px; flex: none; }
 .drawer-close:hover { background: var(--bg-hover); color: var(--text); }
 .drawer-body { padding: 16px 18px; overflow: auto; }
+.stats {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 9px 12px; margin-bottom: 4px;
+  background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 9px;
+  font-size: 12px; color: var(--text-secondary);
+}
+.stat-num { font-family: var(--mono); font-weight: 600; color: var(--text); font-size: 13px; }
+.stat-sep { color: var(--text-tertiary); }
 .cfg-head { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; }
 .cfg-head .section-title { margin-top: 0; }
 .section-title {
