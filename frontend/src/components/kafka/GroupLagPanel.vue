@@ -77,7 +77,8 @@ defineEmits<{ (e: 'confirm-reset'): void; (e: 'cancel-preview'): void }>()
 .dry-run-actions { display: flex; gap: 8px; padding: 10px 12px 12px; }
 .btn { border-radius: 7px; padding: 6px 14px; font-size: 13px; cursor: pointer; border: 1px solid transparent; transition: background 0.15s ease, opacity 0.15s ease; }
 .btn.danger { background: var(--warn-soft); color: var(--warn); border: 1px solid transparent; }
-.btn.danger:hover { background: rgba(217, 119, 6, 0.2); }
+.btn.danger:hover:not(:disabled) { background: rgba(217, 119, 6, 0.2); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }
 .btn.ghost:hover { background: var(--bg-hover); }
 </style>
