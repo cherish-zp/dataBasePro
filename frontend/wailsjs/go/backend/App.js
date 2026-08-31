@@ -114,6 +114,10 @@ export function ResetConsumerGroupOffset(arg1) {
   return window['go']['backend']['App']['ResetConsumerGroupOffset'](arg1);
 }
 
+export function SaveTextFile(arg1) {
+  return window['go']['backend']['App']['SaveTextFile'](arg1);
+}
+
 export function TestConnection(arg1) {
   return window['go']['backend']['App']['TestConnection'](arg1);
 }

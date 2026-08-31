@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -490,6 +492,64 @@ func TestAppResetOffsetExplicitModeDelegatesOffsets(t *testing.T) {
 	}
 	if list[0].Action != "reset_group_offset" || list[0].Detail != "offset" {
 		t.Fatalf("unexpected reset audit: %+v", list[0])
+	}
+}
+
+// TestAppSaveTextFileWritesViaDialog verifies the export save path: the file
+// dialog receives the default filename, the content lands verbatim on disk,
+// and a user-cancelled dialog (empty path) writes nothing without an error.
+func TestAppSaveTextFileWritesViaDialog(t *testing.T) {
+	fake := &fakeBatchKafka{}
+	app := newTestAppWithFactory(t, service.ClientFactoryFunc(
+		func(context.Context, model.KafkaConfig) (service.KafkaDataSource, error) { return fake, nil },
+	))
+	app.dialog = func(_ context.Context, opts SaveDialogOptions) (string, error) {
+		if opts.DefaultFilename != "messages-user-log.csv" {
+			t.Fatalf("unexpected default filename %q", opts.DefaultFilename)
+		}
+		return filepath.Join(t.TempDir(), "out.csv"), nil
+	}
+
+	path, err := app.SaveTextFile(SaveTextFileRequest{
+		Filename: "messages-user-log.csv",
+		Content:  "\uFEFFPartition,Offset\n0,1\n",
+		Mime:     "text/csv",
+	})
+	if err != nil {
+		t.Fatalf("SaveTextFile: %v", err)
+	}
+	if path == "" {
+		t.Fatal("expected the saved file path back")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved file: %v", err)
+	}
+	if string(data) != "\uFEFFPartition,Offset\n0,1\n" {
+		t.Fatalf("unexpected file content: %q", string(data))
+	}
+}
+
+func TestAppSaveTextFileCancelledDialogWritesNothing(t *testing.T) {
+	fake := &fakeBatchKafka{}
+	app := newTestAppWithFactory(t, service.ClientFactoryFunc(
+		func(context.Context, model.KafkaConfig) (service.KafkaDataSource, error) { return fake, nil },
+	))
+	dir := t.TempDir()
+	app.dialog = func(context.Context, SaveDialogOptions) (string, error) {
+		return "", nil
+	}
+
+	path, err := app.SaveTextFile(SaveTextFileRequest{Filename: "x.jsonl", Content: "{}", Mime: "application/x-ndjson"})
+	if err != nil {
+		t.Fatalf("cancelled dialog must not error: %v", err)
+	}
+	if path != "" {
+		t.Fatalf("cancelled dialog must return an empty path, got %q", path)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Fatalf("cancelled dialog must not write files, found %v", entries)
 	}
 }
 

@@ -10,8 +10,11 @@ package backend
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"dataBasePro/backend/internal/model"
 	"dataBasePro/backend/internal/service"
@@ -23,11 +26,22 @@ const methodTimeout = 60 * time.Second
 // App is the Wails application root. Methods on it are exposed to the frontend.
 type App struct {
 	svc *service.Service
+	// ctx is the Wails runtime context handed to Startup; dialog calls need it.
+	ctx context.Context
+	// dialog resolves the native save-file dialog; replaceable in tests. nil
+	// falls back to defaultSaveDialog.
+	dialog func(ctx context.Context, opts SaveDialogOptions) (string, error)
 }
 
 // NewApp builds the application root around the service layer.
 func NewApp(svc *service.Service) *App {
 	return &App{svc: svc}
+}
+
+// Startup receives the Wails runtime context. main.go wires it to OnStartup;
+// without it the native dialogs cannot be opened.
+func (a *App) Startup(ctx context.Context) {
+	a.ctx = ctx
 }
 
 // newContext returns a per-call context with a timeout. Bound methods do not
@@ -351,6 +365,53 @@ func (a *App) GetTopicMessageCounts(id string, topics []string) (map[string]mode
 	ctx, cancel := a.newContext()
 	defer cancel()
 	return a.svc.GetTopicMessageCounts(ctx, id, topics...)
+}
+
+// SaveDialogOptions carries the native save-dialog inputs, decoupled from the
+// wails runtime type so tests can inject a fake dialog.
+type SaveDialogOptions struct {
+	DefaultFilename string
+}
+
+// SaveTextFileRequest carries one export payload to store on disk. The
+// filename seeds the dialog's default (its extension drives the file type);
+// content is written verbatim as UTF-8.
+type SaveTextFileRequest struct {
+	Filename string `json:"filename"`
+	Content  string `json:"content"`
+	Mime     string `json:"mime,omitempty"`
+}
+
+// SaveTextFile asks the user where to store an export via the native save
+// dialog and writes the content. Exports must bypass the WebView: WKWebView
+// has no download delegate, so <a download> anchor clicks are silently
+// dropped. A cancelled dialog returns an empty path and no error — callers
+// treat it as a silent no-op.
+func (a *App) SaveTextFile(req SaveTextFileRequest) (string, error) {
+	dialog := a.dialog
+	if dialog == nil {
+		dialog = defaultSaveDialog
+	}
+	path, err := dialog(a.ctx, SaveDialogOptions{DefaultFilename: req.Filename})
+	if err != nil {
+		return "", fmt.Errorf("保存对话框: %w", err)
+	}
+	if path == "" {
+		return "", nil
+	}
+	if err := os.WriteFile(path, []byte(req.Content), 0o644); err != nil {
+		return "", fmt.Errorf("写入 %s: %w", path, err)
+	}
+	return path, nil
+}
+
+// defaultSaveDialog bridges to the wails runtime dialog; it needs the
+// Startup-provided context, which only exists once the app is wired to Wails.
+func defaultSaveDialog(ctx context.Context, opts SaveDialogOptions) (string, error) {
+	if ctx == nil {
+		return "", fmt.Errorf("应用尚未初始化，无法打开保存对话框")
+	}
+	return runtime.SaveFileDialog(ctx, runtime.SaveDialogOptions{DefaultFilename: opts.DefaultFilename})
 }
 
 // DescribeCluster returns broker topology, controller, Kafka version and

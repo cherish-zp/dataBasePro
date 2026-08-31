@@ -226,6 +226,22 @@ export namespace backend {
 	        this.per_partition_offsets = source["per_partition_offsets"];
 	    }
 	}
+	export class SaveTextFileRequest {
+	    filename: string;
+	    content: string;
+	    mime?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveTextFileRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filename = source["filename"];
+	        this.content = source["content"];
+	        this.mime = source["mime"];
+	    }
+	}
 
 }
 

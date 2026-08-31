@@ -59,4 +59,6 @@ export function ProduceMessages(arg1:backend.BatchProduceRequest):Promise<Array<
 
 export function ResetConsumerGroupOffset(arg1:backend.ResetOffsetRequest):Promise<void>;
 
+export function SaveTextFile(arg1:backend.SaveTextFileRequest):Promise<string>;
+
 export function TestConnection(arg1:model.KafkaConfig):Promise<void>;
