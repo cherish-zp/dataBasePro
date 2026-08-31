@@ -81,7 +81,10 @@ describe('ProducerPanel', () => {
     await wrapper.find('[data-test="btn-produce"]').trigger('click')
     await flushPromises()
     expect(api.produceMessage).not.toHaveBeenCalled()
-    expect(wrapper.find('[data-test="produce-error"]').exists()).toBe(true)
+    // The inline field error is located by its own data-test, distinct from
+    // the banner (which only appears for send/import failures).
+    expect(wrapper.find('[data-test="produce-value-error"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="produce-error"]').exists()).toBe(false)
   })
 
   it('surfaces produce errors', async () => {
