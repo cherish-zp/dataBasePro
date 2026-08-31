@@ -86,6 +86,22 @@ describe('browse store', () => {
     expect(store.stateFor('t1').messages.map((m) => m.offset)).toEqual([0, 1])
   })
 
+  it('includes a message whose timestamp exactly equals the end time', async () => {
+    const at = { ...msg(0), timestamp: 1700000006000 }
+    ;(api.consumeMessagesByTimestamp as ReturnType<typeof vi.fn>).mockResolvedValue([at])
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, timestampMs: 1700000000000, endTimeMs: 1700000006000, limit: 10 })
+    expect(store.stateFor('t1').messages).toHaveLength(1)
+  })
+
+  it('excludes a message whose timestamp is one millisecond past the end time', async () => {
+    const justPast = { ...msg(0), timestamp: 1700000006001 }
+    ;(api.consumeMessagesByTimestamp as ReturnType<typeof vi.fn>).mockResolvedValue([justPast])
+    const store = useBrowseStore()
+    await store.fetch('t1', 'c', 'topic-a', { partition: 0, timestampMs: 1700000000000, endTimeMs: 1700000006000, limit: 10 })
+    expect(store.stateFor('t1').messages).toHaveLength(0)
+  })
+
   it('keeps all messages when the time range has only a start', async () => {
     const early = { ...msg(0), timestamp: 1000 }
     const late = { ...msg(1), timestamp: 9000000000000 }

@@ -62,6 +62,21 @@ describe('sqlhistory store', () => {
     expect(store.favorites).toEqual([{ name: 'fav', sql: 'SELECT 1' }])
   })
 
+  it('saveFavorite rejects blank SQL after trimming', () => {
+    const store = useSqlHistoryStore()
+    store.saveFavorite('empty', '')
+    store.saveFavorite('spaces', '   ')
+    store.saveFavorite('newlines', '\n\t  \n')
+    expect(store.favorites).toEqual([])
+  })
+
+  it('saveFavorite does not overwrite an existing favorite with blank SQL', () => {
+    const store = useSqlHistoryStore()
+    store.saveFavorite('fav', 'SELECT 1')
+    store.saveFavorite('fav', '   ')
+    expect(store.favorites).toEqual([{ name: 'fav', sql: 'SELECT 1' }])
+  })
+
   it('removeFavorite removes by name and ignores unknown names', () => {
     const store = useSqlHistoryStore()
     store.saveFavorite('a', 'SELECT 1')
@@ -94,6 +109,22 @@ describe('sqlhistory store', () => {
     const second = useSqlHistoryStore()
     expect(second.history).toEqual(['SELECT 2', 'SELECT 1'])
     expect(second.favorites).toEqual([{ name: 'fav', sql: 'SELECT 3' }])
+  })
+
+  it('removeFavorite persists the removal across a reload from storage', () => {
+    const first = useSqlHistoryStore()
+    first.saveFavorite('a', 'SELECT 1')
+    first.saveFavorite('b', 'SELECT 2')
+    first.removeFavorite('a')
+    // Simulate an app restart: a fresh store rebuilt from localStorage must no
+    // longer contain the removed favorite, and the persisted payload is synced.
+    setActivePinia(createPinia())
+    const second = useSqlHistoryStore()
+    expect(second.favorites).toEqual([{ name: 'b', sql: 'SELECT 2' }])
+    expect(JSON.parse(localStorage.getItem(SQL_HISTORY_STORAGE_KEY) as string)).toEqual({
+      history: [],
+      favorites: [{ name: 'b', sql: 'SELECT 2' }],
+    })
   })
 
   it('degrades to an empty state on corrupt storage without throwing', () => {

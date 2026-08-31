@@ -86,6 +86,30 @@ describe('parseImportFile', () => {
     it('rejects a CSV without a value column', () => {
       expect(() => parseImportFile('name,age\na,1', 'data.csv')).toThrow('CSV 缺少 value 列')
     })
+
+    it('unquotes escaped double quotes inside a quoted field', () => {
+      const text = 'key,value\nk1,"say ""hi"""'
+      expect(parseImportFile(text, 'data.csv')).toEqual([{ key: 'k1', value: 'say "hi"' }])
+    })
+
+    it('keeps embedded newlines inside a quoted field as a single value', () => {
+      const text = 'key,value\nk1,"line1\nline2"'
+      expect(parseImportFile(text, 'data.csv')).toEqual([{ key: 'k1', value: 'line1\nline2' }])
+    })
+
+    it('parses mixed rows combining quotes, escapes and embedded newlines', () => {
+      const text = [
+        'key,value',
+        'k1,"v,1"',
+        '"k,2","say ""hi"""',
+        '"multi\nline","v3"',
+      ].join('\n')
+      expect(parseImportFile(text, 'data.csv')).toEqual([
+        { key: 'k1', value: 'v,1' },
+        { key: 'k,2', value: 'say "hi"' },
+        { key: 'multi\nline', value: 'v3' },
+      ])
+    })
   })
 
   describe('limits and errors', () => {
