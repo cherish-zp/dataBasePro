@@ -196,6 +196,7 @@ function close(): void {
           <div class="batch-row">
             <label class="label" for="batch-count">批量行数</label>
             <input id="batch-count" v-model.number="form.count" data-test="input-count" class="input count" type="number" min="1" max="1000" />
+            <span v-if="form.count > COUNT_MAX" class="cap-hint" data-test="count-cap-hint">将按上限 {{ COUNT_MAX }} 发送</span>
             <label class="check"><input v-model="form.randomKey" data-test="input-random-key" type="checkbox" /> 随机 key</label>
             <label class="check"><input v-model="form.loop" data-test="input-loop" type="checkbox" /> 循环发送</label>
           </div>
@@ -274,6 +275,7 @@ function close(): void {
 .batch-row { display: flex; align-items: center; gap: 14px; }
 .batch-row .label { margin-bottom: 0; }
 .count { width: 84px; }
+.cap-hint { font-size: 12px; color: var(--warn); white-space: nowrap; }
 .check { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
 .check input { accent-color: var(--accent); }
 .hidden-input { display: none; }
