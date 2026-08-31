@@ -56,7 +56,7 @@ defineEmits<{ (e: 'confirm-reset'): void; (e: 'cancel-preview'): void }>()
         </tbody>
       </table>
       <div class="dry-run-actions">
-        <button class="btn danger" type="button" data-test="btn-confirm-reset" @click="$emit('confirm-reset')">确认重置</button>
+        <button class="btn danger" type="button" data-test="btn-confirm-reset" :disabled="!preview || preview.length === 0" @click="$emit('confirm-reset')">确认重置</button>
         <button class="btn ghost" type="button" data-test="btn-cancel-preview" @click="$emit('cancel-preview')">取消</button>
       </div>
     </div>

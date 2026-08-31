@@ -105,7 +105,7 @@ function emptyText(): string {
           <td class="mono" data-test="row-topic">{{ r.topic }}</td>
           <td class="mono" :class="{ 'lag-danger': r.lag > 1000, 'lag-warn': r.lag > 100 && r.lag <= 1000 }" data-test="lag-value">{{ r.lag }}</td>
         </tr>
-        <tr v-if="rows.length === 0 && !loading">
+        <tr v-if="rows.length === 0 && !loading && !error">
           <td colspan="3" class="empty" data-test="lag-empty">{{ emptyText() }}</td>
         </tr>
       </tbody>
