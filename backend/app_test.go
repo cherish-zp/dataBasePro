@@ -265,8 +265,13 @@ func TestAppEndToEnd(t *testing.T) {
 // operation besides DeleteTopics is inert so the fake runs fully in the sandbox
 // (no kfake loopback binding).
 type fakeBatchKafka struct {
-	failures []*model.TopicDeleteResult
-	preview  map[int32]int64
+	failures         []*model.TopicDeleteResult
+	preview          map[int32]int64
+	partitionsTopic  string
+	partitionsTarget int32
+	partitionsErr    error
+	counts           map[string]model.TopicMessageCounts
+	resetOffsets     map[int32]int64
 }
 
 func (f *fakeBatchKafka) Connect(context.Context) error { return nil }
@@ -281,6 +286,20 @@ func (f *fakeBatchKafka) DescribeTopic(context.Context, string) (*model.TopicDet
 }
 func (f *fakeBatchKafka) AlterTopicConfig(context.Context, string, []model.TopicConfigEntry) error {
 	return nil
+}
+
+func (f *fakeBatchKafka) AlterTopicPartitions(_ context.Context, topic string, target int32) error {
+	f.partitionsTopic = topic
+	f.partitionsTarget = target
+	return f.partitionsErr
+}
+
+func (f *fakeBatchKafka) GetTopicMessageCounts(_ context.Context, topics ...string) (map[string]model.TopicMessageCounts, error) {
+	out := make(map[string]model.TopicMessageCounts, len(topics))
+	for _, t := range topics {
+		out[t] = f.counts[t]
+	}
+	return out, nil
 }
 func (f *fakeBatchKafka) DescribeCluster(context.Context) (*model.ClusterHealth, error) {
 	return nil, nil
@@ -312,7 +331,8 @@ func (f *fakeBatchKafka) ListActiveProducers(context.Context, string) ([]*model.
 func (f *fakeBatchKafka) ListActiveConsumers(context.Context, string, string) ([]*model.ActiveConsumer, error) {
 	return nil, nil
 }
-func (f *fakeBatchKafka) ResetConsumerGroupOffset(context.Context, string, string, model.ResetOffsetMode, int64) error {
+func (f *fakeBatchKafka) ResetConsumerGroupOffset(_ context.Context, _, _ string, _ model.ResetOffsetMode, _ int64, offsets map[int32]int64) error {
+	f.resetOffsets = offsets
 	return nil
 }
 func (f *fakeBatchKafka) PreviewResetOffset(context.Context, string, model.ResetOffsetMode, int64) (map[int32]int64, error) {
@@ -333,6 +353,144 @@ func joinFailureLines(rs []*model.TopicDeleteResult) string {
 		lines = append(lines, fmt.Sprintf("%s: %s", r.Name, r.Error))
 	}
 	return strings.Join(lines, "; ")
+}
+
+// TestAppAlterTopicPartitionsDelegatesAndAudits verifies the bound method
+// forwards the request to the data source and records one audit entry per
+// call, result ok on success and error with the failure detail otherwise.
+func TestAppAlterTopicPartitionsDelegatesAndAudits(t *testing.T) {
+	fake := &fakeBatchKafka{}
+	app := newTestAppWithFactory(t, service.ClientFactoryFunc(
+		func(context.Context, model.KafkaConfig) (service.KafkaDataSource, error) { return fake, nil },
+	))
+	conn, err := app.CreateConnection(&model.Connection{
+		Name:   "local",
+		Type:   model.ConnectionTypeKafka,
+		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConnection: %v", err)
+	}
+
+	if err := app.AlterTopicPartitions(AlterTopicPartitionsRequest{
+		ConnectionID: conn.ID, Topic: "events", Partitions: 6,
+	}); err != nil {
+		t.Fatalf("AlterTopicPartitions: %v", err)
+	}
+	if fake.partitionsTopic != "events" || fake.partitionsTarget != 6 {
+		t.Fatalf("unexpected delegation: topic=%q target=%d", fake.partitionsTopic, fake.partitionsTarget)
+	}
+
+	fake.partitionsErr = fmt.Errorf("boom")
+	if err := app.AlterTopicPartitions(AlterTopicPartitionsRequest{
+		ConnectionID: conn.ID, Topic: "events", Partitions: 9,
+	}); err == nil {
+		t.Fatal("expected delegation error to surface")
+	}
+
+	list, err := app.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	partitionAudits := make([]*model.AuditEntry, 0, 2)
+	for _, e := range list {
+		if e.Action == "alter_topic_partitions" {
+			partitionAudits = append(partitionAudits, e)
+		}
+	}
+	if len(partitionAudits) != 2 {
+		t.Fatalf("expected 2 alter_topic_partitions audit entries, got %d: %+v", len(partitionAudits), list)
+	}
+	// The audit list is newest-first; assert by outcome rather than position.
+	for _, e := range partitionAudits {
+		if e.Target != "events" {
+			t.Fatalf("unexpected audit target: %+v", e)
+		}
+		if e.Result == "ok" && e.Detail != "" {
+			t.Fatalf("success audit must have empty detail: %+v", e)
+		}
+		if e.Result == "error" && e.Detail != "boom" {
+			t.Fatalf("failure audit must carry the error detail: %+v", e)
+		}
+	}
+	var okCount, errCount int
+	for _, e := range partitionAudits {
+		if e.Result == "ok" {
+			okCount++
+		}
+		if e.Result == "error" {
+			errCount++
+		}
+	}
+	if okCount != 1 || errCount != 1 {
+		t.Fatalf("expected one ok and one error audit, got ok=%d error=%d", okCount, errCount)
+	}
+}
+
+// TestAppGetTopicMessageCountsDelegates verifies the read-only counts call
+// forwards the requested topics and returns the per-topic map untouched.
+func TestAppGetTopicMessageCountsDelegates(t *testing.T) {
+	fake := &fakeBatchKafka{counts: map[string]model.TopicMessageCounts{
+		"events": {Retained: 12, Total: 40},
+	}}
+	app := newTestAppWithFactory(t, service.ClientFactoryFunc(
+		func(context.Context, model.KafkaConfig) (service.KafkaDataSource, error) { return fake, nil },
+	))
+	conn, err := app.CreateConnection(&model.Connection{
+		Name:   "local",
+		Type:   model.ConnectionTypeKafka,
+		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConnection: %v", err)
+	}
+
+	counts, err := app.GetTopicMessageCounts(conn.ID, []string{"events"})
+	if err != nil {
+		t.Fatalf("GetTopicMessageCounts: %v", err)
+	}
+	if counts["events"].Retained != 12 || counts["events"].Total != 40 {
+		t.Fatalf("unexpected counts: %+v", counts)
+	}
+}
+
+// TestAppResetOffsetExplicitModeDelegatesOffsets verifies the explicit-offset
+// reset forwards the per-partition offsets to the data source and audits the
+// mode.
+func TestAppResetOffsetExplicitModeDelegatesOffsets(t *testing.T) {
+	fake := &fakeBatchKafka{}
+	app := newTestAppWithFactory(t, service.ClientFactoryFunc(
+		func(context.Context, model.KafkaConfig) (service.KafkaDataSource, error) { return fake, nil },
+	))
+	conn, err := app.CreateConnection(&model.Connection{
+		Name:   "local",
+		Type:   model.ConnectionTypeKafka,
+		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConnection: %v", err)
+	}
+
+	if err := app.ResetConsumerGroupOffset(ResetOffsetRequest{
+		ConnectionID:        conn.ID,
+		Group:               "g1",
+		Topic:               "t1",
+		Mode:                model.ResetOffsetExplicit,
+		PerPartitionOffsets: map[int32]int64{0: 2, 1: 3},
+	}); err != nil {
+		t.Fatalf("ResetConsumerGroupOffset: %v", err)
+	}
+	if len(fake.resetOffsets) != 2 || fake.resetOffsets[0] != 2 || fake.resetOffsets[1] != 3 {
+		t.Fatalf("unexpected delegated offsets: %+v", fake.resetOffsets)
+	}
+
+	list, err := app.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if list[0].Action != "reset_group_offset" || list[0].Detail != "offset" {
+		t.Fatalf("unexpected reset audit: %+v", list[0])
+	}
 }
 
 func TestAppAuditsDeleteTopicsFailureDetailCapped(t *testing.T) {

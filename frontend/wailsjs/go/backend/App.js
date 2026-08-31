@@ -6,6 +6,10 @@ export function AlterTopicConfig(arg1) {
   return window['go']['backend']['App']['AlterTopicConfig'](arg1);
 }
 
+export function AlterTopicPartitions(arg1) {
+  return window['go']['backend']['App']['AlterTopicPartitions'](arg1);
+}
+
 export function Connect(arg1) {
   return window['go']['backend']['App']['Connect'](arg1);
 }
@@ -64,6 +68,10 @@ export function GetConnection(arg1) {
 
 export function GetPartitionLag(arg1, arg2, arg3) {
   return window['go']['backend']['App']['GetPartitionLag'](arg1, arg2, arg3);
+}
+
+export function GetTopicMessageCounts(arg1, arg2) {
+  return window['go']['backend']['App']['GetTopicMessageCounts'](arg1, arg2);
 }
 
 export function ListActiveConsumers(arg1) {

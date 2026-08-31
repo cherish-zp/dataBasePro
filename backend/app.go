@@ -128,6 +128,9 @@ type ResetOffsetRequest struct {
 	Topic        string                `json:"topic"`
 	Mode         model.ResetOffsetMode `json:"mode"`
 	TimestampMS  int64                 `json:"timestamp_ms,omitempty"`
+	// PerPartitionOffsets carries the explicit targets for mode "offset"
+	// (ResetOffsetExplicit); ignored by every other mode.
+	PerPartitionOffsets map[int32]int64 `json:"per_partition_offsets,omitempty"`
 }
 
 // CreateTopicRequest carries the parameters for creating a Kafka topic.
@@ -156,6 +159,14 @@ type AlterTopicConfigRequest struct {
 	ConnectionID string                   `json:"connection_id"`
 	Topic        string                   `json:"topic"`
 	Entries      []model.TopicConfigEntry `json:"entries"`
+}
+
+// AlterTopicPartitionsRequest carries the parameters for growing a topic to a
+// final partition count (Kafka cannot shrink partitions).
+type AlterTopicPartitionsRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Topic        string `json:"topic"`
+	Partitions   int32  `json:"partitions"`
 }
 
 // DeleteConsumerGroupRequest carries the parameters for deleting a consumer group.
@@ -325,6 +336,23 @@ func (a *App) AlterTopicConfig(req AlterTopicConfigRequest) error {
 	return err
 }
 
+// AlterTopicPartitions grows a topic to the requested final partition count.
+func (a *App) AlterTopicPartitions(req AlterTopicPartitionsRequest) error {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	err := a.svc.AlterTopicPartitions(ctx, req.ConnectionID, req.Topic, req.Partitions)
+	a.audit(req.ConnectionID, "alter_topic_partitions", req.Topic, auditResult(err), auditDetail(err))
+	return err
+}
+
+// GetTopicMessageCounts returns per-topic record counts derived from broker
+// offsets for the requested topics (read-only, not audited).
+func (a *App) GetTopicMessageCounts(id string, topics []string) (map[string]model.TopicMessageCounts, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.GetTopicMessageCounts(ctx, id, topics...)
+}
+
 // DescribeCluster returns broker topology, controller, Kafka version and
 // under-replicated partitions for a connection's cluster.
 func (a *App) DescribeCluster(id string) (*model.ClusterHealth, error) {
@@ -387,7 +415,7 @@ func (a *App) ListActiveConsumers(req ActiveMembersRequest) ([]*model.ActiveCons
 func (a *App) ResetConsumerGroupOffset(req ResetOffsetRequest) error {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	err := a.svc.ResetConsumerGroupOffset(ctx, req.ConnectionID, req.Group, req.Topic, req.Mode, req.TimestampMS)
+	err := a.svc.ResetConsumerGroupOffset(ctx, req.ConnectionID, req.Group, req.Topic, req.Mode, req.TimestampMS, req.PerPartitionOffsets)
 	detail := auditDetail(err)
 	if err == nil {
 		detail = string(req.Mode)

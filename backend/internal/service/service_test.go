@@ -62,7 +62,7 @@ func (f *fakeKafka) ConsumeMessagesByTimestamp(_ context.Context, _ string, _ in
 func (f *fakeKafka) GetPartitionLag(context.Context, string, string) (map[int32]int64, error) {
 	return f.lag, nil
 }
-func (f *fakeKafka) ResetConsumerGroupOffset(_ context.Context, _, _ string, mode model.ResetOffsetMode, _ int64) error {
+func (f *fakeKafka) ResetConsumerGroupOffset(_ context.Context, _, _ string, mode model.ResetOffsetMode, _ int64, _ map[int32]int64) error {
 	f.resetCalls = append(f.resetCalls, mode)
 	return nil
 }
@@ -93,6 +93,14 @@ func (f *fakeKafka) DescribeTopic(context.Context, string) (*model.TopicDetail, 
 }
 func (f *fakeKafka) AlterTopicConfig(context.Context, string, []model.TopicConfigEntry) error {
 	return nil
+}
+
+func (f *fakeKafka) AlterTopicPartitions(context.Context, string, int32) error {
+	return nil
+}
+
+func (f *fakeKafka) GetTopicMessageCounts(context.Context, ...string) (map[string]model.TopicMessageCounts, error) {
+	return nil, nil
 }
 func (f *fakeKafka) DescribeCluster(context.Context) (*model.ClusterHealth, error) {
 	return f.health, nil
@@ -276,7 +284,7 @@ func TestResetConsumerGroupOffsetDelegates(t *testing.T) {
 	ctx := context.Background()
 	c, _ := svc.CreateConnection(ctx, sampleConn())
 
-	if err := svc.ResetConsumerGroupOffset(ctx, c.ID, "g1", "t1", model.ResetOffsetEarliest, 0); err != nil {
+	if err := svc.ResetConsumerGroupOffset(ctx, c.ID, "g1", "t1", model.ResetOffsetEarliest, 0, nil); err != nil {
 		t.Fatalf("ResetConsumerGroupOffset: %v", err)
 	}
 	if len(f.k.resetCalls) != 1 || f.k.resetCalls[0] != model.ResetOffsetEarliest {

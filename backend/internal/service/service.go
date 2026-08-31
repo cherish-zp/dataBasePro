@@ -176,6 +176,26 @@ func (s *Service) AlterTopicConfig(ctx context.Context, id, topic string, entrie
 	return d.AlterTopicConfig(ctx, topic, entries)
 }
 
+// AlterTopicPartitions grows the topic to the requested final partition count
+// on the connection's cluster, auto-connecting if needed.
+func (s *Service) AlterTopicPartitions(ctx context.Context, id, topic string, target int32) error {
+	d, err := s.kafka(ctx, id)
+	if err != nil {
+		return err
+	}
+	return d.AlterTopicPartitions(ctx, topic, target)
+}
+
+// GetTopicMessageCounts returns per-topic record counts derived from broker
+// offsets, auto-connecting if needed.
+func (s *Service) GetTopicMessageCounts(ctx context.Context, id string, topics ...string) (map[string]model.TopicMessageCounts, error) {
+	d, err := s.kafka(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return d.GetTopicMessageCounts(ctx, topics...)
+}
+
 // DescribeCluster returns the cluster health snapshot (brokers, controller,
 // Kafka version, under-replicated partitions), auto-connecting if needed.
 func (s *Service) DescribeCluster(ctx context.Context, id string) (*model.ClusterHealth, error) {
@@ -251,12 +271,12 @@ func (s *Service) ListActiveConsumers(ctx context.Context, id, group, topic stri
 }
 
 // ResetConsumerGroupOffset resets a consumer group offset.
-func (s *Service) ResetConsumerGroupOffset(ctx context.Context, id, group, topic string, mode model.ResetOffsetMode, timestampMS int64) error {
+func (s *Service) ResetConsumerGroupOffset(ctx context.Context, id, group, topic string, mode model.ResetOffsetMode, timestampMS int64, offsets map[int32]int64) error {
 	kds, err := s.kafka(ctx, id)
 	if err != nil {
 		return err
 	}
-	return kds.ResetConsumerGroupOffset(ctx, group, topic, mode, timestampMS)
+	return kds.ResetConsumerGroupOffset(ctx, group, topic, mode, timestampMS, offsets)
 }
 
 // PreviewResetOffset returns the per-partition target offsets a reset would

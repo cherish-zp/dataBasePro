@@ -50,6 +50,22 @@ export namespace backend {
 		    return a;
 		}
 	}
+	export class AlterTopicPartitionsRequest {
+	    connection_id: string;
+	    topic: string;
+	    partitions: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AlterTopicPartitionsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.topic = source["topic"];
+	        this.partitions = source["partitions"];
+	    }
+	}
 	export class BatchProduceRequest {
 	    connection_id: string;
 	    topic: string;
@@ -194,6 +210,7 @@ export namespace backend {
 	    topic: string;
 	    mode: string;
 	    timestamp_ms?: number;
+	    per_partition_offsets?: Record<number, number>;
 	
 	    static createFrom(source: any = {}) {
 	        return new ResetOffsetRequest(source);
@@ -206,6 +223,7 @@ export namespace backend {
 	        this.topic = source["topic"];
 	        this.mode = source["mode"];
 	        this.timestamp_ms = source["timestamp_ms"];
+	        this.per_partition_offsets = source["per_partition_offsets"];
 	    }
 	}
 

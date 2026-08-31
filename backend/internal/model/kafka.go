@@ -13,6 +13,15 @@ type Topic struct {
 	Partitions []Partition `json:"partitions"`
 }
 
+// TopicMessageCounts summarises a topic's record counts derived from broker
+// offsets (O(1) metadata lookups, not a log scan). Retained is the number of
+// records still within retention (sum of end-start per partition); Total is
+// the number of records ever produced (offsets are never reset by retention).
+type TopicMessageCounts struct {
+	Retained int64 `json:"retained"`
+	Total    int64 `json:"total"`
+}
+
 // Partition carries metadata for a single Kafka partition.
 type Partition struct {
 	ID       int32   `json:"id"`
@@ -70,6 +79,9 @@ const (
 	ResetOffsetEarliest ResetOffsetMode = "earliest"
 	ResetOffsetLatest   ResetOffsetMode = "latest"
 	ResetOffsetTime     ResetOffsetMode = "timestamp"
+	// ResetOffsetExplicit commits the caller-supplied per-partition offsets,
+	// enabling precise replay (e.g. re-consuming a known range).
+	ResetOffsetExplicit ResetOffsetMode = "offset"
 )
 
 // ActiveProducer is a producer currently producing to a topic (KIP-664).

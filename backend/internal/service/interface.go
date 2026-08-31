@@ -21,8 +21,10 @@ type DataSource interface {
 type KafkaDataSource interface {
 	DataSource
 	ListTopics(ctx context.Context) ([]*model.Topic, error)
+	GetTopicMessageCounts(ctx context.Context, topics ...string) (map[string]model.TopicMessageCounts, error)
 	DescribeTopic(ctx context.Context, name string) (*model.TopicDetail, error)
 	AlterTopicConfig(ctx context.Context, name string, entries []model.TopicConfigEntry) error
+	AlterTopicPartitions(ctx context.Context, name string, target int32) error
 	DescribeCluster(ctx context.Context) (*model.ClusterHealth, error)
 	CreateTopic(ctx context.Context, name string, partitions int32, replicationFactor int16) error
 	DeleteTopic(ctx context.Context, name string) error
@@ -35,7 +37,7 @@ type KafkaDataSource interface {
 	GetPartitionLag(ctx context.Context, topic string, group string) (map[int32]int64, error)
 	ListActiveProducers(ctx context.Context, topic string) ([]*model.ActiveProducer, error)
 	ListActiveConsumers(ctx context.Context, group, topic string) ([]*model.ActiveConsumer, error)
-	ResetConsumerGroupOffset(ctx context.Context, group, topic string, mode model.ResetOffsetMode, timestampMS int64) error
+	ResetConsumerGroupOffset(ctx context.Context, group, topic string, mode model.ResetOffsetMode, timestampMS int64, offsets map[int32]int64) error
 	PreviewResetOffset(ctx context.Context, topic string, mode model.ResetOffsetMode, timestampMS int64) (map[int32]int64, error)
 	ProduceMessage(ctx context.Context, topic string, partition int32, key, value []byte) error
 	ProduceMessages(ctx context.Context, topic string, partition int32, messages []model.BatchProduceMessage) ([]*model.ProduceResult, error)

@@ -204,6 +204,36 @@ func (c *Client) AlterTopicConfig(ctx context.Context, name string, entries []mo
 	return nil
 }
 
+// AlterTopicPartitions grows a topic to the requested final partition count
+// via an UpdatePartitions request (Kafka cannot shrink a topic). A target
+// count below the current one is rejected locally with a clear error before
+// any broker call; an unknown topic surfaces the broker's own error.
+func (c *Client) AlterTopicPartitions(ctx context.Context, name string, target int32) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	details, err := c.admin.ListTopics(ctx, name)
+	if err != nil {
+		return fmt.Errorf("describe topic %q: %w", name, err)
+	}
+	td, ok := details[name]
+	if !ok || td.Err != nil {
+		return fmt.Errorf("topic %q not found", name)
+	}
+	current := int32(len(td.Partitions))
+	if target < current {
+		return fmt.Errorf("目标分区数 %d 不能少于当前分区数 %d（Kafka 仅支持扩容）", target, current)
+	}
+	if target == current {
+		return fmt.Errorf("目标分区数等于当前分区数 %d，无需修改", current)
+	}
+	resp, err := c.admin.UpdatePartitions(ctx, int(target), name)
+	if err != nil {
+		return fmt.Errorf("alter topic %q partitions: %w", name, err)
+	}
+	r, rerr := resp.On(name, nil)
+	return firstErr(rerr, r.Err)
+}
+
 // mapTopicConfigs keeps only the whitelisted keys of a described topic config
 // resource and sorts the survivors by key for stable display.
 func mapTopicConfigs(rc kadm.ResourceConfig) []model.TopicConfigEntry {
@@ -398,29 +428,42 @@ func (c *Client) GetPartitionLag(ctx context.Context, topic, group string) (map[
 // ResetConsumerGroupOffset resets the committed offset of group on topic.
 // Supported modes are ResetOffsetEarliest, ResetOffsetLatest and
 // ResetOffsetTime (with an explicit unix-millisecond timestamp).
-func (c *Client) ResetConsumerGroupOffset(ctx context.Context, group, topic string, mode model.ResetOffsetMode, timestampMS int64) error {
+func (c *Client) ResetConsumerGroupOffset(ctx context.Context, group, topic string, mode model.ResetOffsetMode, timestampMS int64, offsets map[int32]int64) error {
 	var (
-		offsets kadm.Offsets
-		err     error
+		offsetsToCommit kadm.Offsets
+		err             error
 	)
 	switch mode {
 	case model.ResetOffsetEarliest:
 		var start kadm.ListedOffsets
 		start, err = c.admin.ListStartOffsets(ctx, topic)
 		if err == nil {
-			offsets = start.Offsets()
+			offsetsToCommit = start.Offsets()
 		}
 	case model.ResetOffsetLatest:
 		var end kadm.ListedOffsets
 		end, err = c.admin.ListEndOffsets(ctx, topic)
 		if err == nil {
-			offsets = end.Offsets()
+			offsetsToCommit = end.Offsets()
 		}
 	case model.ResetOffsetTime:
 		var at kadm.ListedOffsets
 		at, err = c.admin.ListOffsetsAfterMilli(ctx, timestampMS, topic)
 		if err == nil {
-			offsets = at.Offsets()
+			offsetsToCommit = at.Offsets()
+		}
+	case model.ResetOffsetExplicit:
+		if len(offsets) == 0 {
+			return errors.New("指定 offset 模式需要至少一个分区的目标 offset")
+		}
+		offsetsToCommit = kadm.Offsets{}
+		for partition, offset := range offsets {
+			offsetsToCommit.Add(kadm.Offset{
+				Topic:       topic,
+				Partition:   partition,
+				At:          offset,
+				LeaderEpoch: -1,
+			})
 		}
 	default:
 		return fmt.Errorf("unsupported reset mode %q", mode)
@@ -428,7 +471,17 @@ func (c *Client) ResetConsumerGroupOffset(ctx context.Context, group, topic stri
 	if err != nil {
 		return fmt.Errorf("list offsets for reset: %w", err)
 	}
-	if _, err := c.admin.CommitOffsets(ctx, group, offsets); err != nil {
+	// A Stable group has active members: the broker rejects admin offset
+	// commits from it, surfacing as a cryptic ILLEGAL_GENERATION error. Refuse
+	// up front with an actionable message instead.
+	dg, derr := c.describeGroupRaw(ctx, group)
+	if derr != nil {
+		return fmt.Errorf("describe group for reset: %w", derr)
+	}
+	if dg.State == "Stable" {
+		return fmt.Errorf("消费组 %q 仍有活跃成员（Stable），请先停止消费者再重置", group)
+	}
+	if _, err := c.admin.CommitOffsets(ctx, group, offsetsToCommit); err != nil {
 		return fmt.Errorf("commit reset offsets: %w", err)
 	}
 	return nil

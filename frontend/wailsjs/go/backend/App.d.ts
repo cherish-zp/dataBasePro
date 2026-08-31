@@ -5,6 +5,8 @@ import {model} from '../models';
 
 export function AlterTopicConfig(arg1:backend.AlterTopicConfigRequest):Promise<void>;
 
+export function AlterTopicPartitions(arg1:backend.AlterTopicPartitionsRequest):Promise<void>;
+
 export function Connect(arg1:string):Promise<void>;
 
 export function ConsumeMessages(arg1:backend.ConsumeRequest):Promise<Array<model.Message>>;
@@ -34,6 +36,8 @@ export function Disconnect(arg1:string):Promise<void>;
 export function GetConnection(arg1:string):Promise<model.Connection>;
 
 export function GetPartitionLag(arg1:string,arg2:string,arg3:string):Promise<Record<number, number>>;
+
+export function GetTopicMessageCounts(arg1:string,arg2:Array<string>):Promise<Record<string, model.TopicMessageCounts>>;
 
 export function ListActiveConsumers(arg1:backend.ActiveMembersRequest):Promise<Array<model.ActiveConsumer>>;
 

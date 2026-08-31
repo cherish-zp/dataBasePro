@@ -281,7 +281,7 @@ func TestResetConsumerGroupOffset(t *testing.T) {
 	ctx := context.Background()
 
 	// Reset to earliest: lag must become 10 (nothing consumed).
-	if err := cl.ResetConsumerGroupOffset(ctx, "grp-1", "t1", model.ResetOffsetEarliest, 0); err != nil {
+	if err := cl.ResetConsumerGroupOffset(ctx, "grp-1", "t1", model.ResetOffsetEarliest, 0, nil); err != nil {
 		t.Fatalf("reset to earliest: %v", err)
 	}
 	lag, _ := cl.GetPartitionLag(ctx, "t1", "grp-1")
@@ -290,7 +290,7 @@ func TestResetConsumerGroupOffset(t *testing.T) {
 	}
 
 	// Reset to latest: lag must become 0.
-	if err := cl.ResetConsumerGroupOffset(ctx, "grp-1", "t1", model.ResetOffsetLatest, 0); err != nil {
+	if err := cl.ResetConsumerGroupOffset(ctx, "grp-1", "t1", model.ResetOffsetLatest, 0, nil); err != nil {
 		t.Fatalf("reset to latest: %v", err)
 	}
 	lag, _ = cl.GetPartitionLag(ctx, "t1", "grp-1")
@@ -308,7 +308,7 @@ func TestResetConsumerGroupOffsetByTimestamp(t *testing.T) {
 	ctx := context.Background()
 
 	// Reset to base+5000 (offset 5): 5 records remain unread -> lag 5.
-	if err := cl.ResetConsumerGroupOffset(ctx, "grp-1", "t1", model.ResetOffsetTime, base+5000); err != nil {
+	if err := cl.ResetConsumerGroupOffset(ctx, "grp-1", "t1", model.ResetOffsetTime, base+5000, nil); err != nil {
 		t.Fatalf("reset by timestamp: %v", err)
 	}
 	lag, _ := cl.GetPartitionLag(ctx, "t1", "grp-1")
