@@ -361,6 +361,19 @@ describe('SqlConsole', () => {
     expect(wrapper.find('[data-test="fav-name-input"]').exists()).toBe(false)
   })
 
+  it('clears the favorite form when the menu closes before saving', async () => {
+    const { wrapper } = mountConsole()
+    await wrapper.find('[data-test="history-toggle"]').trigger('click')
+    await wrapper.find('[data-test="fav-save"]').trigger('click')
+    await wrapper.find('[data-test="fav-name-input"]').setValue('half-typed')
+    // Cancelling = closing the dropdown; the inline form is dismissed with it.
+    await wrapper.find('[data-test="history-toggle"]').trigger('click')
+    // Reopening the menu and the form must not resurrect the stale draft name.
+    await wrapper.find('[data-test="history-toggle"]').trigger('click')
+    await wrapper.find('[data-test="fav-save"]').trigger('click')
+    expect((wrapper.find('[data-test="fav-name-input"]').element as HTMLInputElement).value).toBe('')
+  })
+
   it('removes a favorite from the dropdown', async () => {
     const { wrapper, api } = mountConsole()
     useSqlHistoryStore().saveFavorite('top-errors', 'SELECT * FROM errors')
