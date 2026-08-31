@@ -223,7 +223,7 @@ function close(): void {
             </button>
           </div>
           <textarea v-model="form.value" data-test="input-value" class="input textarea" rows="6" placeholder='{"key":"value"}'></textarea>
-          <span v-if="valueInvalid && !importedMessages" class="err" data-test="produce-error">消息内容不能为空</span>
+          <span v-if="valueInvalid && !importedMessages" class="err" data-test="produce-value-error">消息内容不能为空</span>
         </div>
 
         <div v-if="ok" class="msg ok" data-test="produce-ok">消息已发送</div>
