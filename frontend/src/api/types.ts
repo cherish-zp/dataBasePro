@@ -188,6 +188,20 @@ export interface ResetOffsetRequest {
   timestamp_ms?: number
 }
 
+// Request for the read-only reset-offset dry-run. The backend reuses the
+// ResetOffsetRequest wire shape; group is context only and never altered.
+export interface PreviewOffsetRequest {
+  connection_id: string
+  group: string
+  topic: string
+  mode: ResetOffsetMode
+  timestamp_ms?: number
+}
+
+// Per-partition target offsets a reset would commit, keyed by partition
+// (mirrors the backend map[int32]int64 return).
+export type PreviewOffsetMap = Record<number, number>
+
 export interface ProduceRequest {
   connection_id: string
   topic: string

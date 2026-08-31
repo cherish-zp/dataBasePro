@@ -12,6 +12,8 @@ import type {
   Message,
   ConsumeRequest,
   ResetOffsetRequest,
+  PreviewOffsetRequest,
+  PreviewOffsetMap,
   ProduceRequest,
   BatchProduceRequest,
   ProduceResult,
@@ -51,6 +53,7 @@ export interface Api {
   listActiveProducers(req: ActiveMembersRequest): Promise<ActiveProducer[]>
   listActiveConsumers(req: ActiveMembersRequest): Promise<ActiveConsumer[]>
   resetConsumerGroupOffset(req: ResetOffsetRequest): Promise<void>
+  previewResetOffset(req: PreviewOffsetRequest): Promise<PreviewOffsetMap>
   produceMessage(req: ProduceRequest): Promise<void>
   produceMessages(req: BatchProduceRequest): Promise<ProduceResult[]>
   listAudit(limit?: number): Promise<AuditEntry[]>
@@ -130,6 +133,9 @@ export class WailsApi implements Api {
   }
   resetConsumerGroupOffset(req: ResetOffsetRequest): Promise<void> {
     return App.ResetConsumerGroupOffset(req)
+  }
+  previewResetOffset(req: PreviewOffsetRequest): Promise<PreviewOffsetMap> {
+    return App.PreviewResetOffset(req) as unknown as Promise<PreviewOffsetMap>
   }
   produceMessage(req: ProduceRequest): Promise<void> {
     return App.ProduceMessage(req)

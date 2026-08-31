@@ -92,9 +92,11 @@ async function lagSampler(): Promise<number> {
   return Object.values(lag).reduce((total, lag) => total + lag, 0)
 }
 
-// previewReset builds the dry-run table from freshly loaded lag data. Only
-// the latest mode has a client-side computable target (the log end offset);
-// earliest/timestamp targets are resolved by the broker at execution time.
+// previewReset builds the dry-run table from freshly loaded lag data. Latest
+// has a client-side computable target (the log end offset); for earliest and
+// timestamp the exact target is only known to the broker, so the read-only
+// preview API fetches the per-partition offsets and backfills new_offset.
+// A failed fetch degrades to null (renders "—") without blocking the preview.
 async function previewReset(): Promise<void> {
   if (!selectedGroup.value || !selectedTopic.value) return
   await store.load(props.tabId, props.connectionId)
@@ -105,6 +107,27 @@ async function previewReset(): Promise<void> {
     current_offset: r.current_offset,
     new_offset: resetMode.value === 'latest' ? r.log_end_offset : null,
   }))
+  if (resetMode.value === 'latest') return
+  const targetRows = previewRows.value
+  try {
+    const offsets = await getApi().previewResetOffset({
+      connection_id: props.connectionId,
+      group: selectedGroup.value,
+      topic: selectedTopic.value,
+      mode: resetMode.value,
+      timestamp_ms: resetMode.value === 'timestamp' ? (timestampMs.value ?? Date.now()) : undefined,
+    })
+    // Only fill the rows this invocation produced; a mode/group switch in
+    // flight clears the preview and must not receive stale offsets.
+    if (previewRows.value === targetRows) {
+      for (const row of targetRows) {
+        const target = offsets[row.partition]
+        if (target !== undefined) row.new_offset = target
+      }
+    }
+  } catch {
+    // 降级为 null：表格显示「—」，不阻断预览。
+  }
 }
 
 async function reset(): Promise<void> {
