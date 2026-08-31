@@ -90,6 +90,10 @@ export function ListTopics(arg1) {
   return window['go']['backend']['App']['ListTopics'](arg1);
 }
 
+export function PreviewResetOffset(arg1) {
+  return window['go']['backend']['App']['PreviewResetOffset'](arg1);
+}
+
 export function ProduceMessage(arg1) {
   return window['go']['backend']['App']['ProduceMessage'](arg1);
 }
