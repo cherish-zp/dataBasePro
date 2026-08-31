@@ -131,7 +131,11 @@ export const useBrowseStore = defineStore('browse', () => {
       }
       const msgs = await getApi().consumeMessages(req)
       const seen = new Set(st.messages.map((m) => `${m.partition}:${m.offset}`))
-      for (const m of msgs) {
+      // Defensive clamp: cap the append at the requested page limit so a single
+      // oversized backend response can never grow the page past it. Currently
+      // unreachable (the backend returns at most `limit` records) but guards
+      // against a future regression.
+      for (const m of msgs.slice(0, st.query.limit)) {
         const key = `${m.partition}:${m.offset}`
         if (!seen.has(key)) {
           st.messages.push(m)
