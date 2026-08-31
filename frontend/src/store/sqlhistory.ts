@@ -65,14 +65,18 @@ export const useSqlHistoryStore = defineStore('sqlhistory', () => {
   }
 
   // saveFavorite upserts a named favorite: the same name replaces its SQL.
+  // Blank SQL (whitespace-only after trimming) is never saved — mirrors the UI
+  // guard so the store alone can be relied on.
   function saveFavorite(name: string, sql: string): void {
     const n = name.trim()
     if (!n) return
+    const s = sql.trim()
+    if (!s) return
     const existing = favorites.value.find((f) => f.name === n)
     if (existing) {
-      existing.sql = sql.trim()
+      existing.sql = s
     } else {
-      favorites.value.unshift({ name: n, sql: sql.trim() })
+      favorites.value.unshift({ name: n, sql: s })
     }
     persist()
   }
