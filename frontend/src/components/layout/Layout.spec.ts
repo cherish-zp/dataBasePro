@@ -569,4 +569,28 @@ describe('Layout', () => {
     expect(api.consumeMessages).toHaveBeenCalledTimes(1)
     expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(1)
   })
+
+  it('does not toggle the command palette on cmd+k during an IME composition', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, isComposing: true }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="command-palette"]')).toBeNull()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, keyCode: 229 }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="command-palette"]')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('closes the tab context menu on Escape even during an IME composition', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 't1', [])
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="tab"]')).toHaveLength(1)
+    })
+    await wrapper.find('[data-test="tab"]').trigger('contextmenu', { clientX: 10, clientY: 10 })
+    expect(document.body.querySelector('[data-test="tab-context-menu"]')).not.toBeNull()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true }))
+    await nextTick()
+    expect(document.body.querySelector('[data-test="tab-context-menu"]')).toBeNull()
+  })
 })
