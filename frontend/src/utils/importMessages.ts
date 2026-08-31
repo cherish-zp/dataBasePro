@@ -60,6 +60,22 @@ function parseJsonl(text: string): BatchProduceItem[] {
   return items
 }
 
+// parseSingleJsonObject treats a whole file that is one complete JSON object
+// (trimmed text starting with { and parseable as an object) as a single message
+// whose value is the object stringified — the confirmed BL-008 object-line
+// semantics. Returns null so the caller falls back to line-by-line (JSONL/CSV)
+// parsing when the text is not a single object (e.g. multi-line JSONL).
+function parseSingleJsonObject(trimmed: string): BatchProduceItem[] | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return null
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  return [{ key: '', value: stripIgnoredFields(JSON.stringify(parsed)) }]
+}
+
 // splitCsvRecords：RFC4180 风格的整文本解析，支持引号包裹字段（字段内逗号、
 // 转义引号 "" 与字段内换行）。
 function splitCsvRecords(text: string): string[][] {
@@ -140,6 +156,12 @@ export function parseImportFile(text: string, filename: string): BatchProduceIte
   const ext = filename.toLowerCase().split('.').pop() ?? ''
   if (ext === 'jsonl' || ext === 'ndjson') return parseJsonl(text)
   if (trimmed.startsWith('[')) return parseJsonArray(text)
-  if (trimmed.startsWith('{')) return parseJsonl(text)
+  if (trimmed.startsWith('{')) {
+    // BL-043: 单个完整 JSON 对象（含单行或 pretty-printed 多行）视为单条消息，
+    // 整行 stringify；仅当整体无法 parse 为对象时才退回逐行（JSONL）。
+    const single = parseSingleJsonObject(trimmed)
+    if (single) return single
+    return parseJsonl(text)
+  }
   return parseCsv(text)
 }
