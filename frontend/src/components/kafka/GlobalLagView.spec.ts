@@ -1,9 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { ConsumerGroup, PartitionLag } from '@/api/types'
 import GlobalLagView from './GlobalLagView.vue'
+
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T) => void
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => { resolve = res })
+  return { promise, resolve }
+}
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
   return {
@@ -227,6 +238,28 @@ describe('GlobalLagView', () => {
     await vi.waitFor(() => {
       expect(api.listConsumerGroups).toHaveBeenCalledTimes(2)
     })
+  })
+
+  it('discards a stale response that lands after a newer connection switch', async () => {
+    const dA = deferred<ConsumerGroup[]>()
+    const dB = deferred<ConsumerGroup[]>()
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise)
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    expect(api.listConsumerGroups).toHaveBeenCalledWith('a')
+    // Switch connections before the first fetch settles.
+    await wrapper.setProps({ connectionId: 'b' })
+    expect(api.listConsumerGroups).toHaveBeenCalledWith('b')
+    // The old connection's response resolves last: it must not overwrite the
+    // view with data belonging to the previous connection.
+    dA.resolve([grp('g-a', { 'orders-a': [part(10)] })])
+    await flushPromises()
+    expect(rowsOf(wrapper)).toEqual([])
+    // The current connection's response lands and renders.
+    dB.resolve([grp('g-b', { 'orders-b': [part(20)] })])
+    await flushPromises()
+    expect(rowsOf(wrapper)).toEqual([['g-b', 'orders-b']])
   })
 })
 

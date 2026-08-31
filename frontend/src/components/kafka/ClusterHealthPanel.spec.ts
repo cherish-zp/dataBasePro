@@ -1,9 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { ClusterHealth } from '@/api/types'
 import ClusterHealthPanel from './ClusterHealthPanel.vue'
+
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T) => void
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => { resolve = res })
+  return { promise, resolve }
+}
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
   return {
@@ -196,5 +207,28 @@ describe('ClusterHealthPanel', () => {
     await vi.waitFor(() => {
       expect(api.describeCluster).toHaveBeenCalledTimes(2)
     })
+  })
+
+  it('discards a stale response that lands after a newer connection switch', async () => {
+    const dA = deferred<ClusterHealth>()
+    const dB = deferred<ClusterHealth>()
+    ;(api.describeCluster as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise)
+    const wrapper = mount(ClusterHealthPanel, { props: { connectionId: 'a' } })
+    expect(api.describeCluster).toHaveBeenCalledWith('a')
+    // Switch connections before the first fetch settles.
+    await wrapper.setProps({ connectionId: 'b' })
+    expect(api.describeCluster).toHaveBeenCalledWith('b')
+    // The old connection's response resolves last: it must not overwrite the
+    // panel with data belonging to the previous connection.
+    dA.resolve(health())
+    await flushPromises()
+    expect(wrapper.find('[data-test="broker-card"]').exists()).toBe(false)
+    // The current connection's response lands and renders.
+    dB.resolve({ ...health(), cluster_id: 'kfake-b' })
+    await flushPromises()
+    expect(wrapper.findAll('[data-test="broker-card"]')).toHaveLength(3)
+    expect(wrapper.find('[data-test="summary-cluster-id"]').text()).toBe('kfake-b')
   })
 })

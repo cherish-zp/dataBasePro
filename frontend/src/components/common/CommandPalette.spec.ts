@@ -349,6 +349,49 @@ describe('CommandPalette', () => {
     expect(qa('palette-item')).toHaveLength(2)
   })
 
+  it('discards a stale background refresh that lands after a newer one on rapid reopen', async () => {
+    const older = deferred<Topic[]>()
+    const newer = deferred<Topic[]>()
+    let calls = 0
+    const { wrapper } = mountPalette([conn('a')], {
+      listTopics: vi.fn((id: string) => {
+        calls++
+        if (calls === 1) return Promise.resolve([topic('seeded')])
+        return calls === 2 ? older.promise : newer.promise
+      }),
+      listConsumerGroups: vi.fn(async () => []),
+    })
+
+    // Open 1 seeds the cache.
+    togglePalette(wrapper)
+    await nextTick()
+    await flushPromises()
+
+    // Open 2 starts a slow SWR background refresh (the older one).
+    pressKey('Escape')
+    await nextTick()
+    togglePalette(wrapper)
+    await nextTick()
+
+    // Open 3 starts another SWR background refresh (the newer one).
+    pressKey('Escape')
+    await nextTick()
+    togglePalette(wrapper)
+    await nextTick()
+
+    // The newer refresh lands first, then the older one arrives late. The late
+    // response must not overwrite the entries written by the newer fetch.
+    newer.resolve([topic('fresh')])
+    await flushPromises()
+    older.resolve([topic('stale')])
+    await flushPromises()
+
+    await typeQuery('fresh')
+    expect(qa('palette-item').map((el) => el.querySelector('.item-name')?.textContent)).toEqual(['fresh'])
+    await typeQuery('stale')
+    expect(qa('palette-item')).toHaveLength(0)
+  })
+
   it('shows a per-connection error note and keeps other connections usable', async () => {
     await openLoaded([conn('a'), conn('b')], {
       listTopics: vi.fn((id: string) => (id === 'a' ? Promise.reject(new Error('boom')) : Promise.resolve([topic('ods_user')]))),

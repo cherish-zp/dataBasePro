@@ -1,9 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { TopicDetail } from '@/api/types'
 import TopicDetailDrawer from './TopicDetailDrawer.vue'
+
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T) => void
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => { resolve = res })
+  return { promise, resolve }
+}
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
   return {
@@ -278,5 +289,83 @@ describe('TopicDetailDrawer', () => {
     expect(alter).not.toHaveBeenCalled()
     expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="cfg-save"]').exists()).toBe(false)
+  })
+
+  it('discards a stale describeTopic that lands after a topic switch', async () => {
+    const dA = deferred<TopicDetail>()
+    const dB = deferred<TopicDetail>()
+    ;(api.describeTopic as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise)
+    const wrapper = mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'one', show: true },
+    })
+    expect(api.describeTopic).toHaveBeenCalledWith('a', 'one')
+    // Switch the selected topic before the first fetch settles.
+    await wrapper.setProps({ connectionId: 'a', topic: 'two' })
+    expect(api.describeTopic).toHaveBeenCalledWith('a', 'two')
+    // The old topic's response resolves last: it must not overwrite the drawer.
+    dA.resolve({ ...detail(), name: 'one' })
+    await flushPromises()
+    expect(wrapper.find('[data-test="topo-row"]').exists()).toBe(false)
+    // The current topic's response lands and renders.
+    dB.resolve({ ...detail(), name: 'two' })
+    await flushPromises()
+    expect(wrapper.findAll('[data-test="topo-row"]')).toHaveLength(2)
+  })
+
+  it('does not re-describe the topic when the drawer closes mid-save', async () => {
+    ;(api.describeTopic as ReturnType<typeof vi.fn>).mockResolvedValue(detail())
+    const dAlter = deferred<void>()
+    ;(api.alterTopicConfig as ReturnType<typeof vi.fn>).mockReturnValue(dAlter.promise)
+    const wrapper = mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'user-log', show: true },
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
+    await wrapper.find('[data-test="cfg-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.alterTopicConfig).toHaveBeenCalled()
+    })
+    // Close the drawer while the save is still in flight.
+    await wrapper.setProps({ show: false })
+    const callsBefore = (api.describeTopic as ReturnType<typeof vi.fn>).mock.calls.length
+    dAlter.resolve()
+    await flushPromises()
+    // The trailing load() of the hidden drawer must be discarded: no extra
+    // describeTopic fires for the old topic.
+    expect((api.describeTopic as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore)
+  })
+
+  it('does not re-describe the old topic when the topic switches mid-save', async () => {
+    ;(api.describeTopic as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(detail())
+      .mockResolvedValueOnce(detail())
+    const dAlter = deferred<void>()
+    ;(api.alterTopicConfig as ReturnType<typeof vi.fn>).mockReturnValue(dAlter.promise)
+    const wrapper = mount(TopicDetailDrawer, {
+      props: { connectionId: 'a', topic: 'user-log', show: true },
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="cfg-edit"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="cfg-edit"]').trigger('click')
+    await wrapper.find('[data-test="cfg-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.alterTopicConfig).toHaveBeenCalled()
+    })
+    // Switch the topic while the save is still in flight.
+    await wrapper.setProps({ topic: 'other' })
+    await vi.waitFor(() => {
+      expect(api.describeTopic).toHaveBeenCalledWith('a', 'other')
+    })
+    const callsBefore = (api.describeTopic as ReturnType<typeof vi.fn>).mock.calls.length
+    dAlter.resolve()
+    await flushPromises()
+    // The save's trailing load() is discarded: only the switch's own describe
+    // (for the new topic) is allowed.
+    expect((api.describeTopic as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore)
   })
 })
