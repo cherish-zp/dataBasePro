@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
-import type { AuditEntry } from '@/api/types'
+import type { AuditEntry, Connection } from '@/api/types'
 import SettingsPanel from './SettingsPanel.vue'
 
 const KEY = 'dbclient-theme'
@@ -15,7 +15,14 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     testConnection: vi.fn(async () => {}),
     connect: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),
-    getConnection: vi.fn(async () => ({}) as never),
+    getConnection: vi.fn(async (): Promise<Connection> => ({
+      id: 'c1',
+      name: 'local',
+      type: 'kafka',
+      config: { bootstrap_servers: ['localhost:9092'] },
+      created_at: 1,
+      updated_at: 1,
+    })),
     listTopics: vi.fn(async () => []),
     describeTopic: vi.fn(async () => ({ name: '', partitions: [], configs: [] })),
     describeCluster: vi.fn(async () => ({ cluster_id: '', controller_id: -1, kafka_version: '', brokers: [], under_replicated_partitions: 0 })),
