@@ -142,12 +142,13 @@ function onDocClick(e: MouseEvent): void {
 
 // onGlobalKeydown is the app-wide shortcut owner (registered once on mount,
 // removed on unmount): ⌘K toggles the command palette, ⌘R refreshes the active
-// tab, ⌘D closes it, and Escape closes the tab context menu. Every combo
-// guards against IME composition; ⌘R/⌘D are additionally ignored while focus
-// sits in an editable field so typing can never refresh or close a tab.
+// tab, ⌘D closes it, and Escape closes the tab context menu. Modifier combos
+// guard against IME composition; ⌘R/⌘D are additionally ignored while focus
+// sits in an editable field so typing can never refresh or close a tab. Escape
+// (no modifier) always processes, so the context menu can close even mid-IME.
 function onGlobalKeydown(e: KeyboardEvent): void {
-  if (e.isComposing || e.keyCode === 229) return
   const mod = e.metaKey || e.ctrlKey
+  if (mod && (e.isComposing || e.keyCode === 229)) return
   if (mod && e.key.toLowerCase() === 'k') {
     e.preventDefault()
     paletteRef.value?.toggle()
