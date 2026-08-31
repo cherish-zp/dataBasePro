@@ -45,6 +45,21 @@ const fetchSeqByConn: Record<string, number> = {}
 const kafkaConns = computed(() => connStore.connections.filter((c) => c.type === 'kafka'))
 const hasQuery = computed(() => query.value.trim().length > 0)
 
+// Prune per-connection caches when a connection is deleted, so stale entries
+// for removed connections never linger across the palette's app-session
+// lifetime (the palette stays mounted). fetchSeqByConn is pruned too: a stale
+// sequence could otherwise block a refetch if the id were ever reused.
+watch(
+  () => connStore.connections.map((c) => c.id),
+  (ids) => {
+    const keep = new Set(ids)
+    for (const key of Object.keys(entriesByConn)) if (!keep.has(key)) delete entriesByConn[key]
+    for (const key of Object.keys(loadingByConn)) if (!keep.has(key)) delete loadingByConn[key]
+    for (const key of Object.keys(errorByConn)) if (!keep.has(key)) delete errorByConn[key]
+    for (const key of Object.keys(fetchSeqByConn)) if (!keep.has(key)) delete fetchSeqByConn[key]
+  },
+)
+
 // results merges every cached connection's topics and groups that fuzzy-match
 // the query, sorted by ascending fuzzyScore (lower = better). Ties keep
 // insertion order: topics before groups, connections in store order.
