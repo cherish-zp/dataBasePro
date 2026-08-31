@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -415,5 +416,42 @@ func TestAppAuditsDeleteTopicsFailureDetailFull(t *testing.T) {
 	}
 	if want := joinFailureLines(failures); list[0].Detail != want {
 		t.Fatalf("detail must join all failures under the cap, got %q want %q", list[0].Detail, want)
+	}
+}
+
+// TestBatchProduceRequestJSONShape locks the wire shape of the batch produce
+// request (the type the frontend actually serializes). The model package's
+// former dead ProduceRequest copy was removed (BL-030); this test moved to the
+// binding package so snake_case coverage is not lost.
+func TestBatchProduceRequestJSONShape(t *testing.T) {
+	req := BatchProduceRequest{
+		ConnectionID: "c-1",
+		Topic:        "orders",
+		Partition:    -1,
+		Messages:     []model.BatchProduceMessage{{Key: "k", Value: "v"}},
+	}
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range []string{"connection_id", "topic", "partition", "messages"} {
+		if _, ok := raw[key]; !ok {
+			t.Fatalf("BatchProduceRequest JSON must expose snake_case key %q, got %s", key, b)
+		}
+	}
+	msgs, ok := raw["messages"].([]any)
+	if !ok || len(msgs) != 1 {
+		t.Fatalf("messages must marshal as an array, got %s", b)
+	}
+	first, _ := msgs[0].(map[string]any)
+	if _, ok := first["key"]; !ok {
+		t.Fatalf("batch message must expose key, got %s", b)
+	}
+	if _, ok := first["value"]; !ok {
+		t.Fatalf("batch message must expose value, got %s", b)
 	}
 }
