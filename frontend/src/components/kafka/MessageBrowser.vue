@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useBrowseStore } from '@/store/browse'
 import type { MessageQuery } from '@/store/browse'
 import { OffsetEarliest, OffsetLatest } from '@/api/types'
 import type { Message } from '@/api/types'
 import { formatTime, displayValue } from '@/utils/format'
 import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
+import ExportDropdown from '@/components/common/ExportDropdown.vue'
 import MessageDetailDrawer from './MessageDetailDrawer.vue'
 
 const props = withDefaults(
@@ -128,30 +129,15 @@ function closeDetail(): void {
   store.select(props.tabId, null)
 }
 
-// Export dropdown: disabled while empty, downloads the currently loaded rows.
-const exportOpen = ref(false)
-const exportRoot = ref<HTMLElement | null>(null)
-
-// exportAs downloads the loaded messages in the picked format and closes the
-// menu.
+// exportAs downloads the loaded messages in the picked format. The dropdown
+// component owns its open state and outside-click closing.
 function exportAs(format: 'csv' | 'jsonl'): void {
-  exportOpen.value = false
   if (format === 'csv') {
     downloadFile(`messages-${props.topic}`, exportCsv(st.value.messages, MESSAGE_EXPORT_COLUMNS), CSV_MIME)
   } else {
     downloadFile(`messages-${props.topic}`, exportJsonl(st.value.messages), JSONL_MIME)
   }
 }
-
-// onDocClick closes the export menu on clicks landing outside of it.
-function onDocClick(e: MouseEvent): void {
-  if (exportOpen.value && exportRoot.value && !exportRoot.value.contains(e.target as Node)) {
-    exportOpen.value = false
-  }
-}
-
-onMounted(() => document.addEventListener('click', onDocClick))
-onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
 watch(
   () => [props.connectionId, props.topic],
@@ -224,21 +210,7 @@ onMounted(runQuery)
       <div class="filter-actions">
         <button class="btn ghost" type="button" data-test="btn-open-sql" @click="emit('open-sql')">查询控制台</button>
         <button class="btn ghost" type="button" data-test="btn-open-producer" @click="emit('open-producer')">生产消息</button>
-        <div ref="exportRoot" class="export-menu" data-test="export-menu">
-          <button
-            class="btn ghost"
-            type="button"
-            data-test="export-toggle"
-            :disabled="st.messages.length === 0"
-            @click="exportOpen = !exportOpen"
-          >
-            导出 ▾
-          </button>
-          <div v-if="exportOpen" class="export-pop">
-            <button class="export-item" type="button" data-test="export-csv" @click="exportAs('csv')">CSV</button>
-            <button class="export-item" type="button" data-test="export-jsonl" @click="exportAs('jsonl')">JSONL</button>
-          </div>
-        </div>
+        <ExportDropdown :disabled="st.messages.length === 0" @export="exportAs" />
       </div>
     </div>
 
@@ -300,19 +272,6 @@ onMounted(runQuery)
 .filter-bar { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--bg-elevated); }
 .filter-item { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
 .filter-actions { margin-left: auto; display: flex; gap: 8px; align-items: flex-end; }
-.export-menu { position: relative; }
-.export-pop {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 110px;
-  display: flex; flex-direction: column; padding: 4px;
-  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
-}
-.export-item {
-  text-align: left; border: none; background: transparent; cursor: pointer;
-  color: var(--text); font-size: 13px; font-family: var(--font); padding: 7px 10px; border-radius: var(--radius-sm);
-  transition: background 0.1s ease;
-}
-.export-item:hover { background: var(--bg-hover); }
 .input {
   background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text);
   border-radius: 7px; padding: 6px 9px; font-size: 13px;

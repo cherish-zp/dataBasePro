@@ -6,6 +6,7 @@ import { OffsetEarliest } from '@/api/types'
 import { parseSelect, matchesWhere } from '@/utils/sql'
 import { formatTime, displayValue } from '@/utils/format'
 import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, downloadFile, exportCsv, exportJsonl } from '@/utils/export'
+import ExportDropdown from '@/components/common/ExportDropdown.vue'
 import { useSqlHistoryStore } from '@/store/sqlhistory'
 
 const props = defineProps<{
@@ -107,14 +108,9 @@ function onEditorKeydown(e: KeyboardEvent): void {
   }
 }
 
-// Export dropdown: disabled until a query produced rows.
-const exportOpen = ref(false)
-const exportRoot = ref<HTMLElement | null>(null)
-
-// exportAs downloads the current result rows in the picked format and closes
-// the menu.
+// exportAs downloads the current result rows in the picked format. The
+// dropdown component owns its open state and outside-click closing.
 function exportAs(format: 'csv' | 'jsonl'): void {
-  exportOpen.value = false
   if (format === 'csv') {
     downloadFile('query-results', exportCsv(results.value, MESSAGE_EXPORT_COLUMNS), CSV_MIME)
   } else {
@@ -163,11 +159,8 @@ watch(historyOpen, (open) => {
   }
 })
 
-// onDocClick closes either menu on clicks landing outside of it.
+// onDocClick closes the history menu on clicks landing outside of it.
 function onDocClick(e: MouseEvent): void {
-  if (exportOpen.value && exportRoot.value && !exportRoot.value.contains(e.target as Node)) {
-    exportOpen.value = false
-  }
   if (historyOpen.value && historyRoot.value && !historyRoot.value.contains(e.target as Node)) {
     historyOpen.value = false
   }
@@ -272,21 +265,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
     <div class="results-panel" data-test="sql-results">
       <div class="results-header">
         <span>查询结果（{{ results.length }} 条）</span>
-        <div ref="exportRoot" class="export-menu" data-test="export-menu">
-          <button
-            class="btn ghost"
-            type="button"
-            data-test="export-toggle"
-            :disabled="results.length === 0"
-            @click="exportOpen = !exportOpen"
-          >
-            导出 ▾
-          </button>
-          <div v-if="exportOpen" class="export-pop">
-            <button class="export-item" type="button" data-test="export-csv" @click="exportAs('csv')">CSV</button>
-            <button class="export-item" type="button" data-test="export-jsonl" @click="exportAs('jsonl')">JSONL</button>
-          </div>
-        </div>
+        <ExportDropdown :disabled="results.length === 0" @export="exportAs" />
       </div>
       <div v-if="results.length" class="table-wrap">
         <table class="table">
@@ -363,19 +342,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .msg.err { background: var(--danger-soft); color: var(--danger); }
 .results-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 16px 16px; }
 .results-header { display: flex; align-items: center; gap: 12px; justify-content: space-between; font-size: 13px; font-weight: 600; padding: 6px 0 10px; }
-.export-menu { position: relative; font-weight: 400; }
-.export-pop {
-  position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 110px;
-  display: flex; flex-direction: column; padding: 4px;
-  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
-}
-.export-item {
-  text-align: left; border: none; background: transparent; cursor: pointer;
-  color: var(--text); font-size: 13px; font-family: var(--font); padding: 7px 10px; border-radius: var(--radius-sm);
-  transition: background 0.1s ease;
-}
-.export-item:hover { background: var(--bg-hover); }
 .history-menu { position: relative; }
 .history-pop {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 380px; max-width: 70vw;
