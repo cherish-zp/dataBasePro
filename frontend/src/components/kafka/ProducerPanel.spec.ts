@@ -138,6 +138,23 @@ describe('ProducerPanel', () => {
     expect(wrapper.find('[data-test="input-loop"]').exists()).toBe(true)
   })
 
+  it('shows a cap hint when the batch count exceeds COUNT_MAX', async () => {
+    const { wrapper } = mountPanel()
+    expect(wrapper.find('[data-test="count-cap-hint"]').exists()).toBe(false)
+    await wrapper.find('[data-test="input-count"]').setValue(COUNT_MAX + 10)
+    const hint = wrapper.find('[data-test="count-cap-hint"]')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain(String(COUNT_MAX))
+  })
+
+  it('hides the cap hint at or below COUNT_MAX', async () => {
+    const { wrapper } = mountPanel()
+    await wrapper.find('[data-test="input-count"]').setValue(COUNT_MAX)
+    expect(wrapper.find('[data-test="count-cap-hint"]').exists()).toBe(false)
+    await wrapper.find('[data-test="input-count"]').setValue(1)
+    expect(wrapper.find('[data-test="count-cap-hint"]').exists()).toBe(false)
+  })
+
   it('sends the same value N times in loop mode and shows the batch summary', async () => {
     const { wrapper, api } = mountPanel({
       produceMessages: vi.fn(async () => [
