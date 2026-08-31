@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/twmb/franz-go/pkg/kfake"
@@ -15,19 +16,22 @@ import (
 )
 
 func newTestApp(t *testing.T) *App {
+	return newTestAppWithFactory(t, service.ClientFactoryFunc(
+		func(ctx context.Context, cfg model.KafkaConfig) (service.KafkaDataSource, error) {
+			return kafka.NewClient("conn", cfg)
+		}),
+	)
+}
+
+func newTestAppWithFactory(t *testing.T, factory service.ClientFactory) *App {
 	t.Helper()
 	st, err := store.Open(t.TempDir()+"/config.db", "test-master")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	svc := service.NewService(st, service.ClientFactoryFunc(
-		func(ctx context.Context, cfg model.KafkaConfig) (service.KafkaDataSource, error) {
-			return kafka.NewClient("conn", cfg)
-		}),
-	)
-	app := NewApp(svc)
-	return app
+	svc := service.NewService(st, factory)
+	return NewApp(svc)
 }
 
 func TestAppCreateAndListConnections(t *testing.T) {
@@ -253,5 +257,163 @@ func TestAppEndToEnd(t *testing.T) {
 
 	if err := app.Disconnect(conn.ID); err != nil {
 		t.Fatalf("Disconnect: %v", err)
+	}
+}
+
+// fakeBatchKafka implements KafkaDataSource for DeleteTopics audit tests; every
+// operation besides DeleteTopics is inert so the fake runs fully in the sandbox
+// (no kfake loopback binding).
+type fakeBatchKafka struct {
+	failures []*model.TopicDeleteResult
+}
+
+func (f *fakeBatchKafka) Connect(context.Context) error { return nil }
+func (f *fakeBatchKafka) Close() error                  { return nil }
+func (f *fakeBatchKafka) GetName() string               { return "fake" }
+func (f *fakeBatchKafka) GetType() string               { return string(model.ConnectionTypeKafka) }
+func (f *fakeBatchKafka) ListTopics(context.Context) ([]*model.Topic, error) {
+	return nil, nil
+}
+func (f *fakeBatchKafka) DescribeTopic(context.Context, string) (*model.TopicDetail, error) {
+	return nil, nil
+}
+func (f *fakeBatchKafka) AlterTopicConfig(context.Context, string, []model.TopicConfigEntry) error {
+	return nil
+}
+func (f *fakeBatchKafka) DescribeCluster(context.Context) (*model.ClusterHealth, error) {
+	return nil, nil
+}
+func (f *fakeBatchKafka) CreateTopic(context.Context, string, int32, int16) error { return nil }
+func (f *fakeBatchKafka) DeleteTopic(context.Context, string) error               { return nil }
+func (f *fakeBatchKafka) DeleteTopics(_ context.Context, _ []string) ([]*model.TopicDeleteResult, error) {
+	return f.failures, nil
+}
+func (f *fakeBatchKafka) DeleteConsumerGroup(context.Context, string) error { return nil }
+func (f *fakeBatchKafka) ListConsumerGroups(context.Context) ([]*model.ConsumerGroup, error) {
+	return nil, nil
+}
+func (f *fakeBatchKafka) DescribeGroup(context.Context, string) (*model.GroupDetail, error) {
+	return nil, nil
+}
+func (f *fakeBatchKafka) ConsumeMessages(context.Context, string, int32, int64, int) ([]*model.Message, error) {
+	return nil, nil
+}
+func (f *fakeBatchKafka) ConsumeMessagesByTimestamp(context.Context, string, int32, int64, int) ([]*model.Message, error) {
+	return nil, nil
+}
+func (f *fakeBatchKafka) GetPartitionLag(context.Context, string, string) (map[int32]int64, error) {
+	return nil, nil
+}
+func (f *fakeBatchKafka) ListActiveProducers(context.Context, string) ([]*model.ActiveProducer, error) {
+	return nil, nil
+}
+func (f *fakeBatchKafka) ListActiveConsumers(context.Context, string, string) ([]*model.ActiveConsumer, error) {
+	return nil, nil
+}
+func (f *fakeBatchKafka) ResetConsumerGroupOffset(context.Context, string, string, model.ResetOffsetMode, int64) error {
+	return nil
+}
+func (f *fakeBatchKafka) ProduceMessage(context.Context, string, int32, []byte, []byte) error {
+	return nil
+}
+func (f *fakeBatchKafka) ProduceMessages(context.Context, string, int32, []model.BatchProduceMessage) ([]*model.ProduceResult, error) {
+	return nil, nil
+}
+
+// joinFailureLines renders the audit detail text the app is expected to write
+// for the given per-topic failures (mirror of the production join).
+func joinFailureLines(rs []*model.TopicDeleteResult) string {
+	lines := make([]string, 0, len(rs))
+	for _, r := range rs {
+		lines = append(lines, fmt.Sprintf("%s: %s", r.Name, r.Error))
+	}
+	return strings.Join(lines, "; ")
+}
+
+func TestAppAuditsDeleteTopicsFailureDetailCapped(t *testing.T) {
+	fake := &fakeBatchKafka{}
+	app := newTestAppWithFactory(t, service.ClientFactoryFunc(
+		func(context.Context, model.KafkaConfig) (service.KafkaDataSource, error) { return fake, nil },
+	))
+	conn, err := app.CreateConnection(&model.Connection{
+		Name:   "local",
+		Type:   model.ConnectionTypeKafka,
+		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConnection: %v", err)
+	}
+
+	names := make([]string, 0, 15)
+	failures := make([]*model.TopicDeleteResult, 0, 15)
+	for i := 0; i < 15; i++ {
+		name := fmt.Sprintf("t%02d", i)
+		names = append(names, name)
+		failures = append(failures, &model.TopicDeleteResult{Name: name, Error: "delete failed"})
+	}
+	fake.failures = failures
+
+	results, err := app.DeleteTopics(DeleteTopicsRequest{ConnectionID: conn.ID, Names: names})
+	if err != nil {
+		t.Fatalf("DeleteTopics: %v", err)
+	}
+	if len(results) != 15 {
+		t.Fatalf("expected 15 results, got %d", len(results))
+	}
+
+	list, err := app.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	// Newest first: [0] delete_topics, [1] create_connection.
+	if len(list) != 2 {
+		t.Fatalf("expected 2 audit entries, got %d", len(list))
+	}
+	e := list[0]
+	if e.Action != "delete_topics" || e.Result != "error" {
+		t.Fatalf("unexpected delete_topics audit: %+v", e)
+	}
+	want := joinFailureLines(failures[:10]) + "…"
+	if e.Detail != want {
+		t.Fatalf("detail must cap at 10 failures with ellipsis, got %q want %q", e.Detail, want)
+	}
+}
+
+func TestAppAuditsDeleteTopicsFailureDetailFull(t *testing.T) {
+	fake := &fakeBatchKafka{}
+	app := newTestAppWithFactory(t, service.ClientFactoryFunc(
+		func(context.Context, model.KafkaConfig) (service.KafkaDataSource, error) { return fake, nil },
+	))
+	conn, err := app.CreateConnection(&model.Connection{
+		Name:   "local",
+		Type:   model.ConnectionTypeKafka,
+		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConnection: %v", err)
+	}
+
+	names := make([]string, 0, 5)
+	failures := make([]*model.TopicDeleteResult, 0, 5)
+	for i := 0; i < 5; i++ {
+		name := fmt.Sprintf("t%02d", i)
+		names = append(names, name)
+		failures = append(failures, &model.TopicDeleteResult{Name: name, Error: "delete failed"})
+	}
+	fake.failures = failures
+
+	if _, err := app.DeleteTopics(DeleteTopicsRequest{ConnectionID: conn.ID, Names: names}); err != nil {
+		t.Fatalf("DeleteTopics: %v", err)
+	}
+	list, err := app.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	// Newest first: [0] delete_topics, [1] create_connection.
+	if len(list) != 2 {
+		t.Fatalf("expected 2 audit entries, got %d", len(list))
+	}
+	if want := joinFailureLines(failures); list[0].Detail != want {
+		t.Fatalf("detail must join all failures under the cap, got %q want %q", list[0].Detail, want)
 	}
 }
