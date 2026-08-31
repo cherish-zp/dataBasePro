@@ -156,6 +156,30 @@ describe('GlobalLagView', () => {
     expect(wrapper.find('[data-test="lag-empty"]').text()).toBe('暂无 lag 数据')
   })
 
+  it('hides the empty placeholder while an error is shown', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="lag-error"]').text()).toContain('boom')
+    })
+    expect(wrapper.find('[data-test="lag-empty"]').exists()).toBe(false)
+  })
+
+  it('shows the empty placeholder again once the error clears', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce([])
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="lag-error"]').text()).toContain('boom')
+    })
+    expect(wrapper.find('[data-test="lag-empty"]').exists()).toBe(false)
+    await wrapper.find('[data-test="btn-refresh"]').trigger('click')
+    await loadDone(wrapper)
+    expect(wrapper.find('[data-test="lag-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="lag-empty"]').text()).toBe('暂无 lag 数据')
+  })
+
   it('surfaces api errors instead of failing silently', async () => {
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
     const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })

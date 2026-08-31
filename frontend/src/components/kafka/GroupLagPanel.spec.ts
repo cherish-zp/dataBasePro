@@ -78,6 +78,20 @@ describe('GroupLagPanel', () => {
     expect(rowsEls[1].find('[data-test="dry-run-new-offset"]').text()).toBe('—')
   })
 
+  it('disables confirm-reset when the preview is empty and never emits', async () => {
+    const wrapper = mount(GroupLagPanel, { props: { rows, loading: false, preview: [] } })
+    const btn = wrapper.find('[data-test="btn-confirm-reset"]')
+    expect(btn.attributes('disabled')).toBeDefined()
+    await btn.trigger('click')
+    expect(wrapper.emitted('confirm-reset')).toBeUndefined()
+  })
+
+  it('keeps confirm-reset enabled when the preview has rows', () => {
+    const preview: ResetPreviewRow[] = [{ partition: 0, current_offset: 10, new_offset: 20 }]
+    const wrapper = mount(GroupLagPanel, { props: { rows, loading: false, preview } })
+    expect(wrapper.find('[data-test="btn-confirm-reset"]').attributes('disabled')).toBeUndefined()
+  })
+
   it('emits confirm-reset and cancel-preview from the preview actions', async () => {
     const preview: ResetPreviewRow[] = [{ partition: 0, current_offset: 10, new_offset: 20 }]
     const wrapper = mount(GroupLagPanel, { props: { rows, loading: false, preview } })
