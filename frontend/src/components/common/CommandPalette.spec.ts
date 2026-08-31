@@ -184,6 +184,28 @@ describe('CommandPalette', () => {
     expect(api.listConsumerGroups).not.toHaveBeenCalledWith('m')
   })
 
+  it('prunes cached entries when a connection is deleted', async () => {
+    const { wrapper } = await openLoaded([conn('a'), conn('b')])
+    const vm = wrapper.vm as unknown as {
+      entriesByConn: Record<string, unknown>
+      loadingByConn: Record<string, unknown>
+      errorByConn: Record<string, unknown>
+    }
+    // Both connections have been fetched and cached on first open.
+    expect(vm.entriesByConn).toHaveProperty('a')
+    expect(vm.entriesByConn).toHaveProperty('b')
+
+    const connStore = useConnectionsStore()
+    await connStore.remove('b')
+    await nextTick()
+
+    // The deleted connection's cache is pruned; the surviving one is kept.
+    expect(vm.entriesByConn).not.toHaveProperty('b')
+    expect(vm.loadingByConn).not.toHaveProperty('b')
+    expect(vm.errorByConn).not.toHaveProperty('b')
+    expect(vm.entriesByConn).toHaveProperty('a')
+  })
+
   it('shows a per-connection loading note until its entries arrive', async () => {
     const pending = deferred<Topic[]>()
     const { wrapper } = mountPalette([conn('a'), conn('b')], {
