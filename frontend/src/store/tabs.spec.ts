@@ -36,6 +36,18 @@ describe('tabs store', () => {
     expect(store.activeTabId).toBe(tab.id)
   })
 
+  it('carries the topic into a new group tab and updates it on reopen', () => {
+    // Lag 总览行点击:同一组永远只有一个 tab(Group 唯一定位),
+    // Topic 作为 tab 内的初始选中项带入;重复打开更新 topic 而非新开。
+    const store = useTabsStore()
+    const first = store.openGroup('conn-1', 'grp-1', 'topic-a')
+    expect(first.topic).toBe('topic-a')
+    const second = store.openGroup('conn-1', 'grp-1', 'topic-b')
+    expect(second.id).toBe(first.id)
+    expect(store.openTabs).toHaveLength(1)
+    expect(second.topic).toBe('topic-b')
+  })
+
   it('closes a tab and falls back to a neighbour', () => {
     const store = useTabsStore()
     store.openTopic('conn-1', 'a')

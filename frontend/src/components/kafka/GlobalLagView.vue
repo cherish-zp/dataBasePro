@@ -10,6 +10,9 @@ const props = withDefaults(
   { refreshRequest: 0 },
 )
 
+// 行点击跳转:组定位消费组 tab,Topic 作为初始选中项带入(消费组详情)。
+const emit = defineEmits<{ (e: 'open-group-lag', group: string, topic: string): void }>()
+
 const groups = ref<ConsumerGroup[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -109,7 +112,14 @@ function emptyText(): string {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="r in rows" :key="`${r.group}:${r.topic}`" class="row" data-test="lag-row">
+        <tr
+          v-for="r in rows"
+          :key="`${r.group}:${r.topic}`"
+          class="row clickable"
+          data-test="lag-row"
+          :title="`查看 ${r.group} / ${r.topic} 消费详情`"
+          @click="emit('open-group-lag', r.group, r.topic)"
+        >
           <td class="mono" data-test="row-group">{{ r.group }}</td>
           <td class="mono" data-test="row-topic">{{ r.topic }}</td>
           <td class="mono" :class="{ 'lag-danger': r.lag > 1000, 'lag-warn': r.lag > 100 && r.lag <= 1000 }" data-test="lag-value">{{ r.lag }}</td>
@@ -153,6 +163,8 @@ function emptyText(): string {
   font-weight: 600; border-bottom: 1px solid var(--border); background: var(--bg-subtle);
 }
 .table td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
+.row.clickable { cursor: pointer; }
+.row.clickable:hover td { background: var(--bg-hover); }
 .mono { font-family: var(--mono); }
 .lag-danger { color: var(--danger); font-weight: 600; }
 .lag-warn { color: var(--warn); font-weight: 600; }

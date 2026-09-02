@@ -60,11 +60,12 @@ export const useTabsStore = defineStore('tabs', () => {
     return tab
   }
 
-  function openGroup(connectionId: string, group: string): Tab {
+  function openGroup(connectionId: string, group: string, topic?: string): Tab {
     const existing = openTabs.value.find(
       (t) => t.kind === 'group' && t.connectionId === connectionId && t.group === group,
     )
     if (existing) {
+      if (topic) existing.topic = topic
       activeTabId.value = existing.id
       return existing
     }
@@ -74,6 +75,7 @@ export const useTabsStore = defineStore('tabs', () => {
       title: group,
       connectionId,
       group,
+      topic,
     }
     openTabs.value.push(tab)
     activeTabId.value = tab.id

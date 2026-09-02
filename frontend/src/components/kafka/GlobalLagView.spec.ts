@@ -41,6 +41,11 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     resetConsumerGroupOffset: vi.fn(async () => {}),
     previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
+        checkUpdate: vi.fn(async () => ({ has_update: false, latest_version: 'v1.0.0' })),
+        downloadUpdate: vi.fn(async () => {}),
+        applyUpdate: vi.fn(async () => {}),
+        updateProgress: vi.fn(async () => ({ phase: 'idle' as const, percent: 0 })),
+        openURL: vi.fn(async () => {}),
     saveTextFile: vi.fn(async () => ''),
     updateConnection: vi.fn(async () => ({}) as never),
     createTopic: vi.fn(async () => {}),
@@ -265,6 +270,18 @@ describe('GlobalLagView', () => {
     dB.resolve([grp('g-b', { 'orders-b': [part(20)] })])
     await flushPromises()
     expect(rowsOf(wrapper)).toEqual([['g-b', 'orders-b']])
+  })
+  it('emits open-group-lag with group and topic when a row is clicked', async () => {
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([
+      grp('g-a', { orders: [part(150)], events: [part(2)] }),
+    ])
+    const wrapper = mount(GlobalLagView, { props: { connectionId: 'a' } })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    // 单击行即跳转:组定位 tab,Topic 作为初始选中项带入。
+    await wrapper.findAll('[data-test="lag-row"]')[1].trigger('click')
+    expect(wrapper.emitted('open-group-lag')?.[0]).toEqual(['g-a', 'events'])
   })
 })
 

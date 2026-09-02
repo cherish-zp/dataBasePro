@@ -31,6 +31,11 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     resetConsumerGroupOffset: vi.fn(async () => {}),
     previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
+        checkUpdate: vi.fn(async () => ({ has_update: false, latest_version: 'v1.0.0' })),
+        downloadUpdate: vi.fn(async () => {}),
+        applyUpdate: vi.fn(async () => {}),
+        updateProgress: vi.fn(async () => ({ phase: 'idle' as const, percent: 0 })),
+        openURL: vi.fn(async () => {}),
     saveTextFile: vi.fn(async () => ''),
     updateConnection: vi.fn(async () => ({}) as never),
     createTopic: vi.fn(async () => {}),
@@ -124,6 +129,27 @@ describe('ConsumerGroupView', () => {
     const lags = wrapper.findAll('[data-test="lag-value"]').map((n) => n.text())
     expect(lags).toEqual(['10', '0'])
     expect(wrapper.find('[data-test="lag-empty"]').exists()).toBe(false)
+  })
+
+  it('preselects the topic carried in from the Lag overview', async () => {
+    // Lag 总览行点击跳转:Topic 作为初始选中项带入(组内第一个 topic 不再
+    // 是默认)。events 是组内第二个 topic,传入后必须选中它。
+    const g: ConsumerGroup = {
+      name: 'grp-1',
+      state: 'Stable',
+      topics: {
+        'orders': [{ partition: 0, current_offset: 10, log_end_offset: 20, lag: 10 }],
+        'events': [{ partition: 1, current_offset: 15, log_end_offset: 18, lag: 3 }],
+      },
+    }
+    const { wrapper } = mountView(
+      { listConsumerGroups: vi.fn(async () => [g]) },
+      { topic: 'events' },
+    )
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(1)
+    })
+    expect(wrapper.find('[data-test="field-topic"]').text()).toContain('events')
   })
 
   it('explains empty member columns when the group is not Stable', async () => {

@@ -9,8 +9,15 @@ import ActiveProducersPanel from './ActiveProducersPanel.vue'
 import LagTrend from './LagTrend.vue'
 
 const props = withDefaults(
-  defineProps<{ tabId: string; connectionId: string; group?: string; refreshRequest?: number }>(),
-  { refreshRequest: 0 },
+  defineProps<{
+    tabId: string
+    connectionId: string
+    group?: string
+    /** Lag 总览行跳转带入的初始 Topic(仅决定选中项,不参与 tab 唯一性)。 */
+    topic?: string | null
+    refreshRequest?: number
+  }>(),
+  { refreshRequest: 0, topic: null },
 )
 
 const store = useGroupsStore()
@@ -38,7 +45,8 @@ function pickGroup(name: string): void {
   selectedGroup.value = name
   const g = groups.value.find((x) => x.name === name)
   const ts = g ? Object.keys(g.topics ?? {}) : []
-  selectedTopic.value = ts[0] ?? null
+  // 外部带入的 topic(Lag 总览跳转)优先,仅当它属于该组时生效。
+  selectedTopic.value = props.topic && ts.includes(props.topic) ? props.topic : ts[0] ?? null
 }
 
 async function syncMembers(): Promise<void> {
@@ -75,6 +83,15 @@ async function refresh(): Promise<void> {
 watch(selectedGroup, (name) => {
   if (name) pickGroup(name)
 })
+
+// 同一组的 tab 已打开时组件实例复用:再次从 Lag 总览点击不同 Topic 行,
+// 直接切换选中 Topic(布局不重建,靠 props 驱动)。
+watch(
+  () => props.topic,
+  (t) => {
+    if (t) selectedTopic.value = t
+  },
+)
 
 watch([selectedGroup, selectedTopic], syncMembers)
 
