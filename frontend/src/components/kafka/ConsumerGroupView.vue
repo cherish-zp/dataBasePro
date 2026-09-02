@@ -208,6 +208,12 @@ onMounted(refresh)
       title="Lag 趋势"
     />
 
+    <!-- 非 Stable 组没有活跃成员:broker 不返回 member 信息,Lag 表三列
+         为空属正常,必须说明否则用户会当成 bug。 -->
+    <div v-if="group && group.state !== 'Stable'" class="msg warn" data-test="lag-member-note">
+      消费组当前状态 {{ group.state }}：无活跃成员，Lag 表的 Host / Consumer ID / Client ID 列为空属正常现象；位移与 Lag 数值不受影响。
+    </div>
+
     <GroupLagPanel :rows="lags" :loading="st.loading" :preview="previewRows" @confirm-reset="confirmReset" @cancel-preview="previewRows = null" />
 
     <ActiveProducersPanel :producers="producers" :note="producersNote" :loading="membersLoading" />
@@ -276,6 +282,7 @@ onMounted(refresh)
 .btn.danger:hover:not(:disabled) { background: rgba(217, 119, 6, 0.2); }
 .msg { padding: 8px 10px; font-size: 13px; margin-top: 8px; border-radius: 7px; }
 .msg.err { background: var(--danger-soft); color: var(--danger); }
+.msg.warn { background: var(--warn-soft); color: var(--warn); margin-top: 10px; }
 .reset-panel { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 .reset-title { font-weight: 600; font-size: 13px; color: var(--text); padding-bottom: 6px; }
 .members-panel { margin-top: 14px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }

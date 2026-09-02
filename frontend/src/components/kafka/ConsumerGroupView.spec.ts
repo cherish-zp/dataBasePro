@@ -126,6 +126,31 @@ describe('ConsumerGroupView', () => {
     expect(wrapper.find('[data-test="lag-empty"]').exists()).toBe(false)
   })
 
+  it('explains empty member columns when the group is not Stable', async () => {
+    // Empty/Dead 组:位移仍在但无活跃成员,Host/Consumer ID/Client ID 为空
+    // 是 broker 的正常行为——页面必须说明这一点,否则用户会当成 bug。
+    const g: ConsumerGroup = {
+      name: 'grp-1',
+      state: 'Empty',
+      topics: { 'orders': [{ partition: 0, current_offset: 10, log_end_offset: 20, lag: 10 }] },
+    }
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [g]) })
+    await vi.waitFor(() => {
+      const note = wrapper.find('[data-test="lag-member-note"]')
+      expect(note.exists()).toBe(true)
+      expect(note.text()).toContain('Empty')
+      expect(note.text()).toContain('无活跃成员')
+    })
+  })
+
+  it('hides the member note while the group is Stable', async () => {
+    const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [grp()]) })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="lag-row"]')).toHaveLength(2)
+    })
+    expect(wrapper.find('[data-test="lag-member-note"]').exists()).toBe(false)
+  })
+
   it('shows an empty state when there is no lag', async () => {
     const g: ConsumerGroup = { name: 'grp-1', state: 'Empty', topics: {} }
     const { wrapper } = mountView({ listConsumerGroups: vi.fn(async () => [g]) })
