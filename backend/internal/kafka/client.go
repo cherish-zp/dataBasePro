@@ -13,6 +13,7 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/sasl"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
 	"github.com/twmb/franz-go/pkg/sasl/scram"
 
@@ -46,7 +47,7 @@ func NewClient(name string, cfg model.KafkaConfig) (*Client, error) {
 }
 
 // clientOpts translates a model.KafkaConfig into kgo options, wiring up SASL
-// and TLS when configured.
+// and TLS per the effective security protocol.
 func clientOpts(cfg model.KafkaConfig) ([]kgo.Opt, error) {
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.BootstrapServers...),
@@ -55,21 +56,18 @@ func clientOpts(cfg model.KafkaConfig) ([]kgo.Opt, error) {
 		// would hash by key and ignore it.
 		kgo.RecordPartitioner(kgo.ManualPartitioner()),
 	}
-	if cfg.SASL != nil && cfg.SASL.Enabled {
-		mech := strings.ToUpper(strings.TrimSpace(cfg.SASL.Mechanism))
-		auth := scram.Auth{User: cfg.SASL.Username, Pass: cfg.SASL.Password}
-		switch mech {
-		case model.SaslPlain:
-			opts = append(opts, kgo.SASL(plain.Auth{User: cfg.SASL.Username, Pass: cfg.SASL.Password}.AsMechanism()))
-		case model.SaslScramSha256:
-			opts = append(opts, kgo.SASL(auth.AsSha256Mechanism()))
-		case model.SaslScramSha512:
-			opts = append(opts, kgo.SASL(auth.AsSha512Mechanism()))
-		default:
-			return nil, fmt.Errorf("unsupported SASL mechanism %q", cfg.SASL.Mechanism)
+	protocol := cfg.EffectiveSecurityProtocol()
+	if protocol == model.SecurityProtocolSASLPlain || protocol == model.SecurityProtocolSASLSSL {
+		if cfg.SASL == nil || !cfg.SASL.Enabled {
+			return nil, fmt.Errorf("security protocol %s 需要 SASL 配置", protocol)
 		}
+		mech, err := saslMechanism(*cfg.SASL)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, kgo.SASL(mech))
 	}
-	if cfg.TLS != nil && cfg.TLS.Enabled {
+	if protocol == model.SecurityProtocolSASLSSL || protocol == model.SecurityProtocolSSL {
 		tlsCfg, err := buildTLSConfig(cfg.TLS)
 		if err != nil {
 			return nil, err
@@ -77,6 +75,24 @@ func clientOpts(cfg model.KafkaConfig) ([]kgo.Opt, error) {
 		opts = append(opts, kgo.DialTLSConfig(tlsCfg))
 	}
 	return opts, nil
+}
+
+// saslMechanism builds the franz-go SASL mechanism for the configured one.
+// GSSAPI defers to the kerberos handshaker (gokrb5 in production).
+func saslMechanism(cfg model.SASLConfig) (sasl.Mechanism, error) {
+	mech := strings.ToUpper(strings.TrimSpace(cfg.Mechanism))
+	switch mech {
+	case model.SaslPlain:
+		return plain.Auth{User: cfg.Username, Pass: cfg.Password}.AsMechanism(), nil
+	case model.SaslScramSha256:
+		return scram.Auth{User: cfg.Username, Pass: cfg.Password}.AsSha256Mechanism(), nil
+	case model.SaslScramSha512:
+		return scram.Auth{User: cfg.Username, Pass: cfg.Password}.AsSha512Mechanism(), nil
+	case model.SaslGssapi:
+		return &kerberosMechanism{newHandshaker: newGokrb5HandshakerFactory(cfg)}, nil
+	default:
+		return nil, fmt.Errorf("unsupported SASL mechanism %q", cfg.Mechanism)
+	}
 }
 
 func buildTLSConfig(t *model.TLSConfig) (*tls.Config, error) {

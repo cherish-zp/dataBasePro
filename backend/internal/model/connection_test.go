@@ -77,7 +77,7 @@ func TestKafkaConfigValidate_InvalidSASLMechanism(t *testing.T) {
 		BootstrapServers: []string{"localhost:9092"},
 		SASL: &SASLConfig{
 			Enabled:   true,
-			Mechanism: "GSSAPI",
+			Mechanism: "FAKE-MECH",
 			Username:  "u",
 			Password:  "p",
 		},
