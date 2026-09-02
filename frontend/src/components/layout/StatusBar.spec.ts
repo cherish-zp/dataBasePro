@@ -4,6 +4,7 @@ import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import type { Connection } from '@/api/types'
 import { useConnectionsStore } from '@/store/connections'
+import { APP_VERSION } from '@/version'
 import StatusBar from './StatusBar.vue'
 
 const conn = (id: string): Connection => ({
@@ -14,6 +15,13 @@ const conn = (id: string): Connection => ({
 describe('StatusBar', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+  })
+
+  it('shows the app version so users can verify which build is running', () => {
+    const wrapper = mount(StatusBar)
+    const version = wrapper.find('[data-test="status-version"]').text()
+    expect(version).toMatch(/^v\d+\.\d+\.\d+/)
+    expect(version).toBe(`v${APP_VERSION}`)
   })
 
   it('renders zero counts and no error segment for an empty store', () => {
