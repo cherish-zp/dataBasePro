@@ -184,6 +184,99 @@ func TestCreateConnectionValidates(t *testing.T) {
 	}
 }
 
+func TestUpdateConnectionPersistsChanges(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	c, err := svc.CreateConnection(ctx, sampleConn())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	createdAt, updatedAt := c.CreatedAt, c.UpdatedAt
+
+	c.Name = "renamed"
+	c.Config.BootstrapServers = []string{"broker-a:9092", "broker-b:9092"}
+	if err := svc.UpdateConnection(ctx, c); err != nil {
+		t.Fatalf("UpdateConnection: %v", err)
+	}
+	if c.ID == "" || c.CreatedAt != createdAt {
+		t.Fatalf("update must keep id and created_at: id=%q created=%d/%d", c.ID, c.CreatedAt, createdAt)
+	}
+	if c.UpdatedAt < updatedAt {
+		t.Fatalf("updated_at must be refreshed: %d < %d", c.UpdatedAt, updatedAt)
+	}
+	got, err := svc.store.GetConnection(c.ID)
+	if err != nil {
+		t.Fatalf("get after update: %v", err)
+	}
+	if got.Name != "renamed" || len(got.Config.BootstrapServers) != 2 {
+		t.Fatalf("changes not persisted: %+v", got)
+	}
+}
+
+func TestUpdateConnectionValidates(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	c, err := svc.CreateConnection(ctx, sampleConn())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	bad := *c
+	bad.Name = ""
+	if err := svc.UpdateConnection(ctx, &bad); err == nil {
+		t.Fatal("invalid connection must be rejected")
+	}
+	badCfg := *c
+	badCfg.Config.BootstrapServers = nil
+	if err := svc.UpdateConnection(ctx, &badCfg); err == nil {
+		t.Fatal("invalid config must be rejected")
+	}
+	// The stored connection must still hold the original values.
+	got, err := svc.store.GetConnection(c.ID)
+	if err != nil {
+		t.Fatalf("get after rejected update: %v", err)
+	}
+	if got.Name != "local" || len(got.Config.BootstrapServers) != 1 {
+		t.Fatalf("rejected update must not touch the stored row: %+v", got)
+	}
+}
+
+func TestUpdateConnectionUnknownID(t *testing.T) {
+	svc, _ := newTestService(t)
+	c := sampleConn()
+	c.ID = "nope"
+	if err := svc.UpdateConnection(context.Background(), c); err == nil {
+		t.Fatal("updating a missing connection must fail")
+	}
+}
+
+func TestUpdateConnectionEvictsPooledClient(t *testing.T) {
+	svc, f := newTestService(t)
+	ctx := context.Background()
+	c, err := svc.CreateConnection(ctx, sampleConn())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := svc.ListTopics(ctx, c.ID); err != nil {
+		t.Fatalf("auto-connect: %v", err)
+	}
+	if _, err := svc.pool.Get(c.ID); err != nil {
+		t.Fatal("client should be pooled after auto-connect")
+	}
+	if err := svc.UpdateConnection(ctx, c); err != nil {
+		t.Fatalf("UpdateConnection: %v", err)
+	}
+	if _, err := svc.pool.Get(c.ID); err == nil {
+		t.Fatal("pooled client must be evicted after update")
+	}
+	// The next operation must build a fresh client from the edited config.
+	if _, err := svc.ListTopics(ctx, c.ID); err != nil {
+		t.Fatalf("list after update: %v", err)
+	}
+	if f.count() != 2 {
+		t.Fatalf("expected a second client build after eviction, got %d", f.count())
+	}
+}
+
 func TestTestConnection(t *testing.T) {
 	svc, f := newTestService(t)
 	if err := svc.TestConnection(context.Background(), sampleConn().Config); err != nil {

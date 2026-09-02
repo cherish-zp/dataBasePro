@@ -38,6 +38,23 @@ func (s *Service) CreateConnection(ctx context.Context, c *model.Connection) (*m
 	return c, nil
 }
 
+// UpdateConnection validates and overwrites an existing connection definition,
+// keeping its id and created_at while the store refreshes updated_at. The
+// pooled client still holds the old config, so it is evicted and closed: the
+// next operation reconnects with the edited settings.
+func (s *Service) UpdateConnection(ctx context.Context, c *model.Connection) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if err := s.store.UpdateConnection(c); err != nil {
+		return fmt.Errorf("update connection: %w", err)
+	}
+	if ds, err := s.pool.Remove(c.ID); err == nil {
+		_ = ds.Close()
+	}
+	return nil
+}
+
 // ListConnections returns every stored connection definition.
 func (s *Service) ListConnections(ctx context.Context) ([]*model.Connection, error) {
 	return s.store.ListConnections()

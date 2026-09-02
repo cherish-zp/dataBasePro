@@ -37,6 +37,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
     saveTextFile: vi.fn(async () => ''),
+    updateConnection: vi.fn(async () => ({}) as never),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
     deleteTopics: vi.fn(async () => []),
@@ -226,6 +227,12 @@ describe('Layout', () => {
     const { wrapper } = mountLayout([conn('a')])
     emitTree(wrapper, 'new')
     expect(wrapper.emitted('new')).toBeTruthy()
+  })
+
+  it('emits edit-connection with the connection when requested', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'edit-connection', conn('a'))
+    expect(wrapper.emitted('edit-connection')?.[0]).toEqual([conn('a')])
   })
   it('renders a draggable divider between the sidebar and the workspace', () => {
     const { wrapper } = mountLayout([conn('a')])

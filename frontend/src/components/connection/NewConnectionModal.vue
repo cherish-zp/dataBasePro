@@ -1,20 +1,26 @@
 <script setup lang="ts">
-import { reactive, ref, computed } from 'vue'
+import { reactive, ref, computed, watch } from 'vue'
 import { useConnectionsStore } from '@/store/connections'
-import type { KafkaConfig, SASLConfig } from '@/api/types'
+import type { Connection, KafkaConfig, SASLConfig, TLSConfig } from '@/api/types'
 
-const props = defineProps<{ show: boolean }>()
+const props = defineProps<{ show: boolean; connection?: Connection | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const store = useConnectionsStore()
 
+const SECURITY_PROTOCOLS = ['PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'] as const
+
 const form = reactive({
   name: '',
   brokers: '',
-  saslEnabled: false,
+  securityProtocol: 'PLAINTEXT',
   mechanism: 'PLAIN',
   username: '',
   password: '',
+  principal: '',
+  keytabPath: '',
+  krb5ConfPath: '',
+  serviceName: 'kafka',
   caCert: '',
   insecureSkipVerify: false,
 })
@@ -23,16 +29,86 @@ const tested = ref(false)
 const testError = ref<string | null>(null)
 const saveError = ref<string | null>(null)
 
-const brokers = computed(() => form.brokers.split(',').map((s) => s.trim()).filter(Boolean))
-const sasl = computed<SASLConfig | undefined>(() =>
-  form.saslEnabled ? { enabled: true, mechanism: form.mechanism, username: form.username, password: form.password } : undefined,
+const editing = computed(() => !!props.connection)
+
+const isSasl = computed(() => form.securityProtocol.startsWith('SASL_'))
+const isTLS = computed(() => form.securityProtocol.endsWith('_SSL'))
+const isGssapi = computed(() => isSasl.value && form.mechanism === 'GSSAPI')
+
+// envDefaults 由部署环境的 DS_KAFKA_* 变量提供 Kerberos 预填值
+// (新建连接时的初始默认,可覆盖)。
+function envDefault(key: string): string {
+  const v = process.env[key]
+  return typeof v === 'string' ? v : ''
+}
+
+// fillFrom 用已有连接预填表单。旧配置缺 security_protocol 时按
+// sasl/tls 布尔推导(sasl.enabled→SASL_PLAINTEXT, tls.enabled→SSL,
+// 两者→SASL_SSL, 否则 PLAINTEXT),与后端 EffectiveSecurityProtocol 一致。
+function fillFrom(conn: Connection): void {
+  const sasl = conn.config.sasl
+  const tls = conn.config.tls
+  form.name = conn.name
+  form.brokers = conn.config.bootstrap_servers.join(', ')
+  form.securityProtocol = conn.config.security_protocol
+    || (sasl?.enabled && tls?.enabled ? 'SASL_SSL' : sasl?.enabled ? 'SASL_PLAINTEXT' : tls?.enabled ? 'SSL' : 'PLAINTEXT')
+  form.mechanism = sasl?.mechanism || 'PLAIN'
+  form.username = sasl?.username ?? ''
+  form.password = sasl?.password ?? ''
+  form.principal = sasl?.principal ?? ''
+  form.keytabPath = sasl?.keytab_path ?? ''
+  form.krb5ConfPath = sasl?.krb5_conf_path ?? ''
+  form.serviceName = sasl?.service_name || 'kafka'
+  form.caCert = tls?.ca_cert ?? ''
+  form.insecureSkipVerify = !!tls?.insecure_skip_verify
+}
+
+watch(
+  () => props.show,
+  (show) => {
+    if (!show) return
+    if (props.connection) {
+      fillFrom(props.connection)
+      return
+    }
+    const principal = envDefault('DS_KAFKA_KERBEROS_PRINCIPAL')
+    if (principal) {
+      form.securityProtocol = envDefault('DS_KAFKA_SECURITY_PROTOCOL') || 'SASL_PLAINTEXT'
+      form.mechanism = envDefault('DS_KAFKA_SASL_MECHANISM') || 'GSSAPI'
+      form.principal = principal
+      form.keytabPath = envDefault('DS_KAFKA_KERBEROS_KEYTAB')
+      form.krb5ConfPath = envDefault('DS_KERBEROS_KRB5FILE')
+      form.serviceName = envDefault('DS_KAFKA_SASL_KERBEROS_SERVICE_NAME') || 'kafka'
+    }
+  },
+  // 表单可能以 show=true 直接挂载,立即预填一次。
+  { immediate: true },
 )
+
+const brokers = computed(() => form.brokers.split(',').map((s) => s.trim()).filter(Boolean))
+const sasl = computed<SASLConfig | undefined>(() => {
+  if (!isSasl.value) return undefined
+  if (isGssapi.value) {
+    return {
+      enabled: true,
+      mechanism: 'GSSAPI',
+      principal: form.principal,
+      keytab_path: form.keytabPath,
+      krb5_conf_path: form.krb5ConfPath,
+      service_name: form.serviceName || 'kafka',
+    }
+  }
+  return { enabled: true, mechanism: form.mechanism, username: form.username, password: form.password }
+})
+const tls = computed<TLSConfig | undefined>(() => {
+  if (!isTLS.value && !form.caCert && !form.insecureSkipVerify) return undefined
+  return { enabled: isTLS.value, ca_cert: form.caCert, insecure_skip_verify: form.insecureSkipVerify }
+})
 const config = computed<KafkaConfig>(() => ({
   bootstrap_servers: brokers.value,
+  security_protocol: form.securityProtocol,
   sasl: sasl.value,
-  tls: form.caCert || form.insecureSkipVerify
-    ? { enabled: true, ca_cert: form.caCert, insecure_skip_verify: form.insecureSkipVerify }
-    : undefined,
+  tls: tls.value,
 }))
 
 const nameInvalid = computed(() => form.name.trim() === '')
@@ -57,7 +133,11 @@ async function save(): Promise<void> {
   saveError.value = null
   if (nameInvalid.value || brokersInvalid.value) return
   try {
-    await store.create({ name: form.name.trim(), type: 'kafka', config: config.value })
+    if (props.connection) {
+      await store.update(props.connection.id, { name: form.name.trim(), type: props.connection.type, config: config.value })
+    } else {
+      await store.create({ name: form.name.trim(), type: 'kafka', config: config.value })
+    }
     emit('close')
   } catch (e) {
     saveError.value = e instanceof Error ? e.message : String(e)
@@ -73,7 +153,7 @@ function close(): void {
   <div v-if="show" class="modal-backdrop" data-test="new-connection-modal" @click.self="close">
     <div class="modal">
       <div class="modal-header">
-        <span class="modal-title">新建连接</span>
+        <span class="modal-title" data-test="modal-title">{{ editing ? '编辑连接' : '新建连接' }}</span>
         <button class="modal-close" type="button" data-test="modal-close" @click="close">✕</button>
       </div>
       <div class="modal-body">
@@ -88,39 +168,62 @@ function close(): void {
           <span v-if="brokersInvalid" class="err">至少填写一个 broker</span>
         </div>
         <div class="field">
-          <label class="checkbox-label">
-            <input v-model="form.saslEnabled" type="checkbox" data-test="input-sasl" />
-            启用 SASL 认证
-          </label>
+          <label class="label">安全协议</label>
+          <select v-model="form.securityProtocol" class="input" data-test="input-security-protocol">
+            <option v-for="p in SECURITY_PROTOCOLS" :key="p" :value="p">{{ p }}</option>
+          </select>
         </div>
-        <template v-if="form.saslEnabled">
+        <template v-if="isSasl">
           <div class="field">
             <label class="label">认证方式</label>
             <select v-model="form.mechanism" class="input" data-test="input-mechanism">
               <option value="PLAIN">PLAIN</option>
               <option value="SCRAM-SHA-256">SCRAM-SHA-256</option>
               <option value="SCRAM-SHA-512">SCRAM-SHA-512</option>
+              <option value="GSSAPI">GSSAPI（Kerberos）</option>
             </select>
           </div>
+          <template v-if="!isGssapi">
+            <div class="field">
+              <label class="label">用户名</label>
+              <input v-model="form.username" data-test="input-username" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="field">
+              <label class="label">密码</label>
+              <input v-model="form.password" type="password" data-test="input-password" class="input" />
+            </div>
+          </template>
+          <template v-else>
+            <div class="field">
+              <label class="label">Kerberos Principal（须含 @REALM）</label>
+              <input v-model="form.principal" data-test="input-principal" class="input" placeholder="admin/admin@YHSJ.COM" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="field">
+              <label class="label">keytab 路径</label>
+              <input v-model="form.keytabPath" data-test="input-keytab" class="input" placeholder="/etc/security/keytabs/admin.keytab" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="field">
+              <label class="label">krb5.conf 路径</label>
+              <input v-model="form.krb5ConfPath" data-test="input-krb5" class="input" placeholder="/etc/krb5.conf" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="field">
+              <label class="label">服务名（service principal 首段）</label>
+              <input v-model="form.serviceName" data-test="input-service-name" class="input" placeholder="kafka" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            </div>
+          </template>
+        </template>
+        <template v-if="isTLS">
           <div class="field">
-            <label class="label">用户名</label>
-            <input v-model="form.username" data-test="input-username" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            <label class="label">CA 证书（可选）</label>
+            <textarea v-model="form.caCert" data-test="input-ca" class="input textarea" rows="3"></textarea>
           </div>
           <div class="field">
-            <label class="label">密码</label>
-            <input v-model="form.password" type="password" data-test="input-password" class="input" />
+            <label class="checkbox-label">
+              <input v-model="form.insecureSkipVerify" type="checkbox" data-test="input-insecure" />
+              跳过证书校验
+            </label>
           </div>
         </template>
-        <div class="field">
-          <label class="label">CA 证书（可选）</label>
-          <textarea v-model="form.caCert" data-test="input-ca" class="input textarea" rows="3"></textarea>
-        </div>
-        <div class="field">
-          <label class="checkbox-label">
-            <input v-model="form.insecureSkipVerify" type="checkbox" data-test="input-insecure" />
-            跳过证书校验
-          </label>
-        </div>
 
         <div v-if="tested" class="msg ok" data-test="test-ok">连接测试成功</div>
         <div v-if="testError" class="msg err" data-test="test-error">{{ testError }}</div>

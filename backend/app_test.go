@@ -263,6 +263,158 @@ func TestAppEndToEnd(t *testing.T) {
 	}
 }
 
+func TestAppUpdateConnectionAppliesChanges(t *testing.T) {
+	app := newTestApp(t)
+
+	created, err := app.CreateConnection(&model.Connection{
+		Name:   "local",
+		Type:   model.ConnectionTypeKafka,
+		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConnection: %v", err)
+	}
+
+	updated, err := app.UpdateConnection(UpdateConnectionRequest{
+		ID:     created.ID,
+		Name:   "renamed",
+		Config: model.KafkaConfig{BootstrapServers: []string{"broker-a:9092", "broker-b:9092"}, SecurityProtocol: "SSL"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateConnection: %v", err)
+	}
+	if updated.ID != created.ID {
+		t.Fatalf("update must keep the id: got %q want %q", updated.ID, created.ID)
+	}
+	if updated.CreatedAt != created.CreatedAt {
+		t.Fatalf("update must keep created_at: got %d want %d", updated.CreatedAt, created.CreatedAt)
+	}
+	if updated.UpdatedAt < created.UpdatedAt {
+		t.Fatalf("update must refresh updated_at: %d < %d", updated.UpdatedAt, created.UpdatedAt)
+	}
+
+	got, err := app.GetConnection(created.ID)
+	if err != nil {
+		t.Fatalf("GetConnection: %v", err)
+	}
+	if got.Name != "renamed" || len(got.Config.BootstrapServers) != 2 || got.Config.SecurityProtocol != "SSL" {
+		t.Fatalf("changes not persisted: %+v", got)
+	}
+}
+
+func TestAppUpdateConnectionValidation(t *testing.T) {
+	app := newTestApp(t)
+
+	created, err := app.CreateConnection(&model.Connection{
+		Name:   "local",
+		Type:   model.ConnectionTypeKafka,
+		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConnection: %v", err)
+	}
+
+	// 非法名称与非法配置都必须被拒绝。
+	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: created.ID, Name: ""}); err == nil {
+		t.Fatal("empty name must be rejected")
+	}
+	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: created.ID, Name: "x", Config: model.KafkaConfig{BootstrapServers: []string{"no-port"}}}); err == nil {
+		t.Fatal("invalid bootstrap server must be rejected")
+	}
+	// 不存在的 id 必须报错。
+	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: "nope", Name: "x", Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}}); err == nil {
+		t.Fatal("unknown id must be rejected")
+	}
+
+	// 被拒绝的更新不能改动存储的数据。
+	got, err := app.GetConnection(created.ID)
+	if err != nil {
+		t.Fatalf("GetConnection: %v", err)
+	}
+	if got.Name != "local" || len(got.Config.BootstrapServers) != 1 {
+		t.Fatalf("rejected updates must not touch the stored connection: %+v", got)
+	}
+}
+
+func TestAppAuditsUpdateConnection(t *testing.T) {
+	app := newTestApp(t)
+
+	created, err := app.CreateConnection(&model.Connection{
+		Name:   "local",
+		Type:   model.ConnectionTypeKafka,
+		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConnection: %v", err)
+	}
+	if _, err := app.UpdateConnection(UpdateConnectionRequest{
+		ID:     created.ID,
+		Name:   "renamed",
+		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+	}); err != nil {
+		t.Fatalf("UpdateConnection: %v", err)
+	}
+
+	list, err := app.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	// Newest first: [0] update, [1] create.
+	if len(list) != 2 {
+		t.Fatalf("expected 2 audit entries, got %d", len(list))
+	}
+	e := list[0]
+	if e.Action != "update_connection" || e.Result != "ok" || e.Target != "renamed" || e.ConnectionID != created.ID {
+		t.Fatalf("unexpected update audit: %+v", e)
+	}
+	if e.Detail != "" {
+		t.Fatalf("success audit must have empty detail: %+v", e)
+	}
+}
+
+func TestAppAuditsFailedUpdateConnection(t *testing.T) {
+	app := newTestApp(t)
+
+	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: "nope", Name: ""}); err == nil {
+		t.Fatal("invalid update must be rejected")
+	}
+	list, err := app.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 audit entry for failed update, got %d", len(list))
+	}
+	e := list[0]
+	if e.Action != "update_connection" || e.Result != "error" || e.Detail == "" {
+		t.Fatalf("failed update must be audited with error detail: %+v", e)
+	}
+}
+
+// TestUpdateConnectionRequestJSONShape locks the wire shape of the update
+// request the frontend serializes (snake_case keys, config matching the
+// CreateConnection config shape).
+func TestUpdateConnectionRequestJSONShape(t *testing.T) {
+	req := UpdateConnectionRequest{
+		ID:     "c-1",
+		Name:   "renamed",
+		Config: model.KafkaConfig{BootstrapServers: []string{"h:1"}},
+	}
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range []string{"id", "name", "config"} {
+		if _, ok := raw[key]; !ok {
+			t.Fatalf("UpdateConnectionRequest JSON must expose key %q, got %s", key, b)
+		}
+	}
+}
+
 // fakeBatchKafka implements KafkaDataSource for DeleteTopics audit tests; every
 // operation besides DeleteTopics is inert so the fake runs fully in the sandbox
 // (no kfake loopback binding).

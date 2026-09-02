@@ -62,3 +62,5 @@ export function ResetConsumerGroupOffset(arg1:backend.ResetOffsetRequest):Promis
 export function SaveTextFile(arg1:backend.SaveTextFileRequest):Promise<string>;
 
 export function TestConnection(arg1:model.KafkaConfig):Promise<void>;
+
+export function UpdateConnection(arg1:backend.UpdateConnectionRequest):Promise<model.Connection>;

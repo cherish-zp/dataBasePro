@@ -32,6 +32,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
     saveTextFile: vi.fn(async () => ''),
+    updateConnection: vi.fn(async () => ({}) as never),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
     deleteTopics: vi.fn(async () => []),
@@ -100,5 +101,32 @@ describe('App', () => {
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(0)
     })
+  })
+
+  it('opens the edit modal prefilled from the tree edit button and saves via updateConnection', async () => {
+    const { wrapper, api } = mountApp({
+      listConnections: vi.fn(async () => [conn('a')]),
+      updateConnection: vi.fn(async (r: never) => ({ ...conn('a'), ...(r as object) })),
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(1)
+    })
+
+    await wrapper.find('[data-test="btn-edit-connection"]').trigger('click')
+    expect(wrapper.find('[data-test="new-connection-modal"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="modal-title"]').text()).toBe('编辑连接')
+    expect((wrapper.find('[data-test="input-name"]').element as HTMLInputElement).value).toBe('conn-a')
+    expect((wrapper.find('[data-test="input-brokers"]').element as HTMLInputElement).value).toBe('h:1')
+
+    await wrapper.find('[data-test="input-name"]').setValue('conn-a-renamed')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await flushPromises()
+    expect(api.updateConnection).toHaveBeenCalledWith(expect.objectContaining({ id: 'a', name: 'conn-a-renamed' }))
+    expect(api.createConnection).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="conn-name"]').text()).toBe('conn-a-renamed')
+    })
+    // 保存成功后弹窗关闭。
+    expect(wrapper.find('[data-test="new-connection-modal"]').exists()).toBe(false)
   })
 })

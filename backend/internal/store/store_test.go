@@ -99,6 +99,61 @@ func TestStoreUpdateMissing(t *testing.T) {
 	}
 }
 
+func TestStoreUpdateRefreshesUpdatedAtAndKeepsCreatedAt(t *testing.T) {
+	s := newTestStore(t)
+	c := sampleConnection("c1")
+	if err := s.CreateConnection(c); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	createdAt, updatedAt := c.CreatedAt, c.UpdatedAt
+	c.Name = "renamed"
+	if err := s.UpdateConnection(c); err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+	if c.CreatedAt != createdAt {
+		t.Fatalf("created_at must not change on update: got %d want %d", c.CreatedAt, createdAt)
+	}
+	if c.UpdatedAt <= updatedAt {
+		t.Fatalf("updated_at must be refreshed on update: got %d <= %d", c.UpdatedAt, updatedAt)
+	}
+	got, err := s.GetConnection("c1")
+	if err != nil {
+		t.Fatalf("get after update failed: %v", err)
+	}
+	if got.CreatedAt != createdAt || got.UpdatedAt != c.UpdatedAt {
+		t.Fatalf("timestamps not persisted: created %d/%d updated %d/%d", got.CreatedAt, createdAt, got.UpdatedAt, c.UpdatedAt)
+	}
+}
+
+func TestStoreUpdateReencryptsPassword(t *testing.T) {
+	s := newTestStore(t)
+	c := sampleConnection("c1")
+	if err := s.CreateConnection(c); err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	c.Config.SASL.Password = "rotated-secret"
+	if err := s.UpdateConnection(c); err != nil {
+		t.Fatalf("update failed: %v", err)
+	}
+	var raw string
+	if err := s.db.QueryRow(`SELECT config_json FROM connections WHERE id = ?`, "c1").Scan(&raw); err != nil {
+		t.Fatalf("query raw config failed: %v", err)
+	}
+	if strings.Contains(raw, "rotated-secret") {
+		t.Fatal("plaintext password must not appear in stored config_json after update")
+	}
+	if !strings.Contains(raw, "enc:v1:") {
+		t.Fatal("stored config_json must contain an encrypted password field after update")
+	}
+	got, err := s.GetConnection("c1")
+	if err != nil {
+		t.Fatalf("get after update failed: %v", err)
+	}
+	if got.Config.SASL.Password != "rotated-secret" {
+		t.Fatalf("updated password not round-tripped: %q", got.Config.SASL.Password)
+	}
+}
+
 func TestStoreDelete(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateConnection(sampleConnection("c1")); err != nil {

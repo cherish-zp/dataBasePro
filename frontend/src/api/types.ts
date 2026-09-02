@@ -5,8 +5,14 @@ export type ConnectionType = 'kafka' | 'mysql' | 'es'
 export interface SASLConfig {
   enabled: boolean
   mechanism: string
-  username: string
-  password: string
+  // username/password 用于 PLAIN/SCRAM;GSSAPI (Kerberos) 时不携带,
+  // 改用下方 kerberos 字段(镜像 model.SASLConfig)。
+  username?: string
+  password?: string
+  principal?: string
+  keytab_path?: string
+  krb5_conf_path?: string
+  service_name?: string
 }
 
 export interface TLSConfig {
@@ -17,6 +23,9 @@ export interface TLSConfig {
 
 export interface KafkaConfig {
   bootstrap_servers: string[]
+  // One of PLAINTEXT | SSL | SASL_PLAINTEXT | SASL_SSL. Legacy connections
+  // without this field derive it from the tls/sasl booleans on the backend.
+  security_protocol?: string
   sasl?: SASLConfig
   tls?: TLSConfig
 }
@@ -28,6 +37,15 @@ export interface Connection {
   config: KafkaConfig
   created_at: number
   updated_at: number
+}
+
+// 编辑已有连接的请求（镜像后端 UpdateConnectionRequest）：config 与
+// CreateConnection 的 config 同形，id 定位已存在的连接；后端保持
+// id/created_at 不变并刷新 updated_at。
+export interface UpdateConnectionRequest {
+  id: string
+  name: string
+  config: KafkaConfig
 }
 
 export interface Partition {

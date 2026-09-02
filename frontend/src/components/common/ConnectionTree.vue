@@ -19,6 +19,7 @@ const emit = defineEmits<{
   (e: 'open-lag', connectionId: string): void
   (e: 'open-health', connectionId: string): void
   (e: 'delete', connectionId: string): void
+  (e: 'edit-connection', conn: Connection): void
   (e: 'new'): void
 }>()
 
@@ -556,6 +557,7 @@ function exportTopics(conn: Connection): void {
           <span class="toggle-text">{{ isConnected(conn.id) ? '断开' : '连接' }}</span>
         </button>
         <button v-if="conn.type === 'kafka'" class="conn-health" type="button" data-test="btn-cluster-health" title="集群健康" @click.stop="emit('open-health', conn.id)">🩺</button>
+        <button class="conn-edit" type="button" data-test="btn-edit-connection" title="编辑连接" @click.stop="emit('edit-connection', conn)">✎</button>
         <button class="conn-delete" type="button" data-test="btn-delete" @click.stop="emit('delete', conn.id)">🗑</button>
       </div>
 
@@ -883,6 +885,8 @@ function exportTopics(conn: Connection): void {
 .conn-delete:hover { color: var(--danger); background: var(--danger-soft); }
 .conn-health { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; font-size: 12px; line-height: 1; flex: none; transition: color 0.15s ease, background 0.15s ease; }
 .conn-health:hover { color: var(--ok); background: var(--ok-soft); }
+.conn-edit { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; flex: none; transition: color 0.15s ease, background 0.15s ease; }
+.conn-edit:hover { color: var(--accent); background: var(--accent-soft); }
 .conn-children { margin-left: 16px; border-left: 1px solid var(--border); padding-left: 8px; }
 .topic-search { margin: 6px 0 2px; }
 .topic-toolbar { display: flex; align-items: center; gap: 6px; margin: 4px 0 2px; }

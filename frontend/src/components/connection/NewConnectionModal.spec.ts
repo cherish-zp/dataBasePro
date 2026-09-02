@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
+import type { Connection } from '@/api/types'
 import NewConnectionModal from './NewConnectionModal.vue'
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
@@ -31,6 +32,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
     saveTextFile: vi.fn(async () => ''),
+    updateConnection: vi.fn(async () => ({}) as never),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
     deleteTopics: vi.fn(async () => []),
@@ -47,6 +49,9 @@ describe('NewConnectionModal', () => {
     setActivePinia(createPinia())
     api = fakeApi()
     setApi(api)
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
   })
 
   function mountModal() {
@@ -66,7 +71,8 @@ describe('NewConnectionModal', () => {
       expect(input.attributes('autocorrect'), sel).toBe('off')
       expect(input.attributes('autocomplete'), sel).toBe('off')
     }
-    await wrapper.find('[data-test="input-sasl"]').setValue(true)
+    await wrapper.find('[data-test="input-security-protocol"]').setValue('SASL_PLAINTEXT')
+    await wrapper.find('[data-test="input-mechanism"]').setValue('PLAIN')
     const username = wrapper.find('[data-test="input-username"]')
     expect(username.attributes('autocapitalize')).toBe('off')
     expect(username.attributes('autocorrect')).toBe('off')
@@ -92,18 +98,18 @@ describe('NewConnectionModal', () => {
         expect.objectContaining({
           name: 'local',
           type: 'kafka',
-          config: { bootstrap_servers: ['a:9092', 'b:9092'] },
+          config: { bootstrap_servers: ['a:9092', 'b:9092'], security_protocol: 'PLAINTEXT' },
         }),
       )
     })
     expect(wrapper.emitted('close')).toBeTruthy()
   })
 
-  it('includes SASL settings when enabled', async () => {
+  it('includes SASL settings when a SASL protocol is selected', async () => {
     const wrapper = mountModal()
     await wrapper.find('[data-test="input-name"]').setValue('secure')
     await wrapper.find('[data-test="input-brokers"]').setValue('localhost:9092')
-    await wrapper.find('[data-test="input-sasl"]').setValue(true)
+    await wrapper.find('[data-test="input-security-protocol"]').setValue('SASL_PLAINTEXT')
     await wrapper.find('[data-test="input-mechanism"]').setValue('SCRAM-SHA-256')
     await wrapper.find('[data-test="input-username"]').setValue('user')
     await wrapper.find('[data-test="input-password"]').setValue('secret')
@@ -112,11 +118,86 @@ describe('NewConnectionModal', () => {
       expect(api.createConnection).toHaveBeenCalledWith(
         expect.objectContaining({
           config: expect.objectContaining({
+            security_protocol: 'SASL_PLAINTEXT',
             sasl: { enabled: true, mechanism: 'SCRAM-SHA-256', username: 'user', password: 'secret' },
           }),
         }),
       )
     })
+  })
+
+  it('hides SASL fields for PLAINTEXT and shows them again for SASL_SSL with TLS enabled', async () => {
+    const wrapper = mountModal()
+    expect(wrapper.find('[data-test="input-username"]').exists()).toBe(false)
+    await wrapper.find('[data-test="input-security-protocol"]').setValue('SASL_SSL')
+    expect(wrapper.find('[data-test="input-username"]').exists()).toBe(true)
+    await wrapper.find('[data-test="input-mechanism"]').setValue('PLAIN')
+    await wrapper.find('[data-test="input-username"]').setValue('u')
+    await wrapper.find('[data-test="input-password"]').setValue('p')
+    await wrapper.find('[data-test="input-ca"]').setValue('CA-PEM')
+    await wrapper.find('[data-test="input-name"]').setValue('x')
+    await wrapper.find('[data-test="input-brokers"]').setValue('b:1')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            security_protocol: 'SASL_SSL',
+            tls: { enabled: true, ca_cert: 'CA-PEM', insecure_skip_verify: false },
+          }),
+        }),
+      )
+    })
+  })
+
+  it('switches to kerberos fields when GSSAPI is selected and saves them', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="input-security-protocol"]').setValue('SASL_PLAINTEXT')
+    await wrapper.find('[data-test="input-mechanism"]').setValue('GSSAPI')
+    // username/password 换成 kerberos 四栏,serviceName 预填 kafka。
+    expect(wrapper.find('[data-test="input-username"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-password"]').exists()).toBe(false)
+    const service = wrapper.find('[data-test="input-service-name"]')
+    expect((service.element as HTMLInputElement).value).toBe('kafka')
+    await wrapper.find('[data-test="input-name"]').setValue('kerb')
+    await wrapper.find('[data-test="input-brokers"]').setValue('b:1')
+    await wrapper.find('[data-test="input-principal"]').setValue('admin/admin@YHSJ.COM')
+    await wrapper.find('[data-test="input-keytab"]').setValue('/etc/security/keytabs/admin.keytab')
+    await wrapper.find('[data-test="input-krb5"]').setValue('/etc/krb5.conf')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: expect.objectContaining({
+            security_protocol: 'SASL_PLAINTEXT',
+            sasl: {
+              enabled: true,
+              mechanism: 'GSSAPI',
+              principal: 'admin/admin@YHSJ.COM',
+              keytab_path: '/etc/security/keytabs/admin.keytab',
+              krb5_conf_path: '/etc/krb5.conf',
+              service_name: 'kafka',
+            },
+          }),
+        }),
+      )
+    })
+  })
+
+  it('prefills kerberos fields from DS_KAFKA_* environment variables', async () => {
+    vi.stubEnv('DS_KAFKA_SECURITY_PROTOCOL', 'SASL_PLAINTEXT')
+    vi.stubEnv('DS_KAFKA_SASL_MECHANISM', 'GSSAPI')
+    vi.stubEnv('DS_KAFKA_KERBEROS_PRINCIPAL', 'env/admin@ENV.COM')
+    vi.stubEnv('DS_KAFKA_KERBEROS_KEYTAB', '/env/admin.keytab')
+    vi.stubEnv('DS_KERBEROS_KRB5FILE', '/env/krb5.conf')
+    vi.stubEnv('DS_KAFKA_SASL_KERBEROS_SERVICE_NAME', 'envkafka')
+    const wrapper = mountModal()
+    expect((wrapper.find('[data-test="input-security-protocol"]').element as HTMLSelectElement).value).toBe('SASL_PLAINTEXT')
+    expect((wrapper.find('[data-test="input-mechanism"]').element as HTMLSelectElement).value).toBe('GSSAPI')
+    expect((wrapper.find('[data-test="input-principal"]').element as HTMLInputElement).value).toBe('env/admin@ENV.COM')
+    expect((wrapper.find('[data-test="input-keytab"]').element as HTMLInputElement).value).toBe('/env/admin.keytab')
+    expect((wrapper.find('[data-test="input-krb5"]').element as HTMLInputElement).value).toBe('/env/krb5.conf')
+    expect((wrapper.find('[data-test="input-service-name"]').element as HTMLInputElement).value).toBe('envkafka')
   })
 
   it('test connection calls the api and shows success', async () => {
@@ -143,5 +224,108 @@ describe('NewConnectionModal', () => {
     const wrapper = mountModal()
     await wrapper.find('[data-test="modal-close"]').trigger('click')
     expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  const gssapiConn: Connection = {
+    id: 'c-1',
+    name: 'kerb-old',
+    type: 'kafka',
+    created_at: 1,
+    updated_at: 2,
+    config: {
+      bootstrap_servers: ['a:9092', 'b:9092'],
+      security_protocol: 'SASL_PLAINTEXT',
+      sasl: {
+        enabled: true,
+        mechanism: 'GSSAPI',
+        principal: 'admin/admin@YHSJ.COM',
+        keytab_path: '/etc/security/keytabs/admin.keytab',
+        krb5_conf_path: '/etc/krb5.conf',
+        service_name: 'mysvc',
+      },
+    },
+  }
+
+  it('shows the create title when no connection is passed', () => {
+    const wrapper = mountModal()
+    expect(wrapper.find('[data-test="modal-title"]').text()).toBe('新建连接')
+  })
+
+  it('prefills every kerberos field from the connection in edit mode', () => {
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: gssapiConn } })
+    expect(wrapper.find('[data-test="modal-title"]').text()).toBe('编辑连接')
+    expect((wrapper.find('[data-test="input-name"]').element as HTMLInputElement).value).toBe('kerb-old')
+    expect((wrapper.find('[data-test="input-brokers"]').element as HTMLInputElement).value).toBe('a:9092, b:9092')
+    expect((wrapper.find('[data-test="input-security-protocol"]').element as HTMLSelectElement).value).toBe('SASL_PLAINTEXT')
+    expect((wrapper.find('[data-test="input-mechanism"]').element as HTMLSelectElement).value).toBe('GSSAPI')
+    expect((wrapper.find('[data-test="input-principal"]').element as HTMLInputElement).value).toBe('admin/admin@YHSJ.COM')
+    expect((wrapper.find('[data-test="input-keytab"]').element as HTMLInputElement).value).toBe('/etc/security/keytabs/admin.keytab')
+    expect((wrapper.find('[data-test="input-krb5"]').element as HTMLInputElement).value).toBe('/etc/krb5.conf')
+    expect((wrapper.find('[data-test="input-service-name"]').element as HTMLInputElement).value).toBe('mysvc')
+  })
+
+  it('saves edits through updateConnection with the connection id and closes', async () => {
+    const api2 = fakeApi({ updateConnection: vi.fn(async (r: never) => r) })
+    setApi(api2)
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: gssapiConn } })
+    await wrapper.find('[data-test="input-name"]').setValue('kerb-new')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.updateConnection).toHaveBeenCalledWith({
+        id: 'c-1',
+        name: 'kerb-new',
+        config: expect.objectContaining({
+          bootstrap_servers: ['a:9092', 'b:9092'],
+          security_protocol: 'SASL_PLAINTEXT',
+          sasl: {
+            enabled: true,
+            mechanism: 'GSSAPI',
+            principal: 'admin/admin@YHSJ.COM',
+            keytab_path: '/etc/security/keytabs/admin.keytab',
+            krb5_conf_path: '/etc/krb5.conf',
+            service_name: 'mysvc',
+          },
+        }),
+      })
+    })
+    expect(wrapper.emitted('close')).toBeTruthy()
+    expect(api2.createConnection).not.toHaveBeenCalled()
+  })
+
+  it('prefills username/password and TLS fields in edit mode', () => {
+    const wrapper = mount(NewConnectionModal, {
+      props: {
+        show: true,
+        connection: {
+          id: 'c-2', name: 'plain-old', type: 'kafka', created_at: 1, updated_at: 1,
+          config: {
+            bootstrap_servers: ['h:9092'],
+            security_protocol: 'SASL_SSL',
+            sasl: { enabled: true, mechanism: 'SCRAM-SHA-256', username: 'user', password: 'secret' },
+            tls: { enabled: true, ca_cert: 'CA-PEM', insecure_skip_verify: true },
+          },
+        },
+      },
+    })
+    expect((wrapper.find('[data-test="input-security-protocol"]').element as HTMLSelectElement).value).toBe('SASL_SSL')
+    expect((wrapper.find('[data-test="input-mechanism"]').element as HTMLSelectElement).value).toBe('SCRAM-SHA-256')
+    expect((wrapper.find('[data-test="input-username"]').element as HTMLInputElement).value).toBe('user')
+    expect((wrapper.find('[data-test="input-password"]').element as HTMLInputElement).value).toBe('secret')
+    expect((wrapper.find('[data-test="input-ca"]').element as HTMLTextAreaElement).value).toBe('CA-PEM')
+    expect((wrapper.find('[data-test="input-insecure"]').element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('derives the security protocol from legacy sasl/tls booleans when the field is missing', () => {
+    const base = { id: 'c-3', name: 'legacy', type: 'kafka' as const, created_at: 1, updated_at: 1 }
+    const mountWith = async (cfg: Connection['config']) => {
+      const w = mount(NewConnectionModal, {
+        props: { show: true, connection: { ...base, config: cfg } },
+      })
+      return (w.find('[data-test="input-security-protocol"]').element as HTMLSelectElement).value
+    }
+    expect(mountWith({ bootstrap_servers: ['h:1'], sasl: { enabled: true, mechanism: 'PLAIN', username: 'u' } })).resolves.toBe('SASL_PLAINTEXT')
+    expect(mountWith({ bootstrap_servers: ['h:1'], tls: { enabled: true } })).resolves.toBe('SSL')
+    expect(mountWith({ bootstrap_servers: ['h:1'], sasl: { enabled: true, mechanism: 'PLAIN', username: 'u' }, tls: { enabled: true } })).resolves.toBe('SASL_SSL')
+    expect(mountWith({ bootstrap_servers: ['h:1'] })).resolves.toBe('PLAINTEXT')
   })
 })

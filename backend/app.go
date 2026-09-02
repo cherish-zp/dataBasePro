@@ -270,6 +270,38 @@ func (a *App) CreateConnection(c *model.Connection) (*model.Connection, error) {
 	return created, nil
 }
 
+// UpdateConnectionRequest carries the edited fields of an existing connection.
+// Config shares the CreateConnection config JSON shape; the id locates the row
+// and must already exist.
+type UpdateConnectionRequest struct {
+	ID     string            `json:"id"`
+	Name   string            `json:"name"`
+	Config model.KafkaConfig `json:"config"`
+}
+
+// UpdateConnection validates and overwrites an existing connection, keeping its
+// id and created_at while refreshing updated_at. The connection type is a
+// property of the stored row; only Kafka sources are editable from the UI, so
+// the request carries no type and kafka is assumed.
+func (a *App) UpdateConnection(req UpdateConnectionRequest) (*model.Connection, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	c := &model.Connection{
+		ID:     req.ID,
+		Name:   req.Name,
+		Type:   model.ConnectionTypeKafka,
+		Config: req.Config,
+	}
+	if err := a.svc.UpdateConnection(ctx, c); err != nil {
+		a.audit(req.ID, "update_connection", req.Name, "error", auditDetail(err))
+		return nil, err
+	}
+	a.audit(c.ID, "update_connection", c.Name, "ok", "")
+	// Read the persisted row back so the caller receives the complete record
+	// (id/created_at preserved, updated_at refreshed).
+	return a.svc.GetConnection(ctx, c.ID)
+}
+
 // ListConnections returns all saved connections.
 func (a *App) ListConnections() ([]*model.Connection, error) {
 	ctx, cancel := a.newContext()

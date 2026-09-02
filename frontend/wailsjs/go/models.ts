@@ -242,6 +242,40 @@ export namespace backend {
 	        this.mime = source["mime"];
 	    }
 	}
+	export class UpdateConnectionRequest {
+	    id: string;
+	    name: string;
+	    config: model.KafkaConfig;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateConnectionRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.config = this.convertValues(source["config"], model.KafkaConfig);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 
@@ -408,6 +442,10 @@ export namespace model {
 	    mechanism: string;
 	    username: string;
 	    password: string;
+	    principal?: string;
+	    keytab_path?: string;
+	    krb5_conf_path?: string;
+	    service_name?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SASLConfig(source);
@@ -419,10 +457,15 @@ export namespace model {
 	        this.mechanism = source["mechanism"];
 	        this.username = source["username"];
 	        this.password = source["password"];
+	        this.principal = source["principal"];
+	        this.keytab_path = source["keytab_path"];
+	        this.krb5_conf_path = source["krb5_conf_path"];
+	        this.service_name = source["service_name"];
 	    }
 	}
 	export class KafkaConfig {
 	    bootstrap_servers: string[];
+	    security_protocol?: string;
 	    sasl?: SASLConfig;
 	    tls?: TLSConfig;
 	
@@ -433,6 +476,7 @@ export namespace model {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.bootstrap_servers = source["bootstrap_servers"];
+	        this.security_protocol = source["security_protocol"];
 	        this.sasl = this.convertValues(source["sasl"], SASLConfig);
 	        this.tls = this.convertValues(source["tls"], TLSConfig);
 	    }

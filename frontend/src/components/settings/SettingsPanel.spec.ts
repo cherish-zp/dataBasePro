@@ -46,6 +46,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     produceMessages: vi.fn(async () => []),
     listAudit: vi.fn(async () => []),
     saveTextFile: vi.fn(async () => ''),
+    updateConnection: vi.fn(async () => ({}) as never),
     ...overrides,
   }
 }

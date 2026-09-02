@@ -16,6 +16,7 @@ vi.mock('../../wailsjs/go/backend/App', () => ({
   })),
   ConsumeMessages: vi.fn(async () => [{ partition: 0, offset: 1, timestamp: 1, key: 'k', value: 'v', headers: [] }]),
   CreateConnection: vi.fn(async (c: unknown) => ({ id: 'x', ...(c as object) })),
+  UpdateConnection: vi.fn(async (r: unknown) => ({ id: 'x', ...(r as object) })),
   GetPartitionLag: vi.fn(async () => ({ 0: 5 })),
   PreviewResetOffset: vi.fn(async () => ({ 0: 0, 1: 15 })),
   ListConnections: vi.fn(async () => []),
@@ -28,7 +29,7 @@ vi.mock('../../wailsjs/go/backend/App', () => ({
 
 import * as App from '../../wailsjs/go/backend/App'
 import { WailsApi, getApi, setApi } from './client'
-import type { ConsumeRequest, DeleteTopicsRequest, PreviewOffsetRequest } from './types'
+import type { ConsumeRequest, DeleteTopicsRequest, PreviewOffsetRequest, UpdateConnectionRequest } from './types'
 
 const mocked = vi.mocked(App, true)
 
@@ -98,6 +99,14 @@ describe('WailsApi delegation', () => {
     const got = await api.deleteTopics(req)
     expect(mocked.DeleteTopics).toHaveBeenCalledWith(req)
     expect(got[0]).toEqual({ name: 't1', error: '' })
+  })
+
+  it('delegates updateConnection with the request payload', async () => {
+    const req: UpdateConnectionRequest = { id: 'c-1', name: 'renamed', config: { bootstrap_servers: ['h:1'] } }
+    const got = await api.updateConnection(req)
+    // wailsjs 绑定尚未生成 UpdateConnection 声明,经断言取回 mock。
+    expect((mocked as unknown as { UpdateConnection: ReturnType<typeof vi.fn> }).UpdateConnection).toHaveBeenCalledWith(req)
+    expect(got.id).toBe('c-1')
   })
 
   it('delegates listAudit, defaulting the limit to the store cap', async () => {

@@ -18,6 +18,7 @@ const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
   (e: 'new'): void
   (e: 'delete-connection', id: string): void
+  (e: 'edit-connection', conn: Connection): void
 }>()
 
 const tabs = useTabsStore()
@@ -97,6 +98,10 @@ function removeConnection(id: string): void {
     if (t.connectionId === id) tabs.closeTab(t.id)
   }
   emit('delete-connection', id)
+}
+
+function editConnection(conn: Connection): void {
+  emit('edit-connection', conn)
 }
 
 function openProducerPanel(): void {
@@ -267,6 +272,7 @@ function onTabDragEnd(): void {
           @open-lag="openLag"
           @open-health="openHealth"
           @delete="removeConnection"
+          @edit-connection="editConnection"
           @new="emit('new')"
         />
       </aside>

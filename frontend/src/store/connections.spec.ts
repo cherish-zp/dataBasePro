@@ -31,6 +31,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
     saveTextFile: vi.fn(async () => ''),
+    updateConnection: vi.fn(async () => ({}) as never),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
     deleteTopics: vi.fn(async () => []),
@@ -77,6 +78,31 @@ describe('connections store', () => {
     expect(created.id).toBe('')
     expect(store.connections).toHaveLength(1)
     expect(api.createConnection).toHaveBeenCalled()
+  })
+
+  it('update calls the api and replaces the stored connection in place', async () => {
+    ;(api.listConnections as ReturnType<typeof vi.fn>).mockResolvedValue([conn('a'), conn('b')])
+    const store = useConnectionsStore()
+    await store.load()
+    const updated = { ...conn('a'), name: 'renamed', updated_at: 99 }
+    ;(api.updateConnection as ReturnType<typeof vi.fn>).mockResolvedValue(updated)
+    const got = await store.update('a', { name: 'renamed', type: 'kafka', config: { bootstrap_servers: ['h:2'] } })
+    expect(api.updateConnection).toHaveBeenCalledWith({ id: 'a', name: 'renamed', config: { bootstrap_servers: ['h:2'] } })
+    expect(got).toEqual(updated)
+    // 列表原位替换,顺序与其他连接保持不变。
+    expect(store.connections.map((c) => c.id)).toEqual(['a', 'b'])
+    expect(store.connections[0].name).toBe('renamed')
+    expect(store.connections[0].updated_at).toBe(99)
+  })
+
+  it('update resets the connection status to unknown (backend evicts the pool)', async () => {
+    ;(api.listConnections as ReturnType<typeof vi.fn>).mockResolvedValue([conn('a')])
+    const store = useConnectionsStore()
+    await store.load()
+    store.setStatus('a', 'connected')
+    ;(api.updateConnection as ReturnType<typeof vi.fn>).mockResolvedValue(conn('a'))
+    await store.update('a', { name: 'renamed', type: 'kafka', config: { bootstrap_servers: ['h:2'] } })
+    expect(store.statusById['a']).toBe('unknown')
   })
 
   it('remove filters the list and calls the api', async () => {

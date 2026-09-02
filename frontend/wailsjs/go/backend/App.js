@@ -121,3 +121,7 @@ export function SaveTextFile(arg1) {
 export function TestConnection(arg1) {
   return window['go']['backend']['App']['TestConnection'](arg1);
 }
+
+export function UpdateConnection(arg1) {
+  return window['go']['backend']['App']['UpdateConnection'](arg1);
+}

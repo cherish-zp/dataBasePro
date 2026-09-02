@@ -57,6 +57,18 @@ export const useConnectionsStore = defineStore('connections', () => {
     return created
   }
 
+  // update 持久化对已有连接的修改并用后端返回的完整记录(保持 id/created_at、
+  // 刷新 updated_at)原位替换本地列表项。后端会驱逐该连接的连接池,本地状态
+  // 相应重置为 unknown,避免残留过期的 'connected'。
+  async function update(id: string, input: NewConnectionInput): Promise<Connection> {
+    error.value = null
+    const updated = await getApi().updateConnection({ id, name: input.name, config: input.config })
+    const idx = connections.value.findIndex((c) => c.id === updated.id)
+    if (idx !== -1) connections.value[idx] = updated
+    statusById.value[updated.id] = 'unknown'
+    return updated
+  }
+
   async function remove(id: string): Promise<void> {
     error.value = null
     await getApi().deleteConnection(id)
@@ -94,5 +106,5 @@ export const useConnectionsStore = defineStore('connections', () => {
     }
   }
 
-  return { connections, loading, error, statusById, setStatus, load, create, remove, testConnection, connect, disconnect }
+  return { connections, loading, error, statusById, setStatus, load, create, update, remove, testConnection, connect, disconnect }
 })

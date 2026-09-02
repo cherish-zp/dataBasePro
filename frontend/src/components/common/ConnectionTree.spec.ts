@@ -41,6 +41,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
     saveTextFile: vi.fn(async () => ''),
+    updateConnection: vi.fn(async () => ({}) as never),
     createTopic: vi.fn(async () => {}),
     deleteTopic: vi.fn(async () => {}),
     deleteTopics: vi.fn(async () => []),
@@ -133,6 +134,14 @@ describe('ConnectionTree', () => {
     await wrapper.find('[data-test="btn-delete"]').trigger('click')
     expect(wrapper.emitted('delete')?.[0]).toEqual(['a'])
     expect(wrapper.find('[data-test="conn-caret"]').classes()).toContain('open')
+  })
+
+  it('edit button emits edit-connection with the connection without toggling the row', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await wrapper.find('[data-test="btn-edit-connection"]').trigger('click')
+    expect(wrapper.emitted('edit-connection')?.[0]).toEqual([conn('a')])
+    // @click.stop：点击编辑不应触发行展开。
+    expect(wrapper.find('[data-test="conn-caret"]').classes()).not.toContain('open')
   })
 
   it('shows an unsupported message for non-kafka types', async () => {

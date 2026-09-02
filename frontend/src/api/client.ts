@@ -18,6 +18,7 @@ import type {
   BatchProduceRequest,
   ProduceResult,
   CreateTopicRequest,
+  UpdateConnectionRequest,
   DeleteTopicRequest,
   DeleteTopicsRequest,
   AlterTopicConfigRequest,
@@ -34,6 +35,7 @@ import type {
 
 export interface Api {
   createConnection(conn: Connection): Promise<Connection>
+  updateConnection(req: UpdateConnectionRequest): Promise<Connection>
   listConnections(): Promise<Connection[]>
   getConnection(id: string): Promise<Connection>
   deleteConnection(id: string): Promise<void>
@@ -73,6 +75,11 @@ export interface Api {
 export class WailsApi implements Api {
   createConnection(conn: Connection): Promise<Connection> {
     return App.CreateConnection(conn as unknown as never) as unknown as Promise<Connection>
+  }
+  updateConnection(req: UpdateConnectionRequest): Promise<Connection> {
+    // App.UpdateConnection 由 wails generate 生成绑定;生成前先对模块断言,
+    // 不手改自动生成的 wailsjs 声明。
+    return (App as unknown as { UpdateConnection: (req: unknown) => Promise<unknown> }).UpdateConnection(req) as unknown as Promise<Connection>
   }
   listConnections(): Promise<Connection[]> {
     return App.ListConnections() as unknown as Promise<Connection[]>
