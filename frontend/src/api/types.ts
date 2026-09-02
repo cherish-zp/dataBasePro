@@ -285,6 +285,31 @@ export interface SaveTextFileRequest {
   mime?: string
 }
 
+// --- 应用更新(镜像 backend/update.go) ---
+
+export interface UpdateCheckRequest {
+  current_version: string
+}
+
+export interface UpdateCheckResult {
+  has_update: boolean
+  latest_version: string
+  notes?: string
+  download_url?: string
+}
+
+export interface UpdateDownloadRequest {
+  url: string
+}
+
+export interface UpdateProgressInfo {
+  phase: 'idle' | 'downloading' | 'done' | 'error'
+  percent: number
+  error?: string
+}
+
+export interface ApplyUpdateRequest {}
+
 export interface ActiveProducer {
   topic: string
   partition: number

@@ -10,6 +10,14 @@ export function AlterTopicPartitions(arg1) {
   return window['go']['backend']['App']['AlterTopicPartitions'](arg1);
 }
 
+export function ApplyUpdate(arg1) {
+  return window['go']['backend']['App']['ApplyUpdate'](arg1);
+}
+
+export function CheckUpdate(arg1) {
+  return window['go']['backend']['App']['CheckUpdate'](arg1);
+}
+
 export function Connect(arg1) {
   return window['go']['backend']['App']['Connect'](arg1);
 }
@@ -62,6 +70,10 @@ export function Disconnect(arg1) {
   return window['go']['backend']['App']['Disconnect'](arg1);
 }
 
+export function DownloadUpdate(arg1) {
+  return window['go']['backend']['App']['DownloadUpdate'](arg1);
+}
+
 export function GetConnection(arg1) {
   return window['go']['backend']['App']['GetConnection'](arg1);
 }
@@ -98,6 +110,10 @@ export function ListTopics(arg1) {
   return window['go']['backend']['App']['ListTopics'](arg1);
 }
 
+export function OpenURL(arg1) {
+  return window['go']['backend']['App']['OpenURL'](arg1);
+}
+
 export function PreviewResetOffset(arg1) {
   return window['go']['backend']['App']['PreviewResetOffset'](arg1);
 }
@@ -124,4 +140,8 @@ export function TestConnection(arg1) {
 
 export function UpdateConnection(arg1) {
   return window['go']['backend']['App']['UpdateConnection'](arg1);
+}
+
+export function UpdateProgress() {
+  return window['go']['backend']['App']['UpdateProgress']();
 }

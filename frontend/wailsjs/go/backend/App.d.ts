@@ -7,6 +7,10 @@ export function AlterTopicConfig(arg1:backend.AlterTopicConfigRequest):Promise<v
 
 export function AlterTopicPartitions(arg1:backend.AlterTopicPartitionsRequest):Promise<void>;
 
+export function ApplyUpdate(arg1:backend.ApplyUpdateRequest):Promise<void>;
+
+export function CheckUpdate(arg1:backend.CheckUpdateRequest):Promise<backend.UpdateCheckResult>;
+
 export function Connect(arg1:string):Promise<void>;
 
 export function ConsumeMessages(arg1:backend.ConsumeRequest):Promise<Array<model.Message>>;
@@ -33,6 +37,8 @@ export function DescribeTopic(arg1:string,arg2:string):Promise<model.TopicDetail
 
 export function Disconnect(arg1:string):Promise<void>;
 
+export function DownloadUpdate(arg1:backend.DownloadUpdateRequest):Promise<void>;
+
 export function GetConnection(arg1:string):Promise<model.Connection>;
 
 export function GetPartitionLag(arg1:string,arg2:string,arg3:string):Promise<Record<number, number>>;
@@ -51,6 +57,8 @@ export function ListConsumerGroups(arg1:string):Promise<Array<model.ConsumerGrou
 
 export function ListTopics(arg1:string):Promise<Array<model.Topic>>;
 
+export function OpenURL(arg1:string):Promise<void>;
+
 export function PreviewResetOffset(arg1:backend.ResetOffsetRequest):Promise<Record<number, number>>;
 
 export function ProduceMessage(arg1:backend.ProduceRequest):Promise<void>;
@@ -64,3 +72,5 @@ export function SaveTextFile(arg1:backend.SaveTextFileRequest):Promise<string>;
 export function TestConnection(arg1:model.KafkaConfig):Promise<void>;
 
 export function UpdateConnection(arg1:backend.UpdateConnectionRequest):Promise<model.Connection>;
+
+export function UpdateProgress():Promise<backend.UpdateProgressInfo>;

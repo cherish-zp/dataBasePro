@@ -70,6 +70,11 @@ export function installDevMock(): void {
       deleteTopic: async () => {},
       deleteTopics: async () => [],
       deleteConsumerGroup: async () => {},
+      checkUpdate: async () => ({ has_update: false, latest_version: 'v1.0.0' }),
+      downloadUpdate: async () => {},
+      applyUpdate: async () => {},
+      updateProgress: async () => ({ phase: 'idle' as const, percent: 0 }),
+      openURL: async () => {},
     }
     setApi(api)
 }

@@ -31,6 +31,11 @@ import type {
   ActiveConsumer,
   AuditEntry,
   SaveTextFileRequest,
+  UpdateCheckRequest,
+  UpdateCheckResult,
+  UpdateDownloadRequest,
+  UpdateProgressInfo,
+  ApplyUpdateRequest,
 } from './types'
 
 export interface Api {
@@ -65,6 +70,11 @@ export interface Api {
   produceMessages(req: BatchProduceRequest): Promise<ProduceResult[]>
   listAudit(limit?: number): Promise<AuditEntry[]>
   saveTextFile(req: SaveTextFileRequest): Promise<string>
+  checkUpdate(req: UpdateCheckRequest): Promise<UpdateCheckResult>
+  downloadUpdate(req: UpdateDownloadRequest): Promise<void>
+  applyUpdate(req: ApplyUpdateRequest): Promise<void>
+  updateProgress(): Promise<UpdateProgressInfo>
+  openURL(url: string): Promise<void>
 }
 
 // The Wails binding generator models Go `[]byte` fields as `number[]`, but
@@ -167,6 +177,21 @@ export class WailsApi implements Api {
   }
   saveTextFile(req: SaveTextFileRequest): Promise<string> {
     return App.SaveTextFile(req as unknown as never) as unknown as Promise<string>
+  }
+  checkUpdate(req: UpdateCheckRequest): Promise<UpdateCheckResult> {
+    return App.CheckUpdate(req as unknown as never) as unknown as Promise<UpdateCheckResult>
+  }
+  downloadUpdate(req: UpdateDownloadRequest): Promise<void> {
+    return App.DownloadUpdate(req as unknown as never) as unknown as Promise<void>
+  }
+  applyUpdate(req: ApplyUpdateRequest): Promise<void> {
+    return App.ApplyUpdate(req as unknown as never) as unknown as Promise<void>
+  }
+  updateProgress(): Promise<UpdateProgressInfo> {
+    return App.UpdateProgress() as unknown as Promise<UpdateProgressInfo>
+  }
+  openURL(url: string): Promise<void> {
+    return App.OpenURL(url) as unknown as Promise<void>
   }
 }
 

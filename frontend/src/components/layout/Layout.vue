@@ -11,6 +11,7 @@ import SqlConsole from '@/components/kafka/SqlConsole.vue'
 import GlobalLagView from '@/components/kafka/GlobalLagView.vue'
 import ClusterHealthPanel from '@/components/kafka/ClusterHealthPanel.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
+import UpdateDialog from './UpdateDialog.vue'
 import StatusBar from '@/components/layout/StatusBar.vue'
 import HomeView from '@/views/HomeView.vue'
 
@@ -41,6 +42,7 @@ const dragFrom = ref<number | null>(null)
 
 const showProducer = ref(false)
 const showSettings = ref(false)
+const showUpdate = ref(false)
 
 // paletteRef drives the command palette from the global shortcut handler: ⌘K
 // toggles it through the exposed toggle(), keeping a single keydown owner.
@@ -81,8 +83,15 @@ function openTopic(connectionId: string, topic: string, partitions: number[]): v
   tabs.openTopic(connectionId, topic, partitions)
 }
 
-function openGroup(connectionId: string, group: string): void {
-  tabs.openGroup(connectionId, group)
+function openGroup(connectionId: string, group: string, topic?: string): void {
+  tabs.openGroup(connectionId, group, topic)
+}
+
+// Lag 总览行点击:active 一定存在(lag tab 打开时),组定位 tab、Topic 预选。
+function openGroupLagFromOverview(group: string, topic: string): void {
+  const conn = active.value
+  if (!conn) return
+  openGroup(conn.connectionId, group, topic)
 }
 
 function openLag(connectionId: string): void {
@@ -260,6 +269,18 @@ function onTabDragEnd(): void {
       >
         刷新
       </button>
+      <button
+        class="btn ghost icon-btn"
+        type="button"
+        data-test="btn-update"
+        title="检查更新"
+        @click="showUpdate = true"
+      >
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+          <path d="M8 2.5v7.2M8 2.5 5.4 5.1M8 2.5l2.6 2.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M3 10.5v1.8c0 .7.5 1.2 1.2 1.2h7.6c.7 0 1.2-.5 1.2-1.2v-1.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+      </button>
       <button class="btn ghost" type="button" data-test="btn-settings" @click="showSettings = true">设置</button>
     </header>
 
@@ -335,7 +356,11 @@ function onTabDragEnd(): void {
             />
           </template>
           <template v-else-if="active.kind === 'lag'">
-            <GlobalLagView :connection-id="active.connectionId" :refresh-request="refreshRequest" />
+            <GlobalLagView
+              :connection-id="active.connectionId"
+              :refresh-request="refreshRequest"
+              @open-group-lag="openGroupLagFromOverview"
+            />
           </template>
           <template v-else-if="active.kind === 'health'">
             <ClusterHealthPanel :connection-id="active.connectionId" :refresh-request="refreshRequest" />
@@ -355,6 +380,7 @@ function onTabDragEnd(): void {
       @close="showProducer = false"
     />
     <SettingsPanel :show="showSettings" @close="showSettings = false" />
+    <UpdateDialog :show="showUpdate" @close="showUpdate = false" />
     <CommandPalette ref="paletteRef" />
 
     <!-- Tab context menu. Teleported to <body> so a backdrop-filter ancestor
@@ -422,6 +448,7 @@ function onTabDragEnd(): void {
   transition: background 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
 }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 6px 8px; }
 .btn.primary {
   background: var(--accent);
   color: #fff;

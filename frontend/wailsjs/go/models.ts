@@ -66,6 +66,18 @@ export namespace backend {
 	        this.partitions = source["partitions"];
 	    }
 	}
+	export class ApplyUpdateRequest {
+	
+	
+	    static createFrom(source: any = {}) {
+	        return new ApplyUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	
+	    }
+	}
 	export class BatchProduceRequest {
 	    connection_id: string;
 	    topic: string;
@@ -101,6 +113,18 @@ export namespace backend {
 		    }
 		    return a;
 		}
+	}
+	export class CheckUpdateRequest {
+	    current_version: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CheckUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.current_version = source["current_version"];
+	    }
 	}
 	export class ConsumeRequest {
 	    connection_id: string;
@@ -184,6 +208,18 @@ export namespace backend {
 	        this.names = source["names"];
 	    }
 	}
+	export class DownloadUpdateRequest {
+	    url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DownloadUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	    }
+	}
 	export class ProduceRequest {
 	    connection_id: string;
 	    topic: string;
@@ -242,6 +278,24 @@ export namespace backend {
 	        this.mime = source["mime"];
 	    }
 	}
+	export class UpdateCheckResult {
+	    has_update: boolean;
+	    latest_version: string;
+	    notes?: string;
+	    download_url?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateCheckResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.has_update = source["has_update"];
+	        this.latest_version = source["latest_version"];
+	        this.notes = source["notes"];
+	        this.download_url = source["download_url"];
+	    }
+	}
 	export class UpdateConnectionRequest {
 	    id: string;
 	    name: string;
@@ -275,6 +329,22 @@ export namespace backend {
 		    }
 		    return a;
 		}
+	}
+	export class UpdateProgressInfo {
+	    phase: string;
+	    percent: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateProgressInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.phase = source["phase"];
+	        this.percent = source["percent"];
+	        this.error = source["error"];
+	    }
 	}
 
 }

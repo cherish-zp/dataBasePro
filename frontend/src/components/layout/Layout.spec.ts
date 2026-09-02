@@ -36,6 +36,11 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     resetConsumerGroupOffset: vi.fn(async () => {}),
     previewResetOffset: vi.fn(async () => ({})),
     listAudit: vi.fn(async () => []),
+        checkUpdate: vi.fn(async () => ({ has_update: false, latest_version: 'v1.0.0' })),
+        downloadUpdate: vi.fn(async () => {}),
+        applyUpdate: vi.fn(async () => {}),
+        updateProgress: vi.fn(async () => ({ phase: 'idle' as const, percent: 0 })),
+        openURL: vi.fn(async () => {}),
     saveTextFile: vi.fn(async () => ''),
     updateConnection: vi.fn(async () => ({}) as never),
     createTopic: vi.fn(async () => {}),
@@ -603,5 +608,15 @@ describe('Layout', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true }))
     await nextTick()
     expect(document.body.querySelector('[data-test="tab-context-menu"]')).toBeNull()
+  })
+
+  it('opens the update dialog and probes on button click', async () => {
+    const { wrapper, api } = mountLayout()
+    await wrapper.find('[data-test="btn-update"]').trigger('click')
+    // UpdateDialog teleport 到 body,断言走 document。
+    expect(document.body.querySelector('[data-test="update-dialog"]')).not.toBeNull()
+    await vi.waitFor(() => {
+      expect(api.checkUpdate).toHaveBeenCalledWith({ current_version: '1.0.0' })
+    })
   })
 })
