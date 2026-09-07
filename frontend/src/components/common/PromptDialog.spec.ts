@@ -55,6 +55,23 @@ describe('PromptDialog', () => {
     expect(wrapper.emitted('cancel')).toHaveLength(2)
   })
 
+  it('does not cancel when the overlay backdrop is clicked', async () => {
+    const wrapper = mount(PromptDialog, { props: { show: true, title: 't', label: 'l', value: 'v' } })
+    const overlay = document.body.querySelector('[data-test="prompt-overlay"]') as HTMLElement
+    expect(overlay).not.toBeNull()
+    overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.emitted('cancel')).toBeUndefined()
+    expect(dialog()).not.toBeNull()
+  })
+
+  it('does not cancel when a click lands inside the dialog', async () => {
+    const wrapper = mount(PromptDialog, { props: { show: true, title: 't', label: 'l', value: 'v' } })
+    dialog()?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.emitted('cancel')).toBeUndefined()
+  })
+
   it('disables confirm while the value is empty', () => {
     mount(PromptDialog, { props: { show: true, title: 't', label: 'l', value: '' } })
     expect((el('prompt-confirm') as HTMLButtonElement).disabled).toBe(true)

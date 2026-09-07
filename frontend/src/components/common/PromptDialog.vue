@@ -49,7 +49,7 @@ function onKeydown(e: KeyboardEvent): void {
 
 <template>
   <Teleport to="body">
-    <div v-if="show" class="overlay" data-test="prompt-overlay" @click.self="emit('cancel')">
+    <div v-if="show" class="overlay" data-test="prompt-overlay">
       <div class="dialog" data-test="prompt-dialog">
         <div class="title" data-test="prompt-title">{{ title }}</div>
         <label class="field">

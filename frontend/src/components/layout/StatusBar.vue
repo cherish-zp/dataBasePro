@@ -19,7 +19,10 @@ const online = computed(() => Object.values(store.statusById).filter((s) => s ==
 <template>
   <footer class="statusbar" data-test="status-bar">
     <span class="statusbar-count" data-test="status-count">连接 {{ total }} · 在线 {{ online }}</span>
-    <span class="statusbar-version" data-test="status-version">v{{ APP_VERSION }}</span>
+    <span class="statusbar-right">
+      <span class="statusbar-version" data-test="status-version">v{{ APP_VERSION }}</span>
+      <span class="statusbar-author" data-test="status-author">By Mr Zp</span>
+    </span>
     <span v-if="store.error" class="statusbar-error" data-test="status-error">最近错误：{{ store.error }}</span>
   </footer>
 </template>
@@ -42,7 +45,13 @@ const online = computed(() => Object.values(store.statusById).filter((s) => s ==
   font-family: var(--font);
 }
 .statusbar-count { white-space: nowrap; }
-.statusbar-version { white-space: nowrap; color: var(--text-tertiary); }
+.statusbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.statusbar-version,
+.statusbar-author { white-space: nowrap; color: var(--text-tertiary); }
 .statusbar-error {
   min-width: 0;
   color: var(--danger);

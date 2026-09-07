@@ -130,7 +130,7 @@ const statusText = computed(() => {
 
 <template>
   <Teleport to="body">
-    <div v-if="show" class="overlay" @click.self="emit('close')">
+    <div v-if="show" class="overlay">
       <div class="dialog" data-test="update-dialog">
         <div class="head">
           <span class="title">软件更新</span>

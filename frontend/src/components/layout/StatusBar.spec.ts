@@ -24,6 +24,18 @@ describe('StatusBar', () => {
     expect(version).toBe(`v${APP_VERSION}`)
   })
 
+  it('shows the author signature right after the version', () => {
+    const wrapper = mount(StatusBar)
+    const author = wrapper.find('[data-test="status-author"]')
+    expect(author.exists()).toBe(true)
+    expect(author.text()).toBe('By Mr Zp')
+    const version = wrapper.find('[data-test="status-version"]')
+    // 作者署名必须排在版本号之后（DOM 顺序）
+    expect(
+      version.element.compareDocumentPosition(author.element) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
   it('renders zero counts and no error segment for an empty store', () => {
     const wrapper = mount(StatusBar)
     expect(wrapper.find('[data-test="status-bar"]').exists()).toBe(true)
