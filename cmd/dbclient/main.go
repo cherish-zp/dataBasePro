@@ -58,7 +58,12 @@ func main() {
 		if len(os.Args) < 3 {
 			fail("usage: test <bootstrap.servers>")
 		}
-		if err := app.TestConnection(backend.NewKafkaConnection("test", []string{os.Args[2]}).Config); err != nil {
+		testConn := backend.NewKafkaConnection("test", []string{os.Args[2]})
+		cfg, err := testConn.KafkaConfig()
+		if err != nil {
+			fatal(err)
+		}
+		if err := app.TestConnection(cfg); err != nil {
 			fatal(err)
 		}
 		fmt.Println("connection ok")

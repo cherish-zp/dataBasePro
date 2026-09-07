@@ -26,7 +26,7 @@ func sampleConnection(id string) *model.Connection {
 		ID:   id,
 		Name: "local-dev",
 		Type: model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{
+		Config: model.MustConfigJSON(model.KafkaConfig {
 			BootstrapServers: []string{"localhost:9092"},
 			SASL: &model.SASLConfig{
 				Enabled:   true,
@@ -34,7 +34,7 @@ func sampleConnection(id string) *model.Connection {
 				Username:  "user",
 				Password:  "super-secret",
 			},
-		},
+		}),
 	}
 }
 
@@ -50,8 +50,12 @@ func TestStoreCreateAndGet(t *testing.T) {
 	if got.Name != "local-dev" || got.Type != model.ConnectionTypeKafka {
 		t.Fatalf("unexpected connection: %+v", got)
 	}
-	if got.Config.SASL.Password != "super-secret" {
-		t.Fatalf("password not round-tripped: %q", got.Config.SASL.Password)
+	gotCfg, err := got.KafkaConfig()
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if gotCfg.SASL.Password != "super-secret" {
+		t.Fatalf("password not round-tripped: %q", gotCfg.SASL.Password)
 	}
 	if got.CreatedAt == 0 || got.UpdatedAt == 0 {
 		t.Fatal("timestamps must be set")
@@ -82,12 +86,16 @@ func TestStoreUpdate(t *testing.T) {
 		t.Fatalf("create failed: %v", err)
 	}
 	c.Name = "renamed"
-	c.Config.BootstrapServers = []string{"broker-a:9092", "broker-b:9092"}
+	c.Config = model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"broker-a:9092", "broker-b:9092"}})
 	if err := s.UpdateConnection(c); err != nil {
 		t.Fatalf("update failed: %v", err)
 	}
 	got, _ := s.GetConnection("c1")
-	if got.Name != "renamed" || len(got.Config.BootstrapServers) != 2 {
+	gotCfg, err := got.KafkaConfig()
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if got.Name != "renamed" || len(gotCfg.BootstrapServers) != 2 {
 		t.Fatalf("update not applied: %+v", got)
 	}
 }
@@ -131,7 +139,12 @@ func TestStoreUpdateReencryptsPassword(t *testing.T) {
 	if err := s.CreateConnection(c); err != nil {
 		t.Fatalf("create failed: %v", err)
 	}
-	c.Config.SASL.Password = "rotated-secret"
+	cfg, err := c.KafkaConfig()
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	cfg.SASL.Password = "rotated-secret"
+	c.Config = model.MustConfigJSON(cfg)
 	if err := s.UpdateConnection(c); err != nil {
 		t.Fatalf("update failed: %v", err)
 	}
@@ -149,8 +162,12 @@ func TestStoreUpdateReencryptsPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after update failed: %v", err)
 	}
-	if got.Config.SASL.Password != "rotated-secret" {
-		t.Fatalf("updated password not round-tripped: %q", got.Config.SASL.Password)
+	gotCfg, err := got.KafkaConfig()
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if gotCfg.SASL.Password != "rotated-secret" {
+		t.Fatalf("updated password not round-tripped: %q", gotCfg.SASL.Password)
 	}
 }
 
@@ -205,8 +222,12 @@ func TestStorePersistenceAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after reopen failed: %v", err)
 	}
-	if got.Config.SASL.Password != "super-secret" {
-		t.Fatalf("password must survive reopen, got %q", got.Config.SASL.Password)
+	gotCfg, err := got.KafkaConfig()
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if gotCfg.SASL.Password != "super-secret" {
+		t.Fatalf("password must survive reopen, got %q", gotCfg.SASL.Password)
 	}
 }
 

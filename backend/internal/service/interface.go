@@ -56,3 +56,30 @@ type ClientFactoryFunc func(ctx context.Context, cfg model.KafkaConfig) (KafkaDa
 func (f ClientFactoryFunc) NewKafkaClient(ctx context.Context, cfg model.KafkaConfig) (KafkaDataSource, error) {
 	return f(ctx, cfg)
 }
+
+// RedisDataSource extends DataSource with the Redis key-space operations of
+// the MVP browser (scan/view/edit/delete/TTL/flush/INFO).
+type RedisDataSource interface {
+	DataSource
+	Ping(ctx context.Context) error
+	Databases(ctx context.Context) ([]model.RedisDBInfo, error)
+	IsCluster() bool
+	Scan(ctx context.Context, db int, cursor uint64, match string, count int64) (uint64, []model.RedisKeyInfo, error)
+	GetKey(ctx context.Context, db int, key string) (model.RedisValue, error)
+	RenameKey(ctx context.Context, db int, from, to string) error
+	DeleteKeys(ctx context.Context, db int, keys []string) (int64, error)
+	SetTTL(ctx context.Context, db int, key string, ttlSeconds int64) error
+	SetString(ctx context.Context, db int, key, value string, ttlSeconds int64) error
+	HashSetField(ctx context.Context, db int, key, field, value string) error
+	HashDeleteField(ctx context.Context, db int, key, field string) error
+	ListSetIndex(ctx context.Context, db int, key string, index int64, value string) error
+	ListPush(ctx context.Context, db int, key, value string, atHead bool) error
+	ListDeleteIndex(ctx context.Context, db int, key string, index int64) error
+	SetAdd(ctx context.Context, db int, key, member string) error
+	SetRemove(ctx context.Context, db int, key, member string) error
+	ZSetAdd(ctx context.Context, db int, key, member string, score float64) error
+	ZSetRemove(ctx context.Context, db int, key, member string) error
+	FlushDB(ctx context.Context, db int) error
+	FlushAll(ctx context.Context) error
+	ServerInfo(ctx context.Context) (model.RedisServerInfo, error)
+}

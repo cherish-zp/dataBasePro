@@ -3,6 +3,7 @@
 package model
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -18,10 +19,13 @@ const (
 	ConnectionTypeES    ConnectionType = "es"
 )
 
+// ConnectionTypeRedis identifies a Redis data source (集群/单机自动探测)。
+const ConnectionTypeRedis ConnectionType = "redis"
+
 // Valid reports whether the type is currently supported.
 func (t ConnectionType) Valid() bool {
 	switch t {
-	case ConnectionTypeKafka, ConnectionTypeMySQL, ConnectionTypeES:
+	case ConnectionTypeKafka, ConnectionTypeMySQL, ConnectionTypeES, ConnectionTypeRedis:
 		return true
 	}
 	return false
@@ -166,17 +170,28 @@ func (s *SASLConfig) Validate() error {
 	return nil
 }
 
-// Connection is a persisted data source definition.
-type Connection struct {
-	ID        string         `json:"id"`
-	Name      string         `json:"name"`
-	Type      ConnectionType `json:"type"`
-	Config    KafkaConfig    `json:"config"`
-	CreatedAt int64          `json:"created_at"`
-	UpdatedAt int64          `json:"updated_at"`
+// MustConfigJSON serialises any config struct into the raw JSON form stored
+// on Connection (test and bootstrap convenience).
+func MustConfigJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return json.RawMessage(b)
 }
 
-// Validate checks the connection definition.
+// Connection is a persisted data source definition.
+type Connection struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Type      ConnectionType  `json:"type"`
+	Config    json.RawMessage `json:"config"`
+	CreatedAt int64           `json:"created_at"`
+	UpdatedAt int64           `json:"updated_at"`
+}
+
+// Validate checks the connection definition, dispatching config validation
+// to the struct matching the connection type.
 func (c Connection) Validate() error {
 	if strings.TrimSpace(c.Name) == "" {
 		return errors.New("connection name must not be empty")
@@ -186,7 +201,40 @@ func (c Connection) Validate() error {
 	}
 	switch c.Type {
 	case ConnectionTypeKafka:
-		return c.Config.Validate()
+		var cfg KafkaConfig
+		if err := json.Unmarshal(c.Config, &cfg); err != nil {
+			return fmt.Errorf("invalid kafka config: %w", err)
+		}
+		return cfg.Validate()
+	case ConnectionTypeRedis:
+		if len(c.Config) == 0 {
+			return errors.New("redis config must not be empty")
+		}
+		var cfg RedisConfig
+		if err := json.Unmarshal(c.Config, &cfg); err != nil {
+			return fmt.Errorf("invalid redis config: %w", err)
+		}
+		return cfg.Validate()
 	}
 	return nil
+}
+
+// KafkaConfig decodes the connection's config as a KafkaConfig (kafka
+// connections only).
+func (c Connection) KafkaConfig() (KafkaConfig, error) {
+	var cfg KafkaConfig
+	if err := json.Unmarshal(c.Config, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// RedisConfig decodes the connection's config as a RedisConfig (redis
+// connections only).
+func (c Connection) RedisConfig() (RedisConfig, error) {
+	var cfg RedisConfig
+	if err := json.Unmarshal(c.Config, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
 }

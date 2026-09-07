@@ -10,9 +10,9 @@ func TestConnectionValidate_Valid(t *testing.T) {
 		ID:   "id-1",
 		Name: "local-dev",
 		Type: ConnectionTypeKafka,
-		Config: KafkaConfig{
+		Config: MustConfigJSON(KafkaConfig{
 			BootstrapServers: []string{"localhost:9092"},
-		},
+		}),
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("expected valid connection, got error: %v", err)
@@ -24,9 +24,9 @@ func TestConnectionValidate_EmptyName(t *testing.T) {
 		ID:   "id-1",
 		Name: "",
 		Type: ConnectionTypeKafka,
-		Config: KafkaConfig{
+		Config: MustConfigJSON(KafkaConfig{
 			BootstrapServers: []string{"localhost:9092"},
-		},
+		}),
 	}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected error for empty name, got nil")
@@ -38,9 +38,9 @@ func TestConnectionValidate_UnsupportedType(t *testing.T) {
 		ID:   "id-1",
 		Name: "bad",
 		Type: ConnectionType("oracle"),
-		Config: KafkaConfig{
+		Config: MustConfigJSON(KafkaConfig{
 			BootstrapServers: []string{"localhost:9092"},
-		},
+		}),
 	}
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected error for unsupported type, got nil")

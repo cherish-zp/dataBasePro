@@ -9,6 +9,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -286,9 +287,19 @@ func (a *App) CreateConnection(c *model.Connection) (*model.Connection, error) {
 // Config shares the CreateConnection config JSON shape; the id locates the row
 // and must already exist.
 type UpdateConnectionRequest struct {
-	ID     string            `json:"id"`
-	Name   string            `json:"name"`
-	Config model.KafkaConfig `json:"config"`
+	ID     string               `json:"id"`
+	Name   string               `json:"name"`
+	Type   model.ConnectionType `json:"type,omitempty"`
+	Config json.RawMessage      `json:"config"`
+}
+
+// resolvedType defaults empty requests to kafka (the only type that existed
+// before the field was introduced).
+func (r UpdateConnectionRequest) resolvedType() model.ConnectionType {
+	if r.Type == "" {
+		return model.ConnectionTypeKafka
+	}
+	return r.Type
 }
 
 // UpdateConnection validates and overwrites an existing connection, keeping its
@@ -301,7 +312,7 @@ func (a *App) UpdateConnection(req UpdateConnectionRequest) (*model.Connection, 
 	c := &model.Connection{
 		ID:     req.ID,
 		Name:   req.Name,
-		Type:   model.ConnectionTypeKafka,
+		Type:   req.resolvedType(),
 		Config: req.Config,
 	}
 	if err := a.svc.UpdateConnection(ctx, c); err != nil {

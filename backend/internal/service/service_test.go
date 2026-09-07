@@ -149,9 +149,9 @@ func sampleConn() *model.Connection {
 	return &model.Connection{
 		Name: "local",
 		Type: model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{
+		Config: model.MustConfigJSON(model.KafkaConfig {
 			BootstrapServers: []string{"localhost:9092"},
-		},
+		}),
 	}
 }
 
@@ -194,7 +194,7 @@ func TestUpdateConnectionPersistsChanges(t *testing.T) {
 	createdAt, updatedAt := c.CreatedAt, c.UpdatedAt
 
 	c.Name = "renamed"
-	c.Config.BootstrapServers = []string{"broker-a:9092", "broker-b:9092"}
+	c.Config = model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"broker-a:9092", "broker-b:9092"}, SecurityProtocol: "SSL"})
 	if err := svc.UpdateConnection(ctx, c); err != nil {
 		t.Fatalf("UpdateConnection: %v", err)
 	}
@@ -208,7 +208,11 @@ func TestUpdateConnectionPersistsChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after update: %v", err)
 	}
-	if got.Name != "renamed" || len(got.Config.BootstrapServers) != 2 {
+	gotCfg, err := got.KafkaConfig()
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if got.Name != "renamed" || len(gotCfg.BootstrapServers) != 2 {
 		t.Fatalf("changes not persisted: %+v", got)
 	}
 }
@@ -226,7 +230,7 @@ func TestUpdateConnectionValidates(t *testing.T) {
 		t.Fatal("invalid connection must be rejected")
 	}
 	badCfg := *c
-	badCfg.Config.BootstrapServers = nil
+	badCfg.Config = model.MustConfigJSON(model.KafkaConfig{})
 	if err := svc.UpdateConnection(ctx, &badCfg); err == nil {
 		t.Fatal("invalid config must be rejected")
 	}
@@ -235,7 +239,11 @@ func TestUpdateConnectionValidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after rejected update: %v", err)
 	}
-	if got.Name != "local" || len(got.Config.BootstrapServers) != 1 {
+	gotCfg, err := got.KafkaConfig()
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if got.Name != "local" || len(gotCfg.BootstrapServers) != 1 {
 		t.Fatalf("rejected update must not touch the stored row: %+v", got)
 	}
 }
@@ -279,7 +287,11 @@ func TestUpdateConnectionEvictsPooledClient(t *testing.T) {
 
 func TestTestConnection(t *testing.T) {
 	svc, f := newTestService(t)
-	if err := svc.TestConnection(context.Background(), sampleConn().Config); err != nil {
+	sampleCfg, err := sampleConn().KafkaConfig()
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if err := svc.TestConnection(context.Background(), sampleCfg); err != nil {
 		t.Fatalf("TestConnection: %v", err)
 	}
 	if f.count() != 1 {
@@ -290,7 +302,11 @@ func TestTestConnection(t *testing.T) {
 func TestTestConnectionFailure(t *testing.T) {
 	svc, f := newTestService(t)
 	f.err = errors.New("boom")
-	if err := svc.TestConnection(context.Background(), sampleConn().Config); err == nil {
+	sampleCfg, err := sampleConn().KafkaConfig()
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if err := svc.TestConnection(context.Background(), sampleCfg); err == nil {
 		t.Fatal("TestConnection must surface client errors")
 	}
 }

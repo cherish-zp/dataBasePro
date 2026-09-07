@@ -43,7 +43,7 @@ func TestAppCreateAndListConnections(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -75,7 +75,7 @@ func TestAppAuditsCreateConnection(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -122,7 +122,7 @@ func TestAppAuditsDeleteConnectionWithNameTarget(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -170,7 +170,7 @@ func TestAppListAuditDefaultLimit(t *testing.T) {
 		if _, err := app.CreateConnection(&model.Connection{
 			Name:   fmt.Sprintf("c-%d", i),
 			Type:   model.ConnectionTypeKafka,
-			Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+			Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 		}); err != nil {
 			t.Fatalf("create #%d: %v", i, err)
 		}
@@ -212,7 +212,7 @@ func TestAppEndToEnd(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "fake",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: cluster.ListenAddrs()},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: cluster.ListenAddrs()}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -269,7 +269,7 @@ func TestAppUpdateConnectionAppliesChanges(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -278,7 +278,7 @@ func TestAppUpdateConnectionAppliesChanges(t *testing.T) {
 	updated, err := app.UpdateConnection(UpdateConnectionRequest{
 		ID:     created.ID,
 		Name:   "renamed",
-		Config: model.KafkaConfig{BootstrapServers: []string{"broker-a:9092", "broker-b:9092"}, SecurityProtocol: "SSL"},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"broker-a:9092", "broker-b:9092"}, SecurityProtocol: "SSL"}),
 	})
 	if err != nil {
 		t.Fatalf("UpdateConnection: %v", err)
@@ -297,7 +297,11 @@ func TestAppUpdateConnectionAppliesChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConnection: %v", err)
 	}
-	if got.Name != "renamed" || len(got.Config.BootstrapServers) != 2 || got.Config.SecurityProtocol != "SSL" {
+	gotCfg, err := got.KafkaConfig()
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if got.Name != "renamed" || len(gotCfg.BootstrapServers) != 2 || gotCfg.SecurityProtocol != "SSL" {
 		t.Fatalf("changes not persisted: %+v", got)
 	}
 }
@@ -308,7 +312,7 @@ func TestAppUpdateConnectionValidation(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -318,11 +322,11 @@ func TestAppUpdateConnectionValidation(t *testing.T) {
 	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: created.ID, Name: ""}); err == nil {
 		t.Fatal("empty name must be rejected")
 	}
-	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: created.ID, Name: "x", Config: model.KafkaConfig{BootstrapServers: []string{"no-port"}}}); err == nil {
+	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: created.ID, Name: "x", Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"no-port"}})}); err == nil {
 		t.Fatal("invalid bootstrap server must be rejected")
 	}
 	// 不存在的 id 必须报错。
-	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: "nope", Name: "x", Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}}); err == nil {
+	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: "nope", Name: "x", Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}})}); err == nil {
 		t.Fatal("unknown id must be rejected")
 	}
 
@@ -331,7 +335,11 @@ func TestAppUpdateConnectionValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConnection: %v", err)
 	}
-	if got.Name != "local" || len(got.Config.BootstrapServers) != 1 {
+	gotCfg, err := got.KafkaConfig()
+	if err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if got.Name != "local" || len(gotCfg.BootstrapServers) != 1 {
 		t.Fatalf("rejected updates must not touch the stored connection: %+v", got)
 	}
 }
@@ -342,7 +350,7 @@ func TestAppAuditsUpdateConnection(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -350,7 +358,7 @@ func TestAppAuditsUpdateConnection(t *testing.T) {
 	if _, err := app.UpdateConnection(UpdateConnectionRequest{
 		ID:     created.ID,
 		Name:   "renamed",
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	}); err != nil {
 		t.Fatalf("UpdateConnection: %v", err)
 	}
@@ -398,7 +406,7 @@ func TestUpdateConnectionRequestJSONShape(t *testing.T) {
 	req := UpdateConnectionRequest{
 		ID:     "c-1",
 		Name:   "renamed",
-		Config: model.KafkaConfig{BootstrapServers: []string{"h:1"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"h:1"}}),
 	}
 	b, err := json.Marshal(req)
 	if err != nil {
@@ -520,7 +528,7 @@ func TestAppAlterTopicPartitionsDelegatesAndAudits(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -593,7 +601,7 @@ func TestAppGetTopicMessageCountsDelegates(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -619,7 +627,7 @@ func TestAppResetOffsetExplicitModeDelegatesOffsets(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -713,7 +721,7 @@ func TestAppAuditsDeleteTopicsFailureDetailCapped(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -762,7 +770,7 @@ func TestAppAuditsDeleteTopicsFailureDetailFull(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -801,7 +809,7 @@ func TestAppPreviewResetOffsetDelegates(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)

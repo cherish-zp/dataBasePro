@@ -99,15 +99,230 @@ func (s *Service) ConnectConnection(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	kds, err := s.buildClient(ctx, c)
+	var ds DataSource
+	switch c.Type {
+	case model.ConnectionTypeRedis:
+		ds, err = s.buildRedisClient(c)
+	default:
+		ds, err = s.buildClient(ctx, c)
+	}
 	if err != nil {
 		return err
 	}
-	if err := s.pool.Put(id, kds); err != nil {
-		kds.Close()
+	if err := s.pool.Put(id, ds); err != nil {
+		ds.Close()
 		return err
 	}
 	return nil
+}
+
+// buildRedisClient creates the Redis client for the connection.
+func (s *Service) buildRedisClient(c *model.Connection) (*RedisClient, error) {
+	if c.Type != model.ConnectionTypeRedis {
+		return nil, fmt.Errorf("connection %q is not a Redis source (type %q)", c.ID, c.Type)
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	cfg, err := c.RedisConfig()
+	if err != nil {
+		return nil, fmt.Errorf("decode redis config: %w", err)
+	}
+	return NewRedisClient(cfg)
+}
+
+// redis returns the pooled Redis client for the connection, auto-connecting
+// when the tree has not connected it yet.
+func (s *Service) redis(ctx context.Context, id string) (RedisDataSource, error) {
+	if ds, err := s.pool.Get(id); err == nil {
+		if rds, ok := ds.(RedisDataSource); ok {
+			return rds, nil
+		}
+		return nil, fmt.Errorf("connection %q is not a Redis source", id)
+	}
+	if err := s.ConnectConnection(ctx, id); err != nil {
+		return nil, err
+	}
+	ds, err := s.pool.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	rds, ok := ds.(RedisDataSource)
+	if !ok {
+		return nil, fmt.Errorf("connection %q is not a Redis source", id)
+	}
+	return rds, nil
+}
+
+// RedisDatabases lists the logical DBs of the connection's Redis.
+func (s *Service) RedisDatabases(ctx context.Context, id string) ([]model.RedisDBInfo, error) {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return rds.Databases(ctx)
+}
+
+// RedisScan pages the key space.
+func (s *Service) RedisScan(ctx context.Context, id string, db int, cursor uint64, match string, count int64) (uint64, []model.RedisKeyInfo, error) {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	return rds.Scan(ctx, db, cursor, match, count)
+}
+
+// RedisGetKey loads a key's typed value.
+func (s *Service) RedisGetKey(ctx context.Context, id string, db int, key string) (model.RedisValue, error) {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return model.RedisValue{}, err
+	}
+	return rds.GetKey(ctx, db, key)
+}
+
+// RedisRenameKey renames a key.
+func (s *Service) RedisRenameKey(ctx context.Context, id string, db int, from, to string) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.RenameKey(ctx, db, from, to)
+}
+
+// RedisDeleteKeys deletes keys and returns the removal count.
+func (s *Service) RedisDeleteKeys(ctx context.Context, id string, db int, keys []string) (int64, error) {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	return rds.DeleteKeys(ctx, db, keys)
+}
+
+// RedisSetTTL applies or removes a key expiry.
+func (s *Service) RedisSetTTL(ctx context.Context, id string, db int, key string, ttlSeconds int64) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.SetTTL(ctx, db, key, ttlSeconds)
+}
+
+// RedisSetString writes a string key.
+func (s *Service) RedisSetString(ctx context.Context, id string, db int, key, value string, ttlSeconds int64) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.SetString(ctx, db, key, value, ttlSeconds)
+}
+
+// RedisHashSetField writes one field of a hash key.
+func (s *Service) RedisHashSetField(ctx context.Context, id string, db int, key, field, value string) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.HashSetField(ctx, db, key, field, value)
+}
+
+// RedisHashDeleteField removes one field from a hash key.
+func (s *Service) RedisHashDeleteField(ctx context.Context, id string, db int, key, field string) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.HashDeleteField(ctx, db, key, field)
+}
+
+// RedisListSetIndex overwrites the element at the given list index.
+func (s *Service) RedisListSetIndex(ctx context.Context, id string, db int, key string, index int64, value string) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.ListSetIndex(ctx, db, key, index, value)
+}
+
+// RedisListPush prepends or appends one element of a list.
+func (s *Service) RedisListPush(ctx context.Context, id string, db int, key, value string, atHead bool) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.ListPush(ctx, db, key, value, atHead)
+}
+
+// RedisListDeleteIndex removes the element at the given list index.
+func (s *Service) RedisListDeleteIndex(ctx context.Context, id string, db int, key string, index int64) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.ListDeleteIndex(ctx, db, key, index)
+}
+
+// RedisSetAdd inserts a member into a set.
+func (s *Service) RedisSetAdd(ctx context.Context, id string, db int, key, member string) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.SetAdd(ctx, db, key, member)
+}
+
+// RedisSetRemove deletes a member from a set.
+func (s *Service) RedisSetRemove(ctx context.Context, id string, db int, key, member string) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.SetRemove(ctx, db, key, member)
+}
+
+// RedisZSetAdd inserts a sorted-set member or updates its score.
+func (s *Service) RedisZSetAdd(ctx context.Context, id string, db int, key, member string, score float64) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.ZSetAdd(ctx, db, key, member, score)
+}
+
+// RedisZSetRemove deletes a member from a sorted set.
+func (s *Service) RedisZSetRemove(ctx context.Context, id string, db int, key, member string) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.ZSetRemove(ctx, db, key, member)
+}
+
+// RedisFlushDB empties the given DB (dangerous, audited by the caller).
+func (s *Service) RedisFlushDB(ctx context.Context, id string, db int) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.FlushDB(ctx, db)
+}
+
+// RedisFlushAll empties the whole instance/cluster (dangerous, audited).
+func (s *Service) RedisFlushAll(ctx context.Context, id string) error {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return err
+	}
+	return rds.FlushAll(ctx)
+}
+
+// RedisServerInfo builds the overview for the connection's Redis.
+func (s *Service) RedisServerInfo(ctx context.Context, id string) (model.RedisServerInfo, error) {
+	rds, err := s.redis(ctx, id)
+	if err != nil {
+		return model.RedisServerInfo{}, err
+	}
+	return rds.ServerInfo(ctx)
 }
 
 // CloseConnection removes a connection from the pool and closes it.
@@ -358,7 +573,11 @@ func (s *Service) buildClient(ctx context.Context, c *model.Connection) (KafkaDa
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	kds, err := s.factory.NewKafkaClient(ctx, c.Config)
+	kcfg, err := c.KafkaConfig()
+	if err != nil {
+		return nil, fmt.Errorf("decode kafka config: %w", err)
+	}
+	kds, err := s.factory.NewKafkaClient(ctx, kcfg)
 	if err != nil {
 		return nil, fmt.Errorf("create client: %w", err)
 	}

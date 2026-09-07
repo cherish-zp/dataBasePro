@@ -83,7 +83,7 @@ func (s *Store) CreateConnection(c *model.Connection) error {
 	now := time.Now().UnixMilli()
 	c.CreatedAt = now
 	c.UpdatedAt = now
-	raw, err := s.marshalConfig(c.Config)
+	raw, err := s.marshalConfig(c.Type, c.Config)
 	if err != nil {
 		return err
 	}
@@ -103,7 +103,7 @@ func (s *Store) UpdateConnection(c *model.Connection) error {
 		return errors.New("connection id must not be empty")
 	}
 	c.UpdatedAt = time.Now().UnixMilli()
-	raw, err := s.marshalConfig(c.Config)
+	raw, err := s.marshalConfig(c.Type, c.Config)
 	if err != nil {
 		return err
 	}
@@ -178,7 +178,7 @@ func (s *Store) scanConnection(row scanner) (*model.Connection, error) {
 		return nil, fmt.Errorf("scan connection: %w", err)
 	}
 	c.Type = model.ConnectionType(rawType)
-	cfg, err := s.unmarshalConfig(raw)
+	cfg, err := s.unmarshalConfig(string(c.Type), raw)
 	if err != nil {
 		return nil, err
 	}
@@ -186,38 +186,87 @@ func (s *Store) scanConnection(row scanner) (*model.Connection, error) {
 	return &c, nil
 }
 
-// marshalConfig serialises the config, encrypting any password field so the
-// raw stored JSON never contains plaintext secrets.
-func (s *Store) marshalConfig(cfg model.KafkaConfig) (string, error) {
-	cfg = cloneConfig(cfg)
-	if cfg.SASL != nil && cfg.SASL.Password != "" {
-		enc, err := s.crypto.Encrypt(cfg.SASL.Password)
-		if err != nil {
-			return "", fmt.Errorf("encrypt password: %w", err)
+// marshalConfig serialises the config for the connection type, encrypting
+// the password field (kafka: SASL.Password, redis: Password) so the raw
+// stored JSON never contains plaintext secrets.
+func (s *Store) marshalConfig(typ model.ConnectionType, raw json.RawMessage) (string, error) {
+	switch typ {
+	case model.ConnectionTypeRedis:
+		var cfg model.RedisConfig
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return "", fmt.Errorf("unmarshal redis config: %w", err)
 		}
-		cfg.SASL.Password = enc
+		if cfg.Password != "" {
+			enc, err := s.crypto.Encrypt(cfg.Password)
+			if err != nil {
+				return "", fmt.Errorf("encrypt password: %w", err)
+			}
+			cfg.Password = enc
+		}
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return "", fmt.Errorf("marshal config: %w", err)
+		}
+		return string(b), nil
+	default:
+		var cfg model.KafkaConfig
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return "", fmt.Errorf("unmarshal kafka config: %w", err)
+		}
+		if cfg.SASL != nil && cfg.SASL.Password != "" {
+			enc, err := s.crypto.Encrypt(cfg.SASL.Password)
+			if err != nil {
+				return "", fmt.Errorf("encrypt password: %w", err)
+			}
+			cfg.SASL.Password = enc
+		}
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return "", fmt.Errorf("marshal config: %w", err)
+		}
+		return string(b), nil
 	}
-	b, err := json.Marshal(cfg)
-	if err != nil {
-		return "", fmt.Errorf("marshal config: %w", err)
-	}
-	return string(b), nil
 }
 
-// unmarshalConfig loads a config, transparently decrypting stored passwords.
-func (s *Store) unmarshalConfig(raw string) (model.KafkaConfig, error) {
-	var cfg model.KafkaConfig
-	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-		return cfg, fmt.Errorf("unmarshal config: %w", err)
-	}
-	if cfg.SASL != nil && strings.HasPrefix(cfg.SASL.Password, encPrefix+cryptoVersion+":") {
-		dec, err := s.crypto.Decrypt(cfg.SASL.Password)
-		if err != nil {
-			return cfg, fmt.Errorf("decrypt password: %w", err)
+// unmarshalConfig loads a config for the connection type, transparently
+// decrypting stored passwords (kafka: SASL.Password, redis: Password).
+func (s *Store) unmarshalConfig(typ string, raw string) (json.RawMessage, error) {
+	switch model.ConnectionType(typ) {
+	case model.ConnectionTypeRedis:
+		var cfg model.RedisConfig
+		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+			return nil, fmt.Errorf("unmarshal redis config: %w", err)
 		}
-		cfg.SASL.Password = dec
+		if cfg.Password != "" && strings.HasPrefix(cfg.Password, encPrefix+cryptoVersion+":") {
+			dec, err := s.crypto.Decrypt(cfg.Password)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt password: %w", err)
+			}
+			cfg.Password = dec
+		}
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(b), nil
+	default:
+		var cfg model.KafkaConfig
+		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+			return nil, fmt.Errorf("unmarshal kafka config: %w", err)
+		}
+		if cfg.SASL != nil && strings.HasPrefix(cfg.SASL.Password, encPrefix+cryptoVersion+":") {
+			dec, err := s.crypto.Decrypt(cfg.SASL.Password)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt password: %w", err)
+			}
+			cfg.SASL.Password = dec
+		}
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(b), nil
 	}
-	return cfg, nil
 }
 
 func cloneConfig(cfg model.KafkaConfig) model.KafkaConfig {

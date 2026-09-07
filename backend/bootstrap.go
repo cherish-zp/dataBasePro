@@ -31,6 +31,6 @@ func NewKafkaConnection(name string, bootstrapServers []string) *model.Connectio
 	return &model.Connection{
 		Name:   name,
 		Type:   model.ConnectionTypeKafka,
-		Config: model.KafkaConfig{BootstrapServers: bootstrapServers},
+		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: bootstrapServers}),
 	}
 }
