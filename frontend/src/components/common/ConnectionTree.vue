@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
-import type { Connection, Topic, ConsumerGroup, TopicMessageCounts } from '@/api/types'
+import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
 import { formatCount } from '@/utils/format'
 import { CSV_MIME, exportCsv, saveFile, type ExportColumn } from '@/utils/export'
@@ -17,6 +17,7 @@ const emit = defineEmits<{
   (e: 'open-topic', connectionId: string, topic: string, partitions: number[]): void
   (e: 'open-group', connectionId: string, group: string): void
   (e: 'open-lag', connectionId: string): void
+  (e: 'open-redis-keys', connectionId: string, db: number): void
   (e: 'open-health', connectionId: string): void
   (e: 'delete', connectionId: string): void
   (e: 'edit-connection', conn: Connection): void
@@ -74,7 +75,7 @@ async function onToggleConnect(conn: Connection): Promise<void> {
 // consumers, tables, indices...). Each collection can optionally offer create
 // actions, so adding MySQL tables later is a matter of declaring a new entry
 // here and a create/delete branch in the dispatch functions below.
-type ObjectKind = 'topic' | 'table' | 'group'
+type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db'
 interface ObjectCollection {
   key: string
   label: string
@@ -89,6 +90,9 @@ const COLLECTIONS_BY_TYPE: Record<string, ObjectCollection[]> = {
     { key: 'topics', label: 'Topics', icon: '📋', kind: 'topic', creatable: true, emptyText: '（无主题）' },
     { key: 'consumers', label: 'Consumers', icon: '👥', kind: 'group', creatable: false, emptyText: '（无消费组）' },
   ],
+  redis: [
+    { key: 'dbs', label: 'Databases', icon: '🗂️', kind: 'redis-db' as ObjectKind, creatable: false, emptyText: '（无数据库）' },
+  ],
   // Future data sources plug in here, e.g.:
   // mysql: [{ key: 'tables', label: 'Tables', icon: '🗄️', kind: 'table', creatable: true, emptyText: '（无表）' }],
   // es: [{ key: 'indices', label: 'Indices', icon: '🔎', kind: 'index', creatable: true, emptyText: '（无索引）' }],
@@ -100,6 +104,7 @@ function collectionsOf(type: string): ObjectCollection[] {
 
 const expanded = ref<Record<string, boolean>>({})
 const topicsByConn = ref<Record<string, Topic[]>>({})
+const redisDBs = ref<Record<string, RedisDBInfo[]>>({})
 const groupsByConn = ref<Record<string, ConsumerGroup[]>>({})
 const loadingByConn = ref<Record<string, boolean>>({})
 const errorByConn = ref<Record<string, string>>({})
@@ -121,7 +126,7 @@ async function toggle(conn: Connection): Promise<void> {
     clearBatchState(id)
     return
   }
-  if (!topicsByConn.value[id] && conn.type === 'kafka') {
+  if (!topicsByConn.value[id] && !redisDBs.value[id] && (conn.type === 'kafka' || conn.type === 'redis')) {
     await load(id)
   }
 }
@@ -131,13 +136,18 @@ async function load(connId: string): Promise<void> {
   errorByConn.value[connId] = ''
   connStore.setStatus(connId, 'connecting')
   try {
-    const [topics, groups] = await Promise.all([
-      getApi().listTopics(connId),
-      getApi().listConsumerGroups(connId),
-    ])
-    topicsByConn.value[connId] = topics
-    groupsByConn.value[connId] = groups
-    connStore.setStatus(connId, 'connected')
+    if (props.connections.find((c) => c.id === connId)?.type === 'redis') {
+      redisDBs.value[connId] = await getApi().listRedisDBs(connId)
+      connStore.setStatus(connId, 'connected')
+    } else {
+      const [topics, groups] = await Promise.all([
+        getApi().listTopics(connId),
+        getApi().listConsumerGroups(connId),
+      ])
+      topicsByConn.value[connId] = topics
+      groupsByConn.value[connId] = groups
+      connStore.setStatus(connId, 'connected')
+    }
   } catch (e) {
     errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
     connStore.setStatus(connId, 'error')
@@ -561,7 +571,7 @@ function exportTopics(conn: Connection): void {
         <button class="conn-delete" type="button" data-test="btn-delete" @click.stop="emit('delete', conn.id)">🗑</button>
       </div>
 
-      <div v-if="isExpanded(conn.id) && conn.type === 'kafka'" class="conn-children">
+      <div v-if="isExpanded(conn.id) && (conn.type === 'kafka' || conn.type === 'redis')" class="conn-children">
         <div v-if="loadingByConn[conn.id]" class="conn-loading" data-test="tree-loading">加载中…</div>
         <div v-else-if="errorByConn[conn.id]" class="conn-error" data-test="tree-error">{{ errorByConn[conn.id] }}</div>
         <template v-else>
@@ -583,7 +593,7 @@ function exportTopics(conn: Connection): void {
             </button>
           </div>
 
-          <button
+          <button v-if="conn.type === 'kafka'"
             class="lag-entry"
             type="button"
             data-test="btn-open-lag"
@@ -759,6 +769,22 @@ function exportTopics(conn: Connection): void {
               </div>
             </template>
 
+            <template v-else-if="col.kind === 'redis-db'">
+              <div
+                v-for="d in redisDBs[conn.id] ?? []"
+                :key="d.index"
+                class="leaf"
+                data-test="redis-db-node"
+                :title="`DB${d.index}(${d.keys} 个键)`"
+                @dblclick="emit('open-redis-keys', conn.id, d.index)"
+              >
+                <span class="leaf-name" data-test="redis-db-name">DB{{ d.index }}</span>
+                <span class="leaf-count" data-test="redis-db-keys">{{ d.keys }}</span>
+              </div>
+              <div v-if="(redisDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="redis-db-empty">
+                {{ loadingByConn[conn.id] ? '加载中…' : '（无数据库）' }}
+              </div>
+            </template>
             <template v-else-if="col.kind === 'group'">
               <div
                 v-for="g in filteredGroups(conn.id)"

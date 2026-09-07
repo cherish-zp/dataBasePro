@@ -106,6 +106,10 @@ export function ListConsumerGroups(arg1) {
   return window['go']['backend']['App']['ListConsumerGroups'](arg1);
 }
 
+export function ListRedisDBs(arg1) {
+  return window['go']['backend']['App']['ListRedisDBs'](arg1);
+}
+
 export function ListTopics(arg1) {
   return window['go']['backend']['App']['ListTopics'](arg1);
 }
@@ -126,6 +130,78 @@ export function ProduceMessages(arg1) {
   return window['go']['backend']['App']['ProduceMessages'](arg1);
 }
 
+export function RedisDeleteKeys(arg1) {
+  return window['go']['backend']['App']['RedisDeleteKeys'](arg1);
+}
+
+export function RedisFlushAll(arg1) {
+  return window['go']['backend']['App']['RedisFlushAll'](arg1);
+}
+
+export function RedisFlushDB(arg1) {
+  return window['go']['backend']['App']['RedisFlushDB'](arg1);
+}
+
+export function RedisGetKey(arg1) {
+  return window['go']['backend']['App']['RedisGetKey'](arg1);
+}
+
+export function RedisHashDeleteField(arg1) {
+  return window['go']['backend']['App']['RedisHashDeleteField'](arg1);
+}
+
+export function RedisHashSetField(arg1) {
+  return window['go']['backend']['App']['RedisHashSetField'](arg1);
+}
+
+export function RedisListDeleteIndex(arg1) {
+  return window['go']['backend']['App']['RedisListDeleteIndex'](arg1);
+}
+
+export function RedisListPush(arg1) {
+  return window['go']['backend']['App']['RedisListPush'](arg1);
+}
+
+export function RedisListSetIndex(arg1) {
+  return window['go']['backend']['App']['RedisListSetIndex'](arg1);
+}
+
+export function RedisRenameKey(arg1) {
+  return window['go']['backend']['App']['RedisRenameKey'](arg1);
+}
+
+export function RedisScan(arg1) {
+  return window['go']['backend']['App']['RedisScan'](arg1);
+}
+
+export function RedisServerInfo(arg1) {
+  return window['go']['backend']['App']['RedisServerInfo'](arg1);
+}
+
+export function RedisSetAdd(arg1) {
+  return window['go']['backend']['App']['RedisSetAdd'](arg1);
+}
+
+export function RedisSetRemove(arg1) {
+  return window['go']['backend']['App']['RedisSetRemove'](arg1);
+}
+
+export function RedisSetString(arg1) {
+  return window['go']['backend']['App']['RedisSetString'](arg1);
+}
+
+export function RedisSetTTL(arg1) {
+  return window['go']['backend']['App']['RedisSetTTL'](arg1);
+}
+
+export function RedisZSetAdd(arg1) {
+  return window['go']['backend']['App']['RedisZSetAdd'](arg1);
+}
+
+export function RedisZSetRemove(arg1) {
+  return window['go']['backend']['App']['RedisZSetRemove'](arg1);
+}
+
 export function ResetConsumerGroupOffset(arg1) {
   return window['go']['backend']['App']['ResetConsumerGroupOffset'](arg1);
 }
@@ -136,6 +212,10 @@ export function SaveTextFile(arg1) {
 
 export function TestConnection(arg1) {
   return window['go']['backend']['App']['TestConnection'](arg1);
+}
+
+export function TestRedisConnection(arg1) {
+  return window['go']['backend']['App']['TestRedisConnection'](arg1);
 }
 
 export function UpdateConnection(arg1) {

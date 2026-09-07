@@ -9,6 +9,7 @@ import ConsumerGroupView from '@/components/kafka/ConsumerGroupView.vue'
 import ProducerPanel from '@/components/kafka/ProducerPanel.vue'
 import SqlConsole from '@/components/kafka/SqlConsole.vue'
 import GlobalLagView from '@/components/kafka/GlobalLagView.vue'
+import RedisKeysView from '@/components/kafka/RedisKeysView.vue'
 import ClusterHealthPanel from '@/components/kafka/ClusterHealthPanel.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import UpdateDialog from './UpdateDialog.vue'
@@ -92,6 +93,10 @@ function openGroupLagFromOverview(group: string, topic: string): void {
   const conn = active.value
   if (!conn) return
   openGroup(conn.connectionId, group, topic)
+}
+
+function openRedisKeys(connectionId: string, db: number): void {
+  tabs.openRedisKeys(connectionId, db)
 }
 
 function openLag(connectionId: string): void {
@@ -291,6 +296,7 @@ function onTabDragEnd(): void {
           @open-topic="openTopic"
           @open-group="openGroup"
           @open-lag="openLag"
+          @open-redis-keys="openRedisKeys"
           @open-health="openHealth"
           @delete="removeConnection"
           @edit-connection="editConnection"
@@ -360,6 +366,13 @@ function onTabDragEnd(): void {
               :connection-id="active.connectionId"
               :refresh-request="refreshRequest"
               @open-group-lag="openGroupLagFromOverview"
+            />
+          </template>
+          <template v-else-if="active.kind === 'redis-keys'">
+            <RedisKeysView
+              :key="active.id"
+              :connection-id="active.connectionId"
+              :db="active.db ?? 0"
             />
           </template>
           <template v-else-if="active.kind === 'health'">

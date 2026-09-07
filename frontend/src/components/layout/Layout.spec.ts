@@ -9,6 +9,7 @@ import Layout from './Layout.vue'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
 import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
 import { useConnectionsStore } from '@/store/connections'
+import { APP_VERSION } from '@/version'
 import { useTabsStore } from '@/store/tabs'
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
@@ -41,6 +42,26 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
         applyUpdate: vi.fn(async () => {}),
         updateProgress: vi.fn(async () => ({ phase: 'idle' as const, percent: 0 })),
         openURL: vi.fn(async () => {}),
+        redisHashSetField: vi.fn(async () => {}),
+        redisHashDeleteField: vi.fn(async () => {}),
+        redisListSetIndex: vi.fn(async () => {}),
+        redisListPush: vi.fn(async () => {}),
+        redisListDeleteIndex: vi.fn(async () => {}),
+        redisSetAdd: vi.fn(async () => {}),
+        redisSetRemove: vi.fn(async () => {}),
+        redisZSetAdd: vi.fn(async () => {}),
+        redisZSetRemove: vi.fn(async () => {}),
+    testRedisConnection: vi.fn(async () => {}),
+    listRedisDBs: vi.fn(async () => []),
+    redisScan: vi.fn(async () => ({ cursor: 0, keys: [] })),
+    redisGetKey: vi.fn(async () => ({ key: '', type: 'string', ttl_seconds: -1 })),
+    redisRenameKey: vi.fn(async () => {}),
+    redisDeleteKeys: vi.fn(async () => 0),
+    redisSetTTL: vi.fn(async () => {}),
+    redisSetString: vi.fn(async () => {}),
+    redisFlushDB: vi.fn(async () => {}),
+    redisFlushAll: vi.fn(async () => {}),
+    redisServerInfo: vi.fn(async () => ({ mode: 'standalone' as const, used_memory_human: '', connected_clients: 0, total_keys: 0 })),
     saveTextFile: vi.fn(async () => ''),
     updateConnection: vi.fn(async () => ({}) as never),
     createTopic: vi.fn(async () => {}),
@@ -616,7 +637,7 @@ describe('Layout', () => {
     // UpdateDialog teleport 到 body,断言走 document。
     expect(document.body.querySelector('[data-test="update-dialog"]')).not.toBeNull()
     await vi.waitFor(() => {
-      expect(api.checkUpdate).toHaveBeenCalledWith({ current_version: '1.0.0' })
+      expect(api.checkUpdate).toHaveBeenCalledWith({ current_version: APP_VERSION })
     })
   })
 })

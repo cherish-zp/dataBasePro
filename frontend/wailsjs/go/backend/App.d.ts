@@ -55,6 +55,8 @@ export function ListConnections():Promise<Array<model.Connection>>;
 
 export function ListConsumerGroups(arg1:string):Promise<Array<model.ConsumerGroup>>;
 
+export function ListRedisDBs(arg1:string):Promise<Array<model.RedisDBInfo>>;
+
 export function ListTopics(arg1:string):Promise<Array<model.Topic>>;
 
 export function OpenURL(arg1:string):Promise<void>;
@@ -65,11 +67,49 @@ export function ProduceMessage(arg1:backend.ProduceRequest):Promise<void>;
 
 export function ProduceMessages(arg1:backend.BatchProduceRequest):Promise<Array<model.ProduceResult>>;
 
+export function RedisDeleteKeys(arg1:backend.RedisDeleteKeysRequest):Promise<number>;
+
+export function RedisFlushAll(arg1:backend.RedisFlushRequest):Promise<void>;
+
+export function RedisFlushDB(arg1:backend.RedisFlushRequest):Promise<void>;
+
+export function RedisGetKey(arg1:backend.RedisKeyRequest):Promise<model.RedisValue>;
+
+export function RedisHashDeleteField(arg1:backend.RedisHashFieldRequest):Promise<void>;
+
+export function RedisHashSetField(arg1:backend.RedisHashFieldRequest):Promise<void>;
+
+export function RedisListDeleteIndex(arg1:backend.RedisListIndexRequest):Promise<void>;
+
+export function RedisListPush(arg1:backend.RedisListPushRequest):Promise<void>;
+
+export function RedisListSetIndex(arg1:backend.RedisListIndexRequest):Promise<void>;
+
+export function RedisRenameKey(arg1:backend.RedisKeyRequest):Promise<void>;
+
+export function RedisScan(arg1:backend.RedisScanRequest):Promise<backend.RedisScanResult>;
+
+export function RedisServerInfo(arg1:string):Promise<model.RedisServerInfo>;
+
+export function RedisSetAdd(arg1:backend.RedisSetMemberRequest):Promise<void>;
+
+export function RedisSetRemove(arg1:backend.RedisSetMemberRequest):Promise<void>;
+
+export function RedisSetString(arg1:backend.RedisSetStringRequest):Promise<void>;
+
+export function RedisSetTTL(arg1:backend.RedisKeyRequest):Promise<void>;
+
+export function RedisZSetAdd(arg1:backend.RedisZSetMemberRequest):Promise<void>;
+
+export function RedisZSetRemove(arg1:backend.RedisZSetMemberRequest):Promise<void>;
+
 export function ResetConsumerGroupOffset(arg1:backend.ResetOffsetRequest):Promise<void>;
 
 export function SaveTextFile(arg1:backend.SaveTextFileRequest):Promise<string>;
 
 export function TestConnection(arg1:model.KafkaConfig):Promise<void>;
+
+export function TestRedisConnection(arg1:model.RedisConfig):Promise<void>;
 
 export function UpdateConnection(arg1:backend.UpdateConnectionRequest):Promise<model.Connection>;
 

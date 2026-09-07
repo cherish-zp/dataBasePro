@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { reactive, ref, computed, watch } from 'vue'
+import { getApi } from '@/api/client'
 import { useConnectionsStore } from '@/store/connections'
-import type { Connection, KafkaConfig, SASLConfig, TLSConfig } from '@/api/types'
+import type { Connection, KafkaConfig, RedisConfigShape, SASLConfig, TLSConfig } from '@/api/types'
 
 const props = defineProps<{ show: boolean; connection?: Connection | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -12,6 +13,11 @@ const SECURITY_PROTOCOLS = ['PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'] as
 
 const form = reactive({
   name: '',
+  connType: 'kafka' as 'kafka' | 'redis',
+  addr: '',
+  redisPassword: '',
+  redisDB: 0,
+  redisTLS: false,
   brokers: '',
   securityProtocol: 'PLAINTEXT',
   mechanism: 'PLAIN',
@@ -46,11 +52,22 @@ function envDefault(key: string): string {
 // sasl/tls 布尔推导(sasl.enabled→SASL_PLAINTEXT, tls.enabled→SSL,
 // 两者→SASL_SSL, 否则 PLAINTEXT),与后端 EffectiveSecurityProtocol 一致。
 function fillFrom(conn: Connection): void {
-  const sasl = conn.config.sasl
-  const tls = conn.config.tls
   form.name = conn.name
-  form.brokers = conn.config.bootstrap_servers.join(', ')
-  form.securityProtocol = conn.config.security_protocol
+  if (conn.type === 'redis') {
+    const cfg = conn.config as RedisConfigShape
+    form.connType = 'redis'
+    form.addr = cfg.addr
+    form.redisPassword = cfg.password ?? ''
+    form.redisDB = cfg.db ?? 0
+    form.redisTLS = !!cfg.tls
+    return
+  }
+  form.connType = 'kafka'
+  const cfg = conn.config as KafkaConfig
+  const sasl = cfg.sasl
+  const tls = cfg.tls
+  form.brokers = cfg.bootstrap_servers.join(', ')
+  form.securityProtocol = cfg.security_protocol
     || (sasl?.enabled && tls?.enabled ? 'SASL_SSL' : sasl?.enabled ? 'SASL_PLAINTEXT' : tls?.enabled ? 'SSL' : 'PLAINTEXT')
   form.mechanism = sasl?.mechanism || 'PLAIN'
   form.username = sasl?.username ?? ''
@@ -104,23 +121,42 @@ const tls = computed<TLSConfig | undefined>(() => {
   if (!isTLS.value && !form.caCert && !form.insecureSkipVerify) return undefined
   return { enabled: isTLS.value, ca_cert: form.caCert, insecure_skip_verify: form.insecureSkipVerify }
 })
-const config = computed<KafkaConfig>(() => ({
-  bootstrap_servers: brokers.value,
-  security_protocol: form.securityProtocol,
-  sasl: sasl.value,
-  tls: tls.value,
-}))
+const config = computed<KafkaConfig | RedisConfigShape>(() => {
+  if (form.connType === 'redis') {
+    return {
+      addr: form.addr,
+      password: form.redisPassword || undefined,
+      db: form.redisDB,
+      tls: form.redisTLS,
+    }
+  }
+  return {
+    bootstrap_servers: brokers.value,
+    security_protocol: form.securityProtocol,
+    sasl: sasl.value,
+    tls: tls.value,
+  }
+})
 
 const nameInvalid = computed(() => form.name.trim() === '')
-const brokersInvalid = computed(() => brokers.value.length === 0)
+const brokersInvalid = computed(() => form.connType === 'kafka' && brokers.value.length === 0)
+const addrInvalid = computed(() => form.connType === 'redis' && form.addr.trim() === '')
+const saveInvalid = computed(() => nameInvalid.value || brokersInvalid.value || addrInvalid.value)
+// 测试连接不需要名称,只校验目标地址。
+const targetInvalid = computed(() => brokersInvalid.value || addrInvalid.value)
 
 async function runTest(): Promise<void> {
-  if (brokersInvalid.value) return
+  if (targetInvalid.value) return
   testing.value = true
   tested.value = false
   testError.value = null
   try {
-    await store.testConnection(config.value)
+    // 按类型分派:redis 走 TestRedisConnection,kafka 走原 TestConnection。
+    if (form.connType === 'redis') {
+      await getApi().testRedisConnection(config.value as RedisConfigShape)
+    } else {
+      await store.testConnection(config.value as KafkaConfig)
+    }
     tested.value = true
   } catch (e) {
     testError.value = e instanceof Error ? e.message : String(e)
@@ -131,12 +167,12 @@ async function runTest(): Promise<void> {
 
 async function save(): Promise<void> {
   saveError.value = null
-  if (nameInvalid.value || brokersInvalid.value) return
+  if (saveInvalid.value) return
   try {
     if (props.connection) {
-      await store.update(props.connection.id, { name: form.name.trim(), type: props.connection.type, config: config.value })
+      await store.update(props.connection.id, { name: form.name.trim(), type: props.connection.type, config: config.value as KafkaConfig })
     } else {
-      await store.create({ name: form.name.trim(), type: 'kafka', config: config.value })
+      await store.create({ name: form.name.trim(), type: form.connType, config: config.value as KafkaConfig })
     }
     emit('close')
   } catch (e) {
@@ -150,7 +186,7 @@ function close(): void {
 </script>
 
 <template>
-  <div v-if="show" class="modal-backdrop" data-test="new-connection-modal" @click.self="close">
+  <div v-if="show" class="modal-backdrop" data-test="new-connection-modal">
     <div class="modal">
       <div class="modal-header">
         <span class="modal-title" data-test="modal-title">{{ editing ? '编辑连接' : '新建连接' }}</span>
@@ -162,6 +198,28 @@ function close(): void {
           <input v-model="form.name" data-test="input-name" class="input" placeholder="例如：本地开发" autocapitalize="off" autocorrect="off" autocomplete="off" />
           <span v-if="nameInvalid" class="err">名称不能为空</span>
         </div>
+        <div class="field">
+          <label class="label">数据库类型</label>
+          <select v-model="form.connType" class="input" data-test="input-conn-type">
+            <option value="kafka">Kafka</option>
+            <option value="redis">Redis</option>
+          </select>
+        </div>
+        <template v-if="form.connType === 'redis'">
+          <div class="field">
+            <label class="label">地址 <span class="req">*</span>(集群可填逗号分隔多个种子)</label>
+            <input v-model="form.addr" data-test="input-addr" class="input" placeholder="127.0.0.1:6379" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label class="label">密码(可选)</label>
+            <input v-model="form.redisPassword" type="password" data-test="input-redis-password" class="input" />
+          </div>
+          <div class="field">
+            <label class="label">DB(集群模式固定 0)</label>
+            <input v-model.number="form.redisDB" data-test="input-redis-db" class="input" type="number" min="0" />
+          </div>
+        </template>
+        <template v-else>
         <div class="field">
           <label class="label">bootstrap.servers <span class="req">*</span></label>
           <input v-model="form.brokers" data-test="input-brokers" class="input" placeholder="localhost:9092,broker2:9092" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
@@ -224,17 +282,18 @@ function close(): void {
             </label>
           </div>
         </template>
+        </template>
 
         <div v-if="tested" class="msg ok" data-test="test-ok">连接测试成功</div>
         <div v-if="testError" class="msg err" data-test="test-error">{{ testError }}</div>
         <div v-if="saveError" class="msg err" data-test="save-error">{{ saveError }}</div>
       </div>
       <div class="modal-footer">
-        <button class="btn ghost" type="button" data-test="btn-test" :disabled="testing || brokersInvalid" @click="runTest">
+        <button class="btn ghost" type="button" data-test="btn-test" :disabled="testing || targetInvalid" @click="runTest">
           {{ testing ? '测试中…' : '测试连接' }}
         </button>
         <button class="btn ghost" type="button" @click="close">取消</button>
-        <button class="btn primary" type="button" data-test="btn-save" :disabled="nameInvalid || brokersInvalid" @click="save">
+        <button class="btn primary" type="button" data-test="btn-save" :disabled="nameInvalid || saveInvalid" @click="save">
           保存
         </button>
       </div>

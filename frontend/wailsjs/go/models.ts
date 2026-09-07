@@ -240,6 +240,226 @@ export namespace backend {
 	        this.value = source["value"];
 	    }
 	}
+	export class RedisDeleteKeysRequest {
+	    connection_id: string;
+	    db: number;
+	    keys: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisDeleteKeysRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.db = source["db"];
+	        this.keys = source["keys"];
+	    }
+	}
+	export class RedisFlushRequest {
+	    connection_id: string;
+	    db: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisFlushRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.db = source["db"];
+	    }
+	}
+	export class RedisHashFieldRequest {
+	    connection_id: string;
+	    db: number;
+	    key: string;
+	    field: string;
+	    value?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisHashFieldRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.db = source["db"];
+	        this.key = source["key"];
+	        this.field = source["field"];
+	        this.value = source["value"];
+	    }
+	}
+	export class RedisKeyRequest {
+	    connection_id: string;
+	    db: number;
+	    key: string;
+	    new_key?: string;
+	    ttl_seconds?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisKeyRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.db = source["db"];
+	        this.key = source["key"];
+	        this.new_key = source["new_key"];
+	        this.ttl_seconds = source["ttl_seconds"];
+	    }
+	}
+	export class RedisListIndexRequest {
+	    connection_id: string;
+	    db: number;
+	    key: string;
+	    index: number;
+	    value?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisListIndexRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.db = source["db"];
+	        this.key = source["key"];
+	        this.index = source["index"];
+	        this.value = source["value"];
+	    }
+	}
+	export class RedisListPushRequest {
+	    connection_id: string;
+	    db: number;
+	    key: string;
+	    value: string;
+	    at_head: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisListPushRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.db = source["db"];
+	        this.key = source["key"];
+	        this.value = source["value"];
+	        this.at_head = source["at_head"];
+	    }
+	}
+	export class RedisScanRequest {
+	    connection_id: string;
+	    db: number;
+	    cursor: number;
+	    match: string;
+	    count: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisScanRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.db = source["db"];
+	        this.cursor = source["cursor"];
+	        this.match = source["match"];
+	        this.count = source["count"];
+	    }
+	}
+	export class RedisScanResult {
+	    cursor: number;
+	    keys: model.RedisKeyInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisScanResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cursor = source["cursor"];
+	        this.keys = this.convertValues(source["keys"], model.RedisKeyInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class RedisSetMemberRequest {
+	    connection_id: string;
+	    db: number;
+	    key: string;
+	    member: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisSetMemberRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.db = source["db"];
+	        this.key = source["key"];
+	        this.member = source["member"];
+	    }
+	}
+	export class RedisSetStringRequest {
+	    connection_id: string;
+	    db: number;
+	    key: string;
+	    value: string;
+	    ttl_seconds?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisSetStringRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.db = source["db"];
+	        this.key = source["key"];
+	        this.value = source["value"];
+	        this.ttl_seconds = source["ttl_seconds"];
+	    }
+	}
+	export class RedisZSetMemberRequest {
+	    connection_id: string;
+	    db: number;
+	    key: string;
+	    member: string;
+	    score?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisZSetMemberRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.db = source["db"];
+	        this.key = source["key"];
+	        this.member = source["member"];
+	        this.score = source["score"];
+	    }
+	}
 	export class ResetOffsetRequest {
 	    connection_id: string;
 	    group: string;
@@ -299,7 +519,8 @@ export namespace backend {
 	export class UpdateConnectionRequest {
 	    id: string;
 	    name: string;
-	    config: model.KafkaConfig;
+	    type?: string;
+	    config: number[];
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateConnectionRequest(source);
@@ -309,26 +530,9 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.name = source["name"];
-	        this.config = this.convertValues(source["config"], model.KafkaConfig);
+	        this.type = source["type"];
+	        this.config = source["config"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class UpdateProgressInfo {
 	    phase: string;
@@ -491,89 +695,11 @@ export namespace model {
 		    return a;
 		}
 	}
-	export class TLSConfig {
-	    enabled: boolean;
-	    ca_cert?: string;
-	    insecure_skip_verify?: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new TLSConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.ca_cert = source["ca_cert"];
-	        this.insecure_skip_verify = source["insecure_skip_verify"];
-	    }
-	}
-	export class SASLConfig {
-	    enabled: boolean;
-	    mechanism: string;
-	    username: string;
-	    password: string;
-	    principal?: string;
-	    keytab_path?: string;
-	    krb5_conf_path?: string;
-	    service_name?: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new SASLConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.enabled = source["enabled"];
-	        this.mechanism = source["mechanism"];
-	        this.username = source["username"];
-	        this.password = source["password"];
-	        this.principal = source["principal"];
-	        this.keytab_path = source["keytab_path"];
-	        this.krb5_conf_path = source["krb5_conf_path"];
-	        this.service_name = source["service_name"];
-	    }
-	}
-	export class KafkaConfig {
-	    bootstrap_servers: string[];
-	    security_protocol?: string;
-	    sasl?: SASLConfig;
-	    tls?: TLSConfig;
-	
-	    static createFrom(source: any = {}) {
-	        return new KafkaConfig(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.bootstrap_servers = source["bootstrap_servers"];
-	        this.security_protocol = source["security_protocol"];
-	        this.sasl = this.convertValues(source["sasl"], SASLConfig);
-	        this.tls = this.convertValues(source["tls"], TLSConfig);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
-	}
 	export class Connection {
 	    id: string;
 	    name: string;
 	    type: string;
-	    config: KafkaConfig;
+	    config: number[];
 	    created_at: number;
 	    updated_at: number;
 	
@@ -586,28 +712,10 @@ export namespace model {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.type = source["type"];
-	        this.config = this.convertValues(source["config"], KafkaConfig);
+	        this.config = source["config"];
 	        this.created_at = source["created_at"];
 	        this.updated_at = source["updated_at"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class ConsumerGroup {
 	    name: string;
@@ -698,6 +806,20 @@ export namespace model {
 		}
 	}
 	
+	export class HashField {
+	    field: string;
+	    value: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HashField(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.field = source["field"];
+	        this.value = source["value"];
+	    }
+	}
 	export class Header {
 	    key: string;
 	    value: string;
@@ -712,7 +834,84 @@ export namespace model {
 	        this.value = source["value"];
 	    }
 	}
+	export class TLSConfig {
+	    enabled: boolean;
+	    ca_cert?: string;
+	    insecure_skip_verify?: boolean;
 	
+	    static createFrom(source: any = {}) {
+	        return new TLSConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.ca_cert = source["ca_cert"];
+	        this.insecure_skip_verify = source["insecure_skip_verify"];
+	    }
+	}
+	export class SASLConfig {
+	    enabled: boolean;
+	    mechanism: string;
+	    username: string;
+	    password: string;
+	    principal?: string;
+	    keytab_path?: string;
+	    krb5_conf_path?: string;
+	    service_name?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SASLConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.enabled = source["enabled"];
+	        this.mechanism = source["mechanism"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.principal = source["principal"];
+	        this.keytab_path = source["keytab_path"];
+	        this.krb5_conf_path = source["krb5_conf_path"];
+	        this.service_name = source["service_name"];
+	    }
+	}
+	export class KafkaConfig {
+	    bootstrap_servers: string[];
+	    security_protocol?: string;
+	    sasl?: SASLConfig;
+	    tls?: TLSConfig;
+	
+	    static createFrom(source: any = {}) {
+	        return new KafkaConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.bootstrap_servers = source["bootstrap_servers"];
+	        this.security_protocol = source["security_protocol"];
+	        this.sasl = this.convertValues(source["sasl"], SASLConfig);
+	        this.tls = this.convertValues(source["tls"], TLSConfig);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Message {
 	    partition: number;
 	    offset: number;
@@ -812,6 +1011,174 @@ export namespace model {
 	        this.offset = source["offset"];
 	        this.error = source["error"];
 	    }
+	}
+	export class RedisConfig {
+	    addr: string;
+	    password?: string;
+	    db: number;
+	    tls?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.addr = source["addr"];
+	        this.password = source["password"];
+	        this.db = source["db"];
+	        this.tls = source["tls"];
+	    }
+	}
+	export class RedisDBInfo {
+	    index: number;
+	    keys: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisDBInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.index = source["index"];
+	        this.keys = source["keys"];
+	    }
+	}
+	export class RedisKeyInfo {
+	    key: string;
+	    type: string;
+	    ttl_seconds: number;
+	    size_bytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisKeyInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.type = source["type"];
+	        this.ttl_seconds = source["ttl_seconds"];
+	        this.size_bytes = source["size_bytes"];
+	    }
+	}
+	export class RedisNodeInfo {
+	    addr: string;
+	    role: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisNodeInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.addr = source["addr"];
+	        this.role = source["role"];
+	    }
+	}
+	export class RedisServerInfo {
+	    mode: string;
+	    used_memory_human: string;
+	    maxmemory_human?: string;
+	    connected_clients: number;
+	    total_keys: number;
+	    hit_rate?: number;
+	    nodes?: RedisNodeInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisServerInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.used_memory_human = source["used_memory_human"];
+	        this.maxmemory_human = source["maxmemory_human"];
+	        this.connected_clients = source["connected_clients"];
+	        this.total_keys = source["total_keys"];
+	        this.hit_rate = source["hit_rate"];
+	        this.nodes = this.convertValues(source["nodes"], RedisNodeInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ZSetMember {
+	    member: string;
+	    score: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ZSetMember(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.member = source["member"];
+	        this.score = source["score"];
+	    }
+	}
+	export class RedisValue {
+	    key: string;
+	    type: string;
+	    ttl_seconds: number;
+	    string?: string;
+	    truncated?: boolean;
+	    size_bytes?: number;
+	    hash?: HashField[];
+	    list?: string[];
+	    set?: string[];
+	    zset?: ZSetMember[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RedisValue(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.type = source["type"];
+	        this.ttl_seconds = source["ttl_seconds"];
+	        this.string = source["string"];
+	        this.truncated = source["truncated"];
+	        this.size_bytes = source["size_bytes"];
+	        this.hash = this.convertValues(source["hash"], HashField);
+	        this.list = source["list"];
+	        this.set = source["set"];
+	        this.zset = this.convertValues(source["zset"], ZSetMember);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	
 	

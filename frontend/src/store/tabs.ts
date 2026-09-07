@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health'
+export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys'
 
 export interface Tab {
   id: string
@@ -10,6 +10,7 @@ export interface Tab {
   connectionId: string
   topic?: string
   group?: string
+  db?: number
   partitions?: number[]
 }
 
@@ -76,6 +77,26 @@ export const useTabsStore = defineStore('tabs', () => {
       connectionId,
       group,
       topic,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  // Redis 键浏览器 tab:连接+DB 唯一定位,重复打开只聚焦。
+  function openRedisKeys(connectionId: string, db: number): Tab {
+    const id = `redis:${connectionId}:${db}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'redis-keys',
+      title: `DB${db}`,
+      connectionId,
+      db,
     }
     openTabs.value.push(tab)
     activeTabId.value = tab.id
@@ -167,6 +188,7 @@ export const useTabsStore = defineStore('tabs', () => {
     openTopic,
     openSql,
     openGroup,
+    openRedisKeys,
     openLag,
     openHealth,
     closeTab,

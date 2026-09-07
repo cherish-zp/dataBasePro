@@ -36,6 +36,17 @@ describe('tabs store', () => {
     expect(store.activeTabId).toBe(tab.id)
   })
 
+  it('opens a redis keys tab keyed by connection and db', () => {
+    const store = useTabsStore()
+    const tab = store.openRedisKeys('conn-1', 2)
+    expect(tab.kind).toBe('redis-keys')
+    expect(tab.db).toBe(2)
+    expect(store.activeTabId).toBe(tab.id)
+    const again = store.openRedisKeys('conn-1', 2)
+    expect(again.id).toBe(tab.id)
+    expect(store.openTabs).toHaveLength(1)
+  })
+
   it('carries the topic into a new group tab and updates it on reopen', () => {
     // Lag 总览行点击:同一组永远只有一个 tab(Group 唯一定位),
     // Topic 作为 tab 内的初始选中项带入;重复打开更新 topic 而非新开。

@@ -36,6 +36,26 @@ import type {
   UpdateDownloadRequest,
   UpdateProgressInfo,
   ApplyUpdateRequest,
+  RedisConfigShape,
+  RedisDBInfo,
+  RedisKeyInfo,
+  RedisValue,
+  RedisServerInfo,
+  RedisScanRequest,
+  RedisScanResult,
+  RedisKeyRequest,
+  RedisDeleteKeysRequest,
+  RedisSetStringRequest,
+  RedisFlushRequest,
+  RedisHashSetFieldRequest,
+  RedisHashDeleteFieldRequest,
+  RedisListSetIndexRequest,
+  RedisListPushRequest,
+  RedisListDeleteIndexRequest,
+  RedisSetAddRequest,
+  RedisSetRemoveRequest,
+  RedisZSetAddRequest,
+  RedisZSetRemoveRequest,
 } from './types'
 
 export interface Api {
@@ -75,6 +95,26 @@ export interface Api {
   applyUpdate(req: ApplyUpdateRequest): Promise<void>
   updateProgress(): Promise<UpdateProgressInfo>
   openURL(url: string): Promise<void>
+  testRedisConnection(cfg: RedisConfigShape): Promise<void>
+  listRedisDBs(id: string): Promise<RedisDBInfo[]>
+  redisScan(req: RedisScanRequest): Promise<RedisScanResult>
+  redisGetKey(req: RedisKeyRequest): Promise<RedisValue>
+  redisRenameKey(req: RedisKeyRequest): Promise<void>
+  redisDeleteKeys(req: RedisDeleteKeysRequest): Promise<number>
+  redisSetTTL(req: RedisKeyRequest): Promise<void>
+  redisSetString(req: RedisSetStringRequest): Promise<void>
+  redisFlushDB(req: RedisFlushRequest): Promise<void>
+  redisFlushAll(req: RedisFlushRequest): Promise<void>
+  redisServerInfo(id: string): Promise<RedisServerInfo>
+  redisHashSetField(req: RedisHashSetFieldRequest): Promise<void>
+  redisHashDeleteField(req: RedisHashDeleteFieldRequest): Promise<void>
+  redisListSetIndex(req: RedisListSetIndexRequest): Promise<void>
+  redisListPush(req: RedisListPushRequest): Promise<void>
+  redisListDeleteIndex(req: RedisListDeleteIndexRequest): Promise<void>
+  redisSetAdd(req: RedisSetAddRequest): Promise<void>
+  redisSetRemove(req: RedisSetRemoveRequest): Promise<void>
+  redisZSetAdd(req: RedisZSetAddRequest): Promise<void>
+  redisZSetRemove(req: RedisZSetRemoveRequest): Promise<void>
 }
 
 // The Wails binding generator models Go `[]byte` fields as `number[]`, but
@@ -192,6 +232,68 @@ export class WailsApi implements Api {
   }
   openURL(url: string): Promise<void> {
     return App.OpenURL(url) as unknown as Promise<void>
+  }
+  testRedisConnection(cfg: RedisConfigShape): Promise<void> {
+    return App.TestRedisConnection(cfg as unknown as never) as unknown as Promise<void>
+  }
+  listRedisDBs(id: string): Promise<RedisDBInfo[]> {
+    return App.ListRedisDBs(id) as unknown as Promise<RedisDBInfo[]>
+  }
+  redisScan(req: RedisScanRequest): Promise<RedisScanResult> {
+    return App.RedisScan(req as unknown as never) as unknown as Promise<RedisScanResult>
+  }
+  redisGetKey(req: RedisKeyRequest): Promise<RedisValue> {
+    return App.RedisGetKey(req as unknown as never) as unknown as Promise<RedisValue>
+  }
+  redisRenameKey(req: RedisKeyRequest): Promise<void> {
+    return App.RedisRenameKey(req as unknown as never) as unknown as Promise<void>
+  }
+  redisDeleteKeys(req: RedisDeleteKeysRequest): Promise<number> {
+    return App.RedisDeleteKeys(req as unknown as never) as unknown as Promise<number>
+  }
+  redisSetTTL(req: RedisKeyRequest): Promise<void> {
+    return App.RedisSetTTL(req as unknown as never) as unknown as Promise<void>
+  }
+  redisSetString(req: RedisSetStringRequest): Promise<void> {
+    return App.RedisSetString(req as unknown as never) as unknown as Promise<void>
+  }
+  redisFlushDB(req: RedisFlushRequest): Promise<void> {
+    return App.RedisFlushDB(req as unknown as never) as unknown as Promise<void>
+  }
+  redisFlushAll(req: RedisFlushRequest): Promise<void> {
+    return App.RedisFlushAll(req as unknown as never) as unknown as Promise<void>
+  }
+  redisServerInfo(id: string): Promise<RedisServerInfo> {
+    return App.RedisServerInfo(id) as unknown as Promise<RedisServerInfo>
+  }
+  // 以下集合编辑 API 的后端绑定尚未由 wails generate 生成,先对模块形状断言,
+  // 待主会话生成绑定后即可直接调用。
+  redisHashSetField(req: RedisHashSetFieldRequest): Promise<void> {
+    return (App as unknown as { RedisHashSetField: (req: never) => Promise<void> }).RedisHashSetField(req as unknown as never)
+  }
+  redisHashDeleteField(req: RedisHashDeleteFieldRequest): Promise<void> {
+    return (App as unknown as { RedisHashDeleteField: (req: never) => Promise<void> }).RedisHashDeleteField(req as unknown as never)
+  }
+  redisListSetIndex(req: RedisListSetIndexRequest): Promise<void> {
+    return (App as unknown as { RedisListSetIndex: (req: never) => Promise<void> }).RedisListSetIndex(req as unknown as never)
+  }
+  redisListPush(req: RedisListPushRequest): Promise<void> {
+    return (App as unknown as { RedisListPush: (req: never) => Promise<void> }).RedisListPush(req as unknown as never)
+  }
+  redisListDeleteIndex(req: RedisListDeleteIndexRequest): Promise<void> {
+    return (App as unknown as { RedisListDeleteIndex: (req: never) => Promise<void> }).RedisListDeleteIndex(req as unknown as never)
+  }
+  redisSetAdd(req: RedisSetAddRequest): Promise<void> {
+    return (App as unknown as { RedisSetAdd: (req: never) => Promise<void> }).RedisSetAdd(req as unknown as never)
+  }
+  redisSetRemove(req: RedisSetRemoveRequest): Promise<void> {
+    return (App as unknown as { RedisSetRemove: (req: never) => Promise<void> }).RedisSetRemove(req as unknown as never)
+  }
+  redisZSetAdd(req: RedisZSetAddRequest): Promise<void> {
+    return (App as unknown as { RedisZSetAdd: (req: never) => Promise<void> }).RedisZSetAdd(req as unknown as never)
+  }
+  redisZSetRemove(req: RedisZSetRemoveRequest): Promise<void> {
+    return (App as unknown as { RedisZSetRemove: (req: never) => Promise<void> }).RedisZSetRemove(req as unknown as never)
   }
 }
 

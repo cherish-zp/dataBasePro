@@ -1,6 +1,6 @@
 // Types mirroring the Go model package (snake_case JSON fields).
 
-export type ConnectionType = 'kafka' | 'mysql' | 'es'
+export type ConnectionType = 'kafka' | 'mysql' | 'es' | 'redis'
 
 export interface SASLConfig {
   enabled: boolean
@@ -34,7 +34,8 @@ export interface Connection {
   id: string
   name: string
   type: ConnectionType
-  config: KafkaConfig
+  // 按类型多态:kafka → KafkaConfig,redis → RedisConfigShape
+  config: KafkaConfig | RedisConfigShape
   created_at: number
   updated_at: number
 }
@@ -343,4 +344,170 @@ export interface AuditEntry {
   result: string
   detail?: string
   timestamp: number // unix ms
+}
+
+// --- Redis(镜像 backend/model/redis.go) ---
+
+export type RedisConfigShape = {
+  addr: string
+  password?: string
+  db: number
+  tls?: boolean
+}
+
+export interface RedisDBInfo {
+  index: number
+  keys: number
+}
+
+export interface RedisKeyInfo {
+  key: string
+  type: string
+  ttl_seconds: number // -1 无过期,-2 不存在
+  size_bytes: number // MEMORY USAGE,0 = 不可用
+}
+
+export interface RedisHashField {
+  field: string
+  value: string
+}
+
+export interface RedisZSetMember {
+  member: string
+  score: number
+}
+
+export interface RedisValue {
+  key: string
+  type: string
+  ttl_seconds: number
+  string?: string
+  truncated?: boolean
+  size_bytes?: number
+  hash?: RedisHashField[]
+  list?: string[]
+  set?: string[]
+  zset?: RedisZSetMember[]
+}
+
+export interface RedisNodeInfo {
+  addr: string
+  role: string
+}
+
+export interface RedisServerInfo {
+  mode: 'standalone' | 'cluster'
+  used_memory_human: string
+  maxmemory_human?: string
+  connected_clients: number
+  total_keys: number
+  hit_rate?: number | null
+  nodes?: RedisNodeInfo[]
+}
+
+export interface RedisScanRequest {
+  connection_id: string
+  db: number
+  cursor: number
+  match: string
+  count: number
+}
+
+export interface RedisScanResult {
+  cursor: number
+  keys: RedisKeyInfo[]
+}
+
+export interface RedisKeyRequest {
+  connection_id: string
+  db: number
+  key: string
+  new_key?: string
+  ttl_seconds?: number
+}
+
+export interface RedisDeleteKeysRequest {
+  connection_id: string
+  db: number
+  keys: string[]
+}
+
+export interface RedisSetStringRequest {
+  connection_id: string
+  db: number
+  key: string
+  value: string
+  ttl_seconds?: number
+}
+
+export interface RedisFlushRequest {
+  connection_id: string
+  db: number
+}
+
+export interface RedisHashSetFieldRequest {
+  connection_id: string
+  db: number
+  key: string
+  field: string
+  value: string
+}
+
+export interface RedisHashDeleteFieldRequest {
+  connection_id: string
+  db: number
+  key: string
+  field: string
+}
+
+export interface RedisListSetIndexRequest {
+  connection_id: string
+  db: number
+  key: string
+  index: number
+  value: string
+}
+
+export interface RedisListPushRequest {
+  connection_id: string
+  db: number
+  key: string
+  value: string
+  at_head?: boolean
+}
+
+export interface RedisListDeleteIndexRequest {
+  connection_id: string
+  db: number
+  key: string
+  index: number
+}
+
+export interface RedisSetAddRequest {
+  connection_id: string
+  db: number
+  key: string
+  member: string
+}
+
+export interface RedisSetRemoveRequest {
+  connection_id: string
+  db: number
+  key: string
+  member: string
+}
+
+export interface RedisZSetAddRequest {
+  connection_id: string
+  db: number
+  key: string
+  member: string
+  score: number
+}
+
+export interface RedisZSetRemoveRequest {
+  connection_id: string
+  db: number
+  key: string
+  member: string
 }

@@ -36,6 +36,26 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
         applyUpdate: vi.fn(async () => {}),
         updateProgress: vi.fn(async () => ({ phase: 'idle' as const, percent: 0 })),
         openURL: vi.fn(async () => {}),
+        redisHashSetField: vi.fn(async () => {}),
+        redisHashDeleteField: vi.fn(async () => {}),
+        redisListSetIndex: vi.fn(async () => {}),
+        redisListPush: vi.fn(async () => {}),
+        redisListDeleteIndex: vi.fn(async () => {}),
+        redisSetAdd: vi.fn(async () => {}),
+        redisSetRemove: vi.fn(async () => {}),
+        redisZSetAdd: vi.fn(async () => {}),
+        redisZSetRemove: vi.fn(async () => {}),
+    testRedisConnection: vi.fn(async () => {}),
+    listRedisDBs: vi.fn(async () => []),
+    redisScan: vi.fn(async () => ({ cursor: 0, keys: [] })),
+    redisGetKey: vi.fn(async () => ({ key: '', type: 'string', ttl_seconds: -1 })),
+    redisRenameKey: vi.fn(async () => {}),
+    redisDeleteKeys: vi.fn(async () => 0),
+    redisSetTTL: vi.fn(async () => {}),
+    redisSetString: vi.fn(async () => {}),
+    redisFlushDB: vi.fn(async () => {}),
+    redisFlushAll: vi.fn(async () => {}),
+    redisServerInfo: vi.fn(async () => ({ mode: 'standalone' as const, used_memory_human: '', connected_clients: 0, total_keys: 0 })),
     saveTextFile: vi.fn(async () => ''),
     updateConnection: vi.fn(async () => ({}) as never),
     createTopic: vi.fn(async () => {}),
@@ -205,6 +225,70 @@ describe('NewConnectionModal', () => {
     expect((wrapper.find('[data-test="input-service-name"]').element as HTMLInputElement).value).toBe('envkafka')
   })
 
+
+  it('shows redis fields when type redis is selected and saves a redis connection', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="input-conn-type"]').setValue('redis')
+    expect(wrapper.find('[data-test="input-brokers"]').exists()).toBe(false)
+    const addr = wrapper.find('[data-test="input-addr"]')
+    expect(addr.exists()).toBe(true)
+    await wrapper.find('[data-test="input-name"]').setValue('redis-local')
+    await addr.setValue('127.0.0.1:6379')
+    await wrapper.find('[data-test="input-redis-password"]').setValue('pw')
+    await wrapper.find('[data-test="input-redis-db"]').setValue('2')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'redis',
+          config: expect.objectContaining({
+            addr: '127.0.0.1:6379',
+            password: 'pw',
+            db: 2,
+          }),
+        }),
+      )
+    })
+  })
+
+  it('routes test connection to testRedisConnection when type is redis', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="input-conn-type"]').setValue('redis')
+    await wrapper.find('[data-test="input-name"]').setValue('r')
+    await wrapper.find('[data-test="input-addr"]').setValue('127.0.0.1:6379')
+    await wrapper.find('[data-test="btn-test"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.testRedisConnection).toHaveBeenCalledWith(
+        expect.objectContaining({ addr: '127.0.0.1:6379' }),
+      )
+    })
+    expect(api.testConnection).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="test-ok"]').exists()).toBe(true)
+  })
+
+  it('prefills redis fields in edit mode', async () => {
+    const conn: Connection = {
+      id: 'r1',
+      name: 'redis-old',
+      type: 'redis',
+      config: { addr: 'r.internal:6380', password: 'pw', db: 3 },
+      created_at: 1,
+      updated_at: 1,
+    }
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: conn } })
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="input-addr"]').element as HTMLInputElement).value).toBe('r.internal:6380')
+    })
+    expect((wrapper.find('[data-test="input-redis-db"]').element as HTMLInputElement).value).toBe('3')
+    await wrapper.find('[data-test="input-name"]').setValue('redis-new')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.updateConnection).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'r1', name: 'redis-new' }),
+      )
+    })
+  })
+
   it('test connection calls the api and shows success', async () => {
     const wrapper = mountModal()
     await wrapper.find('[data-test="input-brokers"]').setValue('localhost:9092')
@@ -225,7 +309,15 @@ describe('NewConnectionModal', () => {
     })
   })
 
-  it('emits close via backdrop and close button', async () => {
+  it('keeps the modal open when the backdrop is clicked', async () => {
+    const wrapper = mountModal()
+    // trigger 直接作用在遮罩元素上,target 即遮罩自身,等价于点击弹窗外的空白处。
+    await wrapper.find('[data-test="new-connection-modal"]').trigger('click')
+    expect(wrapper.emitted('close')).toBeFalsy()
+    expect(wrapper.find('[data-test="modal-title"]').exists()).toBe(true)
+  })
+
+  it('emits close via the close button', async () => {
     const wrapper = mountModal()
     await wrapper.find('[data-test="modal-close"]').trigger('click')
     expect(wrapper.emitted('close')).toBeTruthy()
