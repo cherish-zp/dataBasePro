@@ -1,14 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import { getApi } from '@/api/client'
 import type { CHColumn, CHTableInfo } from '@/api/types'
 import { formatBytes } from '@/utils/bytes'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
-import { useTabsStore } from '@/store/tabs'
+import { useCHCellUpdate } from '@/composables/chCellUpdate'
 
 const props = defineProps<{ connectionId: string; database: string; table: string }>()
-// 在 SQL 控制台打开:由 Layout 转发(预填可选,当前仅打开控制台)。
-const emit = defineEmits<{ (e: 'open-ch-sql'): void }>()
 
 // 每页行数与后端 CHPageRows 的 limit 对齐。
 const PAGE_SIZE = 200
@@ -35,6 +33,16 @@ const asc = ref(true)
 const offset = ref(0)
 const confirmTruncate = ref(false)
 
+// --- 数据单元格行内编辑 ---
+// cu:单元格 UPDATE 的预览/确认/执行状态机(SQL 与弹窗开关由其管理)。
+const cu = useCHCellUpdate()
+// 后端 PageRows 返回的主键列名(按 position 序;空数组=无主键)。
+const primaryKey = ref<string[]>([])
+// 行内编辑态:同一时刻仅一个单元格可编辑,row/col 为行/列下标;
+// editValue 为输入框草稿,提交时空串按写 NULL 处理。
+const editing = ref<{ row: number; col: number } | null>(null)
+const editValue = ref('')
+
 const isDistributed = computed(() => engine.value.trim().toLowerCase() === 'distributed')
 const page = computed(() => Math.floor(offset.value / PAGE_SIZE) + 1)
 
@@ -47,6 +55,8 @@ const tableOptions = computed<CHTableInfo[]>(() => {
 async function fetchPage(): Promise<void> {
   loading.value = true
   error.value = null
+  // 换页/刷新后行集合将重建,未完成的行内编辑一并丢弃。
+  editing.value = null
   try {
     const res = await getApi().chPageRows({
       connection_id: props.connectionId,
@@ -58,10 +68,15 @@ async function fetchPage(): Promise<void> {
       limit: PAGE_SIZE,
       offset: offset.value,
     })
-    columns.value = res.columns
-    rows.value = res.rows
-    engine.value = res.engine
-    totalRows.value = res.total_rows
+    // wire 形状防御:后端异常/老版本可能给出 null 或缺字段;模板对
+    // columns/rows 按数组、totalRows 按数字直接使用,任何 null/undefined
+    // 都会在渲染期抛 TypeError 并中断整个调度队列(WKWebView 表现为白屏)。
+    columns.value = res.columns ?? []
+    rows.value = res.rows ?? []
+    engine.value = res.engine ?? ''
+    primaryKey.value = res.primary_key ?? []
+    const total = Number(res.total_rows)
+    totalRows.value = Number.isFinite(total) ? total : 0
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -168,14 +183,6 @@ async function doTruncate(): Promise<void> {
   }
 }
 
-const tabs = useTabsStore()
-
-// openInSqlConsole 打开该连接的 ClickHouse SQL 控制台。
-function openInSqlConsole(): void {
-  tabs.openCHSql(props.connectionId)
-  emit('open-ch-sql')
-}
-
 // --- 单元格渲染:nil → NULL(浅色);超长值截断(浅色标注 + title 全文)。 ---
 
 function isTruncated(v: string | null): boolean {
@@ -195,6 +202,90 @@ function cellTitle(v: string | null): string {
 function colTitle(c: CHColumn): string {
   const base = `按 ${c.name} 排序 · ${c.type}`
   return c.comment ? `${base}\n${c.comment}` : base
+}
+
+// --- 单元格行内编辑:双击 → 输入 → 回车 → 预览确认 → 执行并刷新。 ---
+
+function isEditing(ri: number, ci: number): boolean {
+  return editing.value?.row === ri && editing.value?.col === ci
+}
+
+// startEdit 双击进入编辑:原始值取自 rows 内存(null 显示为空输入框);
+// loading 或已有单元格在编辑时忽略,避免并发编辑态。
+function startEdit(ri: number, ci: number): void {
+  if (loading.value || editing.value || !columns.value[ci]) return
+  editing.value = { row: ri, col: ci }
+  editValue.value = rows.value[ri]?.[ci] ?? ''
+}
+
+// focusEditor 编辑框渲染后自动聚焦(function ref 挂载时触发)。
+function focusEditor(el: Element | ComponentPublicInstance | null): void {
+  if (el) (el as HTMLInputElement).focus()
+}
+
+function cancelEdit(): void {
+  editing.value = null
+  editValue.value = ''
+}
+
+// buildTarget 组装更新请求:set 为编辑后的值(空串=写 NULL);where 一律用
+// 编辑前的原值快照——有主键仅取主键列,否则整行所有列兜底定位。
+function buildTarget(ed: { row: number; col: number }) {
+  const cols = columns.value
+  const originalRow = rows.value[ed.row] ?? []
+  const edited = cols[ed.col]
+  const whereNames = primaryKey.value.length > 0 ? primaryKey.value : cols.map((c) => c.name)
+  return {
+    connection_id: props.connectionId,
+    database: props.database,
+    table: currentTable.value,
+    set: {
+      column: edited.name,
+      type: edited.type,
+      value: editValue.value === '' ? null : editValue.value,
+    },
+    where: whereNames.map((name) => {
+      const i = cols.findIndex((c) => c.name === name)
+      return { column: name, type: cols[i]?.type ?? 'String', value: originalRow[i] ?? null }
+    }),
+  }
+}
+
+// submitEdit 回车提交:先固化 target 快照再退出编辑态,cu.request 负责
+// 预览并打开确认弹窗;失败时 cu.error 已记录并显示进现有错误区。
+async function submitEdit(): Promise<void> {
+  const ed = editing.value
+  if (!ed) return
+  const target = buildTarget(ed)
+  cancelEdit()
+  try {
+    await cu.request(target)
+  } catch {
+    // cu.error 已承载错误,交由错误区展示。
+  }
+}
+
+// 确认弹窗开关/错误均来自 cu(嵌套 ref 不被模板自动解包,转一层 computed)。
+const cellUpdateOpen = computed(() => cu.confirmOpen.value)
+const cellUpdateError = computed(() => cu.error.value)
+
+// 弹窗文案:ALTER 语句全文 + 匹配行数;将波及多行时追加警示。
+const cellUpdateMessage = computed(() => {
+  const n = Number(cu.matchedRows.value ?? 0)
+  const lines = [`将执行以下语句:\n${cu.statement.value}`, `匹配 ${n} 行`]
+  if (n > 1) lines.push(`将同时更新 ${n} 行,请确认`)
+  return lines.join('\n')
+})
+
+// onCellUpdateConfirm 确认执行:成功后刷新当前页;失败由 cu.error 展示。
+async function onCellUpdateConfirm(): Promise<void> {
+  try {
+    await cu.confirm()
+  } catch {
+    return
+  }
+  if (cu.error.value) return
+  void fetchPage()
 }
 </script>
 
@@ -234,11 +325,10 @@ function colTitle(c: CHColumn): string {
       <button class="btn ghost" type="button" data-test="btn-ch-refresh" :disabled="loading" @click="refresh">
         {{ loading ? '加载中…' : '刷新' }}
       </button>
-      <button class="btn ghost" type="button" data-test="btn-ch-open-sql" @click="openInSqlConsole">在 SQL 控制台打开</button>
       <button class="btn ghost danger" type="button" data-test="btn-ch-truncate" @click="confirmTruncate = true">清空数据</button>
     </div>
 
-    <div v-if="error" class="msg err" data-test="ch-error">{{ error }}</div>
+    <div v-if="error || cellUpdateError" class="msg err" data-test="ch-error">{{ error || cellUpdateError }}</div>
 
     <div v-if="columns.length > 0 && rows.length === 0 && !loading" class="table-wrap">
       <div class="fields-panel" data-test="ch-fields-panel">
@@ -283,10 +373,24 @@ function colTitle(c: CHColumn): string {
               v-for="(cell, ci) in row"
               :key="ci"
               class="mono cell"
-              :class="{ 'cell-null': cell === null, 'cell-trunc': isTruncated(cell) }"
+              :class="{ 'cell-null': cell === null && !isEditing(ri, ci), 'cell-trunc': isTruncated(cell) }"
               :title="cellTitle(cell)"
               data-test="ch-cell"
-            >{{ cellDisplay(cell) }}</td>
+              @dblclick="startEdit(ri, ci)"
+            >
+              <!-- 行内编辑:双击进入,Esc/blur 取消,回车提交预览。 -->
+              <input
+                v-if="isEditing(ri, ci)"
+                :ref="focusEditor"
+                v-model="editValue"
+                class="cell-editor"
+                data-test="ch-cell-editor"
+                @blur="cancelEdit"
+                @keydown.enter.prevent="submitEdit"
+                @keydown.esc.prevent="cancelEdit"
+              />
+              <template v-else>{{ cellDisplay(cell) }}</template>
+            </td>
           </tr>
           <tr v-if="rows.length === 0 && !loading">
             <td :colspan="columns.length || 1" class="empty" data-test="ch-grid-empty">
@@ -311,6 +415,15 @@ function colTitle(c: CHColumn): string {
       confirm-text="清空"
       @confirm="doTruncate"
       @cancel="confirmTruncate = false"
+    />
+
+    <!-- 单元格更新确认:展示将执行的 ALTER 语句全文与匹配行数。 -->
+    <ConfirmDialog
+      :show="cellUpdateOpen"
+      :message="cellUpdateMessage"
+      confirm-text="执行"
+      @confirm="onCellUpdateConfirm"
+      @cancel="cu.cancel()"
     />
   </div>
 </template>
@@ -369,6 +482,14 @@ function colTitle(c: CHColumn): string {
 .table td { padding: 5px 10px; border-bottom: 1px solid var(--border); word-break: break-all; max-width: 420px; }
 .cell-null { color: var(--text-tertiary); font-style: italic; }
 .cell-trunc { color: var(--text-secondary); }
+/* 行内编辑输入框:覆盖单元格内容,细边框紧凑,与表格行高一致。 */
+.cell-editor {
+  box-sizing: border-box; width: 100%; min-width: 80px;
+  background: var(--bg-elevated); color: var(--text);
+  border: 1px solid var(--accent); border-radius: 4px;
+  padding: 1px 6px; font-size: 13px; font-family: var(--mono);
+}
+.cell-editor:focus { outline: none; box-shadow: 0 0 0 2px var(--accent-soft); }
 .mono { font-family: var(--mono); }
 .empty { text-align: center; color: var(--text-tertiary); padding: 28px 24px; }
 .empty-icon { font-size: 26px; margin-bottom: 6px; }

@@ -568,11 +568,14 @@ export interface CHPageRowsRequest {
 }
 
 // rows 单元格为 string 或 null(NULL);后端把非字符串列格式化为字符串。
+// primary_key 为主键列名数组(按 position 序;空数组=无主键),供表浏览器
+// 行内编辑决定 UPDATE 的 WHERE 范围;后端旧版本可能不返回,前端兜底为空。
 export interface CHPageRowsResult {
   columns: CHColumn[]
   rows: (string | null)[][]
   engine: string
   total_rows: number
+  primary_key?: string[]
 }
 
 export interface CHTruncateTableRequest {

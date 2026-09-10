@@ -130,6 +130,26 @@ func (a *App) CHExecute(req CHExecuteRequest) ([]model.CHStatementResult, error)
 	return results, err
 }
 
+// CHPreviewCellUpdate previews a cell update: it renders the exact
+// ALTER TABLE ... UPDATE statement and counts the rows matched by the same
+// WHERE conditions, executing nothing (read-only, not audited).
+func (a *App) CHPreviewCellUpdate(req model.CHCellUpdateRequest) (model.CHCellUpdatePreview, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.CHPreviewCellUpdate(ctx, req.ConnectionID, req.Database, req.Table, req.Set, req.Where)
+}
+
+// CHUpdateCell executes a cell update as a synchronous mutation (dangerous,
+// audited like truncate: action ch_update_cell, target db.table; the audit
+// carries no credentials and no statement text, matching truncate's style).
+func (a *App) CHUpdateCell(req model.CHCellUpdateRequest) error {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	err := a.svc.CHUpdateCell(ctx, req.ConnectionID, req.Database, req.Table, req.Set, req.Where)
+	a.audit(req.ConnectionID, "ch_update_cell", req.Database+"."+req.Table, auditResult(err), auditDetail(err))
+	return err
+}
+
 // ListDrivers returns the static registry of builtin drivers.
 func (a *App) ListDrivers() ([]DriverInfo, error) {
 	out := make([]DriverInfo, len(builtinDrivers))

@@ -150,6 +150,101 @@ func TestCHHTTPDriverPageRows(t *testing.T) {
 	}
 }
 
+// chJSONOnlyHandler 按查询路由 JSONCompact 响应:ping → 1;system.columns →
+// colsJSON;system.tables → tablesJSON;其余(数据查询)→ dataJSON。
+func chJSONOnlyHandler(tablesJSON, dataJSON string) http.HandlerFunc {
+	const colsJSON = `["name","type","comment"]
+["String","String","String"]
+["id","UInt64",""]
+["name","String",""]`
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sqlText := string(body)
+		switch {
+		case strings.Contains(sqlText, "SELECT 1"):
+			io.WriteString(w, "1")
+		case strings.Contains(sqlText, "system.columns"):
+			io.WriteString(w, colsJSON)
+		case strings.Contains(sqlText, "system.tables"):
+			io.WriteString(w, tablesJSON)
+		default:
+			io.WriteString(w, dataJSON)
+		}
+	}
+}
+
+// 空表 wire 形状契约:rows 必须是空数组而非 nil(nil 会被 JSON 序列化为
+// null,前端对 null.length 取长度直接渲染崩溃 → 整页白屏);total_rows
+// 同理必须是数字。用户真机空表白屏即由此触发。
+func TestCHHTTPDriverEmptyTableWireShape(t *testing.T) {
+	cl := newCHHTTPClient(t, chJSONOnlyHandler(
+		`["engine","total_rows"]
+["String","UInt64"]
+["MergeTree",0]`,
+		// 空表数据查询:仅 names + types 行,无数据行。
+		`["id","name"]
+["UInt64","String"]`,
+	))
+	res, err := cl.PageRows(context.Background(), "logs", "events", "", "", true, 200, 0)
+	if err != nil {
+		t.Fatalf("PageRows on empty table: %v", err)
+	}
+	if res.Rows == nil {
+		t.Fatal("empty table rows must marshal as [] not null: Rows is nil")
+	}
+	if len(res.Rows) != 0 {
+		t.Fatalf("expected 0 rows, got %d", len(res.Rows))
+	}
+	if len(res.Columns) != 2 || res.Columns[0].Name != "id" {
+		t.Fatalf("columns must stay complete, got %+v", res.Columns)
+	}
+	if res.TotalRows == nil || *res.TotalRows != 0 {
+		t.Fatalf("total_rows must be the number 0, got %+v", res.TotalRows)
+	}
+}
+
+// 引擎无法上报行数(system.tables.total_rows 为 NULL,如 Distributed)时,
+// PageRows 的 total_rows 仍必须落为数字 0 而非 null。
+func TestCHHTTPDriverNullTotalRowsBecomesZero(t *testing.T) {
+	cl := newCHHTTPClient(t, chJSONOnlyHandler(
+		`["engine","total_rows"]
+["String","UInt64"]
+["Distributed",null]`,
+		`["id","name"]
+["UInt64","String"]`,
+	))
+	res, err := cl.PageRows(context.Background(), "logs", "events", "", "", true, 200, 0)
+	if err != nil {
+		t.Fatalf("PageRows: %v", err)
+	}
+	if res.TotalRows == nil || *res.TotalRows != 0 {
+		t.Fatalf("null total_rows must normalize to 0, got %+v", res.TotalRows)
+	}
+	if res.Rows == nil || len(res.Rows) != 0 {
+		t.Fatalf("rows must be empty non-nil slice, got %#v", res.Rows)
+	}
+}
+
+// 个别服务端对 0 行结果会输出一行 []:解析层必须跳过零格数据行,
+// 否则会产出一条宽度为 0 的幽灵空行。
+func TestCHHTTPDriverEmptyArrayDataLineIgnored(t *testing.T) {
+	cl := newCHHTTPClient(t, chJSONOnlyHandler(
+		`["engine","total_rows"]
+["String","UInt64"]
+["MergeTree",0]`,
+		`["id","name"]
+["UInt64","String"]
+[]`,
+	))
+	res, err := cl.PageRows(context.Background(), "logs", "events", "", "", true, 200, 0)
+	if err != nil {
+		t.Fatalf("PageRows: %v", err)
+	}
+	if len(res.Rows) != 0 {
+		t.Fatalf("a [] data line must be skipped, got %d ghost rows", len(res.Rows))
+	}
+}
+
 // system.columns 的 comment 为 JSON null 时(老服务端/异常数据可能给出,
 // 正常空描述为空串,不带引号),必须经 sql.NullString 防御落为空串而非报错。
 func TestCHTableColumnsNullComment(t *testing.T) {

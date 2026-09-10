@@ -24,6 +24,19 @@ type fakeCHApp struct {
 	execResult  []model.CHStatementResult
 	execErr     error
 	truncateErr error
+	// 单元格更新能力:记录委托参数并回放预设结果。
+	previewOut  model.CHCellUpdatePreview
+	previewErr  error
+	updateErr   error
+	previewArgs chCellUpdateArgs
+	updateArgs  chCellUpdateArgs
+}
+
+// chCellUpdateArgs records one cell-update delegation's arguments.
+type chCellUpdateArgs struct {
+	database, table string
+	set             model.CHCellValue
+	where           []model.CHCellValue
 }
 
 func (f *fakeCHApp) Connect(context.Context) error { return nil }
@@ -52,6 +65,16 @@ func (f *fakeCHApp) TruncateTable(_ context.Context, database, table string, onC
 func (f *fakeCHApp) Execute(_ context.Context, sqlText string) ([]model.CHStatementResult, error) {
 	f.execSQL = sqlText
 	return f.execResult, f.execErr
+}
+
+func (f *fakeCHApp) PreviewCellUpdate(_ context.Context, database, table string, set model.CHCellValue, where []model.CHCellValue) (model.CHCellUpdatePreview, error) {
+	f.previewArgs = chCellUpdateArgs{database: database, table: table, set: set, where: where}
+	return f.previewOut, f.previewErr
+}
+
+func (f *fakeCHApp) UpdateCell(_ context.Context, database, table string, set model.CHCellValue, where []model.CHCellValue) error {
+	f.updateArgs = chCellUpdateArgs{database: database, table: table, set: set, where: where}
+	return f.updateErr
 }
 
 var _ service.ClickHouseDataSource = (*fakeCHApp)(nil)
@@ -283,6 +306,127 @@ func TestCHRequestJSONShapes(t *testing.T) {
 		if !strings.Contains(string(b), `"`+key+`"`) {
 			t.Fatalf("DriverInfo JSON must expose %q, got %s", key, b)
 		}
+	}
+}
+
+// TestAppCHPreviewCellUpdate 预览只读:参数透传、结果原样返回、不落审计。
+func TestAppCHPreviewCellUpdate(t *testing.T) {
+	fake := &fakeCHApp{previewOut: model.CHCellUpdatePreview{
+		Statement:   "ALTER TABLE `logs`.`events` UPDATE `note` = 'x' WHERE `id` = 1 SETTINGS mutations_sync = 1",
+		MatchedRows: 1,
+	}}
+	app, connID := newCHApp(t, fake)
+	set := model.CHCellValue{Column: "note", Type: "String", Value: strPtrOf("x")}
+	where := []model.CHCellValue{{Column: "id", Type: "UInt64", Value: strPtrOf("1")}}
+
+	prev, err := app.CHPreviewCellUpdate(model.CHCellUpdateRequest{
+		ConnectionID: connID, Database: "logs", Table: "events", Set: set, Where: where,
+	})
+	if err != nil {
+		t.Fatalf("CHPreviewCellUpdate: %v", err)
+	}
+	if prev.Statement != fake.previewOut.Statement || prev.MatchedRows != 1 {
+		t.Fatalf("unexpected preview: %+v", prev)
+	}
+	if fake.previewArgs.database != "logs" || fake.previewArgs.table != "events" ||
+		fake.previewArgs.set.Column != "note" || len(fake.previewArgs.where) != 1 {
+		t.Fatalf("preview args must pass through: %+v", fake.previewArgs)
+	}
+	list, err := app.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	// 只读预览不落审计(列表里只允许有 newCHApp 建连时的 create_connection)。
+	for _, e := range list {
+		if strings.Contains(e.Action, "cell") {
+			t.Fatalf("read-only preview must not be audited, got %+v", list)
+		}
+	}
+}
+
+// TestAppCHUpdateCellAudited 执行走审计:成功 ok,失败 error + 错误详情,
+// 与 CHTruncateTable 同风格(action/target 为 db.table)。
+func TestAppCHUpdateCellAudited(t *testing.T) {
+	fake := &fakeCHApp{}
+	app, connID := newCHApp(t, fake)
+	req := model.CHCellUpdateRequest{
+		ConnectionID: connID, Database: "logs", Table: "events",
+		Set:   model.CHCellValue{Column: "note", Type: "String", Value: strPtrOf("x")},
+		Where: []model.CHCellValue{{Column: "id", Type: "UInt64", Value: strPtrOf("1")}},
+	}
+
+	if err := app.CHUpdateCell(req); err != nil {
+		t.Fatalf("CHUpdateCell: %v", err)
+	}
+	if fake.updateArgs.database != "logs" || fake.updateArgs.table != "events" || fake.updateArgs.set.Column != "note" {
+		t.Fatalf("update args must pass through: %+v", fake.updateArgs)
+	}
+	list, err := app.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if list[0].Action != "ch_update_cell" || list[0].Target != "logs.events" ||
+		list[0].Result != "ok" || list[0].ConnectionID != connID {
+		t.Fatalf("unexpected audit: %+v", list[0])
+	}
+
+	// 失败也要落审计(错误详情透出)。
+	failApp, failID := newCHApp(t, &fakeCHApp{updateErr: errors.New("boom")})
+	req.ConnectionID = failID
+	if err := failApp.CHUpdateCell(req); err == nil {
+		t.Fatal("update failure must surface")
+	}
+	list, err = failApp.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if list[0].Action != "ch_update_cell" || list[0].Result != "error" || list[0].Detail == "" {
+		t.Fatalf("failed update must be audited: %+v", list[0])
+	}
+}
+
+// TestCHCellUpdateJSONShapes 锁定单元格更新的 wire 契约:请求/结果字段全部
+// snake_case,nil 值显式序列化为 null,分页结果带 primary_key。
+func TestCHCellUpdateJSONShapes(t *testing.T) {
+	b, err := json.Marshal(model.CHCellUpdateRequest{
+		ConnectionID: "c", Database: "d", Table: "t",
+		Set:   model.CHCellValue{Column: "note", Type: "Nullable(String)"},
+		Where: []model.CHCellValue{{Column: "id", Type: "UInt64", Value: strPtrOf("1")}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	for _, key := range []string{"connection_id", "database", "table", "set", "where", "column", "type", "value"} {
+		if !strings.Contains(string(b), `"`+key+`"`) {
+			t.Fatalf("CHCellUpdateRequest JSON must expose %q, got %s", key, b)
+		}
+	}
+	// nil value 必须显式为 null(前端语义 = SQL NULL),不得被省略。
+	if !strings.Contains(string(b), `"value":null`) {
+		t.Fatalf("nil cell value must marshal as null, got %s", b)
+	}
+
+	b, err = json.Marshal(model.CHCellUpdatePreview{Statement: "ALTER", MatchedRows: 3})
+	if err != nil {
+		t.Fatalf("marshal preview: %v", err)
+	}
+	for _, key := range []string{"statement", "matched_rows"} {
+		if !strings.Contains(string(b), `"`+key+`"`) {
+			t.Fatalf("CHCellUpdatePreview JSON must expose %q, got %s", key, b)
+		}
+	}
+
+	// 分页结果新增 primary_key(snake_case)。
+	b, err = json.Marshal(model.CHPageRowsResult{
+		Columns:    []model.CHColumn{},
+		Rows:       [][]*string{},
+		PrimaryKey: []string{"id"},
+	})
+	if err != nil {
+		t.Fatalf("marshal page: %v", err)
+	}
+	if !strings.Contains(string(b), `"primary_key":["id"]`) {
+		t.Fatalf("CHPageRowsResult JSON must expose primary_key, got %s", b)
 	}
 }
 

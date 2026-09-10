@@ -1,12 +1,28 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount, type VueWrapper } from '@vue/test-utils'
+import { mount, type DOMWrapper, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { CHPageRowsResult } from '@/api/types'
 import CHTableBrowser from './CHTableBrowser.vue'
+
+// 单元格编辑经真实 useCHCellUpdate composable 直连 wailsjs 绑定,因此测试
+// 只在 wailsjs 模块层 mock(vi.mock 提升到文件顶部,fn 须用 vi.hoisted
+// 创建避免 TDZ);composable 本身不 mock,按契约走真实实现。
+const wailsMocks = vi.hoisted(() => ({
+  // 预览:返回将执行的 ALTER 语句全文与匹配行数(契约形状)。
+  CHPreviewCellUpdate: vi.fn(),
+  // 执行:按已预览的 target 执行 UPDATE。
+  CHUpdateCell: vi.fn(),
+}))
+vi.mock('../../../wailsjs/go/backend/App', async () => {
+  const actual = await vi.importActual<typeof import('../../../wailsjs/go/backend/App')>(
+    '../../../wailsjs/go/backend/App',
+  )
+  return { ...actual, ...wailsMocks }
+})
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
   return {
@@ -116,6 +132,20 @@ async function waitCols(wrapper: VueWrapper, n = 2): Promise<void> {
   })
 }
 
+// raw 构造后端可能给出的异常 wire 形状(绕过编译期类型,模拟真实传输)。
+function raw(over: Record<string, unknown> = {}): CHPageRowsResult {
+  return {
+    columns: [
+      { name: 'id', type: 'UInt64', comment: '' },
+      { name: 'name', type: 'String', comment: '' },
+    ],
+    rows: [],
+    engine: 'MergeTree',
+    total_rows: 0,
+    ...over,
+  } as unknown as CHPageRowsResult
+}
+
 describe('CHTableBrowser', () => {
   let api: Api
   beforeEach(() => {
@@ -123,12 +153,16 @@ describe('CHTableBrowser', () => {
     api = fakeApi()
     setApi(api)
     document.body.innerHTML = ''
+    wailsMocks.CHPreviewCellUpdate.mockReset()
+    wailsMocks.CHUpdateCell.mockReset()
   })
 
   it('fetches the first page and renders columns, rows, NULL cells and the summary', async () => {
     ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page())
     const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
     await waitCols(wrapper)
+    // 旧「在 SQL 控制台打开」入口已删除:与顶栏新建查询完全重复。
+    expect(wrapper.find('[data-test="btn-ch-open-sql"]').exists()).toBe(false)
     expect(api.chPageRows).toHaveBeenCalledWith({
       connection_id: 'ch1',
       database: 'logs',
@@ -289,6 +323,69 @@ describe('CHTableBrowser', () => {
     expect(wrapper.find('[data-test="ch-grid-empty"]').text()).toContain('该表暂无数据')
   })
 
+  it('keeps the fields panel and root mounted after both concurrent requests settle on an empty table', async () => {
+    // 用户真机回归:空表打开 tab 时字段面板闪现后整页白屏。挂载时
+    // fetchPage 与 loadTableList 并发,两批响应先后触发二次渲染,任何
+    // 一次渲染崩溃都会表现为「闪现后空白」——钉住两次渲染后组件仍完整。
+    ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(raw())
+    ;(api.listCHTables as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'events', engine: 'MergeTree', total_rows: 0 },
+    ])
+    const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="ch-fields-panel"]').exists()).toBe(true)
+    })
+    // 并发的表清单请求完成后(第二次渲染),组件根与字段面板仍在。
+    await vi.waitFor(() => {
+      expect(api.listCHTables).toHaveBeenCalled()
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="ch-table-switcher"]').findAll('option')).toHaveLength(1)
+    })
+    expect(wrapper.find('[data-test="ch-table-browser"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="ch-fields-panel"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="ch-summary-rows"]').text()).toContain('0')
+  })
+
+  it('renders the empty-table fields panel when the backend sends rows as null', async () => {
+    // Go nil 切片在 wire 上是 null(修复前后端约定前):前端不得崩溃,
+    // 须兜底为空数组并照常渲染字段结构面板。
+    ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(raw({ rows: null }))
+    const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="ch-fields-panel"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="ch-table-browser"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="ch-fields-panel"]').text()).toContain('表结构(共 2 字段)')
+  })
+
+  it('falls back total_rows to 0 when it arrives as null, undefined or a numeric string', async () => {
+    for (const total_rows of [null, undefined, '4096']) {
+      document.body.innerHTML = ''
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(raw({ total_rows }))
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="ch-fields-panel"]').exists()).toBe(true)
+      })
+      const summary = wrapper.find('[data-test="ch-summary-rows"]').text()
+      // null/undefined 兜底为 0;数字字符串归一为数字(千分位渲染)。
+      const expected = total_rows === '4096' ? '4,096' : '0'
+      expect(summary).toContain(`≈ ${expected} 行`)
+      expect(wrapper.find('[data-test="ch-table-browser"]').exists()).toBe(true)
+    }
+  })
+
+  it('renders without crashing when the backend omits columns', async () => {
+    ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(raw({ columns: undefined }))
+    const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="ch-grid-empty"]').exists()).toBe(true)
+    })
+    // columns 兜底为空数组:不渲染字段面板,退化为无表头空态而非白屏。
+    expect(wrapper.find('[data-test="ch-fields-panel"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="ch-table-browser"]').exists()).toBe(true)
+  })
+
   it('switches tables from the toolbar switcher and re-requests with the new table', async () => {
     ;(api.listCHTables as ReturnType<typeof vi.fn>).mockResolvedValue([
       { name: 'events', engine: 'MergeTree', total_rows: 3 },
@@ -383,5 +480,243 @@ describe('CHTableBrowser', () => {
     expect(tableBlock).toContain('min-width: 100%')
     const headBlock = fileSrc.match(/\.col-head \{[\s\S]*?\n\}/)?.[0] ?? ''
     expect(headBlock).toContain('white-space: nowrap')
+  })
+
+  describe('单元格编辑', () => {
+    // 第 r 行第 c 列单元格(data-test="ch-cell")。
+    function cellAt(wrapper: VueWrapper, row: number, col: number): DOMWrapper<Element> {
+      return wrapper.findAll('[data-test="ch-row"]')[row].findAll('[data-test="ch-cell"]')[col]
+    }
+
+    it('enters edit on dblclick with the original value focused and exits via Esc without any request', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      // attachTo:document.body 使输入框进入文档,自动聚焦才改变 activeElement。
+      const wrapper = mount(
+        CHTableBrowser,
+        { props: { connectionId: 'ch1', database: 'logs', table: 'events' }, attachTo: document.body },
+      )
+      await waitCols(wrapper)
+      await cellAt(wrapper, 0, 1).trigger('dblclick')
+      const editor = wrapper.find('[data-test="ch-cell-editor"]')
+      expect(editor.exists()).toBe(true)
+      // 输入框承载 rows 内存中的原始值(null 才是空),并自动聚焦。
+      expect((editor.element as HTMLInputElement).value).toBe('alice')
+      expect(document.activeElement).toBe(editor.element)
+      // Esc 退出编辑且不发起任何请求。
+      await editor.trigger('keydown.esc')
+      expect(wrapper.find('[data-test="ch-cell-editor"]').exists()).toBe(false)
+      expect(wailsMocks.CHPreviewCellUpdate).not.toHaveBeenCalled()
+      expect(wailsMocks.CHUpdateCell).not.toHaveBeenCalled()
+      // blur 同样退出编辑。
+      await cellAt(wrapper, 0, 1).trigger('dblclick')
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('blur')
+      expect(wrapper.find('[data-test="ch-cell-editor"]').exists()).toBe(false)
+      expect(wailsMocks.CHPreviewCellUpdate).not.toHaveBeenCalled()
+    })
+
+    it('ignores dblclick while a page request is loading', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      // 触发一次挂起的重拉(排序),进入 loading;旧行仍渲染。
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(() => {}))
+      await wrapper.findAll('[data-test="ch-col"]')[0].trigger('click')
+      expect(wrapper.find('[data-test="btn-ch-refresh"]').text()).toContain('加载中')
+      await cellAt(wrapper, 0, 1).trigger('dblclick')
+      expect(wrapper.find('[data-test="ch-cell-editor"]').exists()).toBe(false)
+    })
+
+    it('does not start a second editor while one is active', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await cellAt(wrapper, 0, 0).trigger('dblclick')
+      // jsdom 的 dblclick 不派发 blur,依赖组件守卫拒绝新编辑。
+      await cellAt(wrapper, 1, 1).trigger('dblclick')
+      const editors = wrapper.findAll('[data-test="ch-cell-editor"]')
+      expect(editors).toHaveLength(1)
+      // 仍是首个单元格的编辑器,值未被第二行的双击改写。
+      expect((editors[0].element as HTMLInputElement).value).toBe('1')
+    })
+
+    it('builds the where clause from primary-key columns only', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      wailsMocks.CHPreviewCellUpdate.mockResolvedValue({
+        statement: "ALTER TABLE logs.events UPDATE name = 'alice2' WHERE id = '1'",
+        matched_rows: 1,
+      })
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await cellAt(wrapper, 0, 1).trigger('dblclick')
+      await wrapper.find('[data-test="ch-cell-editor"]').setValue('alice2')
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.enter')
+      await vi.waitFor(() => {
+        expect(wailsMocks.CHPreviewCellUpdate).toHaveBeenCalledWith({
+          connection_id: 'ch1',
+          database: 'logs',
+          table: 'events',
+          set: { column: 'name', type: 'String', value: 'alice2' },
+          // 仅主键列,取编辑前原值。
+          where: [{ column: 'id', type: 'UInt32', value: '1' }],
+        })
+      })
+    })
+
+    it('falls back to the whole original row as the where clause when there is no primary key', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page())
+      wailsMocks.CHPreviewCellUpdate.mockResolvedValue({
+        statement: "ALTER TABLE logs.events UPDATE id = '42' WHERE id = '1' AND name = 'alice'",
+        matched_rows: 1,
+      })
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await cellAt(wrapper, 0, 0).trigger('dblclick')
+      await wrapper.find('[data-test="ch-cell-editor"]').setValue('42')
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.enter')
+      await vi.waitFor(() => {
+        expect(wailsMocks.CHPreviewCellUpdate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            set: { column: 'id', type: 'UInt32', value: '42' },
+            // 无主键:整行所有列的编辑前原值(不含编辑后的 '42')。
+            where: [
+              { column: 'id', type: 'UInt32', value: '1' },
+              { column: 'name', type: 'String', value: 'alice' },
+            ],
+          }),
+        )
+      })
+    })
+
+    it('edits a NULL cell as an empty input, submits empty input as null, and snapshots null primaries into where', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      wailsMocks.CHPreviewCellUpdate.mockResolvedValue({
+        statement: "ALTER TABLE logs.events UPDATE name = NULL WHERE id IS NULL",
+        matched_rows: 1,
+      })
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      // 第二行 id 原值为 NULL:NULL 单元格双击得到空输入框。
+      await cellAt(wrapper, 1, 0).trigger('dblclick')
+      expect((wrapper.find('[data-test="ch-cell-editor"]').element as HTMLInputElement).value).toBe('')
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.esc')
+      // 再编辑同行的 name 单元格,清空后回车 = 写 NULL;where 中主键
+      // 原值为 null(编辑前快照)。
+      await cellAt(wrapper, 1, 1).trigger('dblclick')
+      const editor = wrapper.find('[data-test="ch-cell-editor"]')
+      expect((editor.element as HTMLInputElement).value).toBe('bob')
+      await editor.setValue('')
+      await editor.trigger('keydown.enter')
+      await vi.waitFor(() => {
+        expect(wailsMocks.CHPreviewCellUpdate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            set: { column: 'name', type: 'String', value: null },
+            where: [{ column: 'id', type: 'UInt32', value: null }],
+          }),
+        )
+      })
+    })
+
+    it('empties a non-null input into a null write', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      wailsMocks.CHPreviewCellUpdate.mockResolvedValue({
+        statement: "ALTER TABLE logs.events UPDATE name = NULL WHERE id = '1'",
+        matched_rows: 1,
+      })
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await cellAt(wrapper, 0, 1).trigger('dblclick')
+      await wrapper.find('[data-test="ch-cell-editor"]').setValue('')
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.enter')
+      await vi.waitFor(() => {
+        expect(wailsMocks.CHPreviewCellUpdate).toHaveBeenCalledWith(
+          expect.objectContaining({ set: { column: 'name', type: 'String', value: null } }),
+        )
+      })
+    })
+
+    it('shows the full statement and matched rows in the confirm dialog, warns above one row, and refreshes after confirm', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      wailsMocks.CHPreviewCellUpdate.mockResolvedValue({
+        statement: "ALTER TABLE logs.events UPDATE name = 'alice2' WHERE id = '1'",
+        matched_rows: 3,
+      })
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await cellAt(wrapper, 0, 1).trigger('dblclick')
+      await wrapper.find('[data-test="ch-cell-editor"]').setValue('alice2')
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.enter')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      const msg = document.body.querySelector('[data-test="confirm-dialog-message"]')?.textContent ?? ''
+      // 弹窗含 ALTER 语句全文、匹配行数;N>1 追加多行警示。
+      expect(msg).toContain("ALTER TABLE logs.events UPDATE name = 'alice2' WHERE id = '1'")
+      expect(msg).toContain('匹配 3 行')
+      expect(msg).toContain('将同时更新 3 行,请确认')
+      const callsBefore = (api.chPageRows as ReturnType<typeof vi.fn>).mock.calls.length
+      clickConfirmDialog('confirm-dialog-ok')
+      await vi.waitFor(() => {
+        expect(wailsMocks.CHUpdateCell).toHaveBeenCalled()
+      })
+      // 确认成功后刷新当前页:chPageRows 调用次数 +1。
+      await vi.waitFor(() => {
+        expect((api.chPageRows as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore + 1)
+      })
+    })
+
+    it('does not execute when the confirm dialog is canceled', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      wailsMocks.CHPreviewCellUpdate.mockResolvedValue({
+        statement: "ALTER TABLE logs.events UPDATE name = 'alice2' WHERE id = '1'",
+        matched_rows: 1,
+      })
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await cellAt(wrapper, 0, 1).trigger('dblclick')
+      await wrapper.find('[data-test="ch-cell-editor"]').setValue('alice2')
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.enter')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      clickConfirmDialog('confirm-dialog-cancel')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).toBeNull()
+      })
+      expect(wailsMocks.CHUpdateCell).not.toHaveBeenCalled()
+      // 未执行也就不刷新:仍只有初始 1 次分页请求。
+      expect((api.chPageRows as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)
+    })
+
+    it('shows a single-row message without the multi-row warning', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      wailsMocks.CHPreviewCellUpdate.mockResolvedValue({
+        statement: "ALTER TABLE logs.events UPDATE name = 'alice2' WHERE id = '1'",
+        matched_rows: 1,
+      })
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await cellAt(wrapper, 0, 1).trigger('dblclick')
+      await wrapper.find('[data-test="ch-cell-editor"]').setValue('alice2')
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.enter')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      const msg = document.body.querySelector('[data-test="confirm-dialog-message"]')?.textContent ?? ''
+      expect(msg).toContain('匹配 1 行')
+      expect(msg).not.toContain('将同时更新')
+    })
+
+    it('surfaces a failed preview in the existing error area', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      wailsMocks.CHPreviewCellUpdate.mockRejectedValue(new Error('预览失败'))
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await cellAt(wrapper, 0, 1).trigger('dblclick')
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.enter')
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="ch-error"]').text()).toContain('预览失败')
+      })
+      expect(wailsMocks.CHUpdateCell).not.toHaveBeenCalled()
+    })
   })
 })

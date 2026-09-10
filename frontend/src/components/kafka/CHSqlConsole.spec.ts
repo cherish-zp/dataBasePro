@@ -5,13 +5,11 @@ import { EditorView } from '@codemirror/view'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
-import type {
-  CHStatementResult,
-  SaveSavedQueryRequest,
-  SavedQuery,
-  UpdateSavedQueryRequest,
-} from '@/api/types'
+import type { CHStatementResult } from '@/api/types'
 import { CSV_MIME, JSONL_MIME, saveFile } from '@/utils/export'
+import { QUERY_DIR_KEY } from '@/utils/queryDir'
+import { useQueryFiles } from '@/composables/queryFiles'
+import { useTabsStore } from '@/store/tabs'
 import SqlEditor from '@/components/common/SqlEditor.vue'
 import CHSqlConsole from './CHSqlConsole.vue'
 
@@ -21,6 +19,49 @@ vi.mock('@/utils/export', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/utils/export')>()
   return { ...actual, downloadFile: vi.fn(), saveFile: vi.fn(async () => {}) }
 })
+
+// 查询文件走后端 App 绑定;组件经共享 composable 调用这四个方法,测试里
+// 整体替换该模块(不 mock composable 本体)。结果行内编辑经 chCellUpdate
+// composable 调用预览/更新两个绑定,同样只 mock 绑定层。
+vi.mock('../../../wailsjs/go/backend/App', () => ({
+  ListQueryFiles: vi.fn(async () => []),
+  ReadQueryFile: vi.fn(async () => ({ content: '', connection_id: '' })),
+  WriteQueryFile: vi.fn(async () => {}),
+  DeleteQueryFile: vi.fn(async () => {}),
+  CHPreviewCellUpdate: vi.fn(async () => ({ statement: '', matched_rows: 0 })),
+  CHUpdateCell: vi.fn(async () => {}),
+}))
+
+import * as App from '../../../wailsjs/go/backend/App'
+
+// 断言出的文件方法 mock(生成绑定前 App.d.ts 未声明,需显式形状)。
+interface FileAppMocks {
+  ListQueryFiles: ReturnType<typeof vi.fn>
+  ReadQueryFile: ReturnType<typeof vi.fn>
+  WriteQueryFile: ReturnType<typeof vi.fn>
+  DeleteQueryFile: ReturnType<typeof vi.fn>
+}
+const fileApp = App as unknown as FileAppMocks
+
+// 结果行内编辑的绑定方法 mock(生成绑定前 App.d.ts 未声明,需显式形状)。
+interface CellUpdateAppMocks {
+  CHPreviewCellUpdate: ReturnType<typeof vi.fn>
+  CHUpdateCell: ReturnType<typeof vi.fn>
+}
+const cellApp = App as unknown as FileAppMocks & CellUpdateAppMocks
+
+// 组件暴露给全局右栏的查询文件能力。
+interface ExposedQueryFileApi {
+  requestSave(): void
+  requestSaveAs(): void
+  loadQueryFile(name: string): void
+  askRemoveCurrentFile(): void
+  currentFile(): string | null
+}
+
+function exposedApi(wrapper: VueWrapper): ExposedQueryFileApi {
+  return wrapper.vm as unknown as ExposedQueryFileApi
+}
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
   return {
@@ -100,26 +141,14 @@ const twoStatements = (): CHStatementResult[] => [
   { sql: 'SELECT bad', duration_ms: 3, error: 'Syntax error (multi-statements not allowed)' },
 ]
 
-const savedQueries = (): SavedQuery[] => [
-  {
-    id: 'q1',
-    name: '每日报表',
-    console_type: 'ch-sql',
-    connection_id: 'ch1',
-    content: 'SELECT date, count() AS c FROM events GROUP BY date',
-    created_at: 1700000000000,
-    updated_at: 1725840000000,
-  },
-  {
-    id: 'q2',
-    name: '失败重试扫描',
-    console_type: 'ch-sql',
-    connection_id: 'ch1',
-    content: 'SELECT * FROM retries WHERE status = 0',
-    created_at: 1700000000000,
-    updated_at: 1725840100000,
-  },
+// 假文件列表(镜像后端 QueryFileInfo 形状,后端返回裸数组)。
+const queryFiles = (): { name: string; connection_id: string; size_bytes: number; mod_time_ms: number }[] => [
+  { name: '每日报表.sql', connection_id: 'ch1', size_bytes: 42, mod_time_ms: 1725840000000 },
+  { name: '重试扫描.sql', connection_id: 'ch2', size_bytes: 13, mod_time_ms: 1725840100000 },
 ]
+
+// 测试统一使用的查询目录(localStorage 注入)。
+const TEST_DIR = '/Users/test/queries'
 
 // SqlEditor 内部由 CM6 创建自己的 .cm-editor,借 findFromDOM 拿到 view 实例
 // (与 SqlEditor.spec.ts 同一套方法)。
@@ -137,17 +166,16 @@ async function typeSql(wrapper: VueWrapper, text: string): Promise<void> {
   await nextTick()
 }
 
+// 在编辑器里按 ⌘S / Ctrl+S(事件从 CM contentDOM 冒泡到外层容器)。
+function pressSaveShortcut(wrapper: VueWrapper, mods: { metaKey?: boolean; ctrlKey?: boolean } = { metaKey: true }): void {
+  cmInput(wrapper).contentDOM.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 's', ...mods, bubbles: true }),
+  )
+}
+
 // PromptDialog / ConfirmDialog teleport 到 body。
 function bodyEl(testId: string): HTMLElement | null {
   return document.body.querySelector(`[data-test="${testId}"]`)
-}
-
-// 展开「查询库」面板并等首条查询渲染(列表为异步拉取)。
-async function openQueryLib(wrapper: VueWrapper): Promise<void> {
-  await wrapper.find('[data-test="btn-ch-query-lib-toggle"]').trigger('click')
-  await vi.waitFor(() => {
-    expect(wrapper.find('[data-test="ch-query-item-0"]').exists()).toBe(true)
-  })
 }
 
 // 在 teleport 弹窗的输入框中输入并确认;等确认按钮从 disabled 变为可用
@@ -168,13 +196,29 @@ describe('CHSqlConsole', () => {
     setActivePinia(createPinia())
     api = fakeApi()
     setApi(api)
-    vi.mocked(saveFile).mockClear()
+    vi.clearAllMocks()
+    // clearAllMocks 不清除 factory 里 set 的实现,但会清 mockResolvedValue
+    // 之外的调用记录;为隔离用例覆盖,这里统一恢复默认实现。
+    fileApp.ListQueryFiles.mockImplementation(async () => [])
+    fileApp.ReadQueryFile.mockImplementation(async () => ({ content: '', connection_id: '' }))
+    fileApp.WriteQueryFile.mockImplementation(async () => {})
+    fileApp.DeleteQueryFile.mockImplementation(async () => {})
+    // 行内编辑绑定:预览默认返回一条 ALTER 语句与匹配 1 行;更新成功。
+    cellApp.CHPreviewCellUpdate.mockImplementation(async () => ({
+      statement: "ALTER TABLE events UPDATE id = 'b' WHERE id = 'a' AND name = 'alice' AND age = '30' AND note IS NULL",
+      matched_rows: 1,
+    }))
+    cellApp.CHUpdateCell.mockImplementation(async () => {})
+    // composable 的文件列表是模块级共享状态,测试间清空避免串扰
+    // (探针实例不 mock 本体,只用它重置/填充共享列表)。
+    useQueryFiles({ connectionId: () => 'ch1' }).files.value = []
+    localStorage.setItem(QUERY_DIR_KEY, TEST_DIR)
     document.body.innerHTML = ''
   })
 
   it('runs SQL typed into the CodeMirror editor and renders one card per statement with rows or error text', async () => {
     ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(twoStatements())
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
     await vi.waitFor(() => {
@@ -197,7 +241,7 @@ describe('CHSqlConsole', () => {
 
   it('exports a statement result via saveFile as CSV and JSONL named ch-result-<i>', async () => {
     ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(twoStatements())
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
     await vi.waitFor(() => {
@@ -218,7 +262,7 @@ describe('CHSqlConsole', () => {
     ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(
       [{ sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'one', type: 'UInt8' }], rows: [['1']] }],
     )
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
     await typeSql(wrapper, 'SELECT 1')
     // SqlEditor 自身不处理该组合键,事件从 CM contentDOM 冒泡到外层容器。
     cmInput(wrapper).contentDOM.dispatchEvent(
@@ -235,7 +279,7 @@ describe('CHSqlConsole', () => {
       { name: 'events', engine: 'MergeTree', total_rows: 3 },
       { name: 'orders', engine: 'MergeTree', total_rows: 5 },
     ])
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
     // 未指定 database → 默认 default 库,且不含 system 表。
     await vi.waitFor(() => {
       expect(api.listCHTables).toHaveBeenCalledWith({ connection_id: 'ch1', database: 'default', show_system: false })
@@ -246,192 +290,457 @@ describe('CHSqlConsole', () => {
     })
     wrapper.unmount()
     // 显式 database prop 透传给 listCHTables。
-    const wrapper2 = mount(CHSqlConsole, { props: { connectionId: 'ch2', database: 'metrics' } })
+    const wrapper2 = mount(CHSqlConsole, { props: { tabId: 'ch-tab2', connectionId: 'ch2', database: 'metrics' } })
     await vi.waitFor(() => {
       expect(api.listCHTables).toHaveBeenLastCalledWith({ connection_id: 'ch2', database: 'metrics', show_system: false })
     })
     wrapper2.unmount()
   })
 
-  it('fetches ch-sql saved queries on mount and toggles the library panel', async () => {
-    ;(api.listSavedQueries as ReturnType<typeof vi.fn>).mockResolvedValue(savedQueries())
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
-    await vi.waitFor(() => {
-      expect(api.listSavedQueries).toHaveBeenCalledWith({ console_type: 'ch-sql', connection_id: 'ch1' })
-    })
-    // 默认收起;点按钮展开后逐条渲染名称与更新时间。
-    expect(wrapper.find('[data-test="ch-query-lib"]').exists()).toBe(false)
-    await wrapper.find('[data-test="btn-ch-query-lib-toggle"]').trigger('click')
-    expect(wrapper.find('[data-test="ch-query-lib"]').exists()).toBe(true)
-    const items = wrapper.findAll('[data-test^="ch-query-item-"]')
-    expect(items).toHaveLength(2)
-    expect(items[0].text()).toContain('每日报表')
-    expect(items[0].text()).toContain(new Date(1725840000000).toLocaleString())
-    expect(items[1].text()).toContain('失败重试扫描')
-    // 再次点击收起。
-    await wrapper.find('[data-test="btn-ch-query-lib-toggle"]').trigger('click')
-    expect(wrapper.find('[data-test="ch-query-lib"]').exists()).toBe(false)
-    wrapper.unmount()
-  })
-
-  it('disables save/save-as on an empty editor and delete with nothing loaded', async () => {
-    ;(api.listSavedQueries as ReturnType<typeof vi.fn>).mockResolvedValue(savedQueries())
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
-    await openQueryLib(wrapper)
-    const disabled = (id: string): boolean =>
-      (wrapper.find(`[data-test="${id}"]`).element as HTMLButtonElement).disabled
-    expect(disabled('btn-ch-query-lib-save')).toBe(true)
-    expect(disabled('btn-ch-query-lib-save-as')).toBe(true)
-    expect(disabled('btn-ch-query-lib-delete')).toBe(true)
-  })
-
-  it('loads a saved query into the editor when its entry is clicked', async () => {
-    ;(api.listSavedQueries as ReturnType<typeof vi.fn>).mockResolvedValue(savedQueries())
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
-    await openQueryLib(wrapper)
-    await wrapper.find('[data-test="ch-query-item-0"]').trigger('click')
-    await vi.waitFor(() => {
-      expect(cmInput(wrapper).state.doc.toString()).toBe('SELECT date, count() AS c FROM events GROUP BY date')
-    })
-  })
-
-  it('saves the current SQL as a new query through the prompt dialog with console_type ch-sql', async () => {
-    ;(api.listSavedQueries as ReturnType<typeof vi.fn>).mockResolvedValue(savedQueries())
-    ;(api.saveSavedQuery as ReturnType<typeof vi.fn>).mockImplementation(
-      async (req: SaveSavedQueryRequest) =>
-        ({ id: 'q9', name: req.name, console_type: 'ch-sql', connection_id: 'ch1', content: req.content, created_at: 1, updated_at: 2 }) as SavedQuery,
+  it('runs only the selected text when the editor has a selection', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(
+      [{ sql: 'SELECT 2', duration_ms: 2, columns: [{ name: 'two', type: 'UInt8' }], rows: [['2']] }],
     )
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
-    // 保存/另存为/删除按钮位于查询库面板内,先展开。
-    await wrapper.find('[data-test="btn-ch-query-lib-toggle"]').trigger('click')
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1; SELECT 2')
+    // 选中第二段 'SELECT 2'(10..18),运行按钮应只执行选中文本。
+    cmInput(wrapper).dispatch({ selection: { anchor: 10, head: 18 } })
+    await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="ch-stmt-card"]')).toHaveLength(1)
+    })
+    expect(api.chExecute).toHaveBeenCalledTimes(1)
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 2' })
+  })
+
+  it('runs only the selection on Cmd+Enter as well', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(
+      [{ sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'one', type: 'UInt8' }], rows: [['1']] }],
+    )
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1; SELECT 2')
+    cmInput(wrapper).dispatch({ selection: { anchor: 0, head: 8 } })
+    cmInput(wrapper).contentDOM.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }),
+    )
+    await vi.waitFor(() => {
+      expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1' })
+    })
+    expect(api.chExecute).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the save-name prompt on Cmd/Ctrl+S when no file is open, and cancel writes nothing', async () => {
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
     await typeSql(wrapper, 'SELECT 42')
-    await wrapper.find('[data-test="btn-ch-query-lib-save"]').trigger('click')
-    // 未载入任何查询 → 弹名称输入框。
+    pressSaveShortcut(wrapper)
     await vi.waitFor(() => {
       expect(bodyEl('prompt-dialog')).not.toBeNull()
     })
-    await confirmPrompt('我的查询')
-    await vi.waitFor(() => {
-      expect(api.saveSavedQuery).toHaveBeenCalledWith({
-        name: '我的查询',
-        console_type: 'ch-sql',
-        connection_id: 'ch1',
-        content: 'SELECT 42',
-      })
-    })
-    expect(api.updateSavedQuery).not.toHaveBeenCalled()
-    // 保存成功后弹窗关闭。
+    expect(bodyEl('prompt-title')?.textContent).toBe('保存查询')
+    // 取消 → 只关弹窗,不写入。
+    ;(bodyEl('prompt-cancel') as HTMLElement).click()
     await vi.waitFor(() => {
       expect(bodyEl('prompt-dialog')).toBeNull()
     })
+    expect(fileApp.WriteQueryFile).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
-  it('updates the loaded query in place when saving with a loaded entry', async () => {
-    ;(api.listSavedQueries as ReturnType<typeof vi.fn>).mockResolvedValue(savedQueries())
-    ;(api.updateSavedQuery as ReturnType<typeof vi.fn>).mockImplementation(
-      async (req: UpdateSavedQueryRequest) =>
-        ({ id: req.id, name: req.name, console_type: 'ch-sql', connection_id: 'ch1', content: req.content, created_at: 1, updated_at: 3 }) as SavedQuery,
-    )
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
-    await openQueryLib(wrapper)
-    await wrapper.find('[data-test="ch-query-item-0"]').trigger('click')
-    await typeSql(wrapper, 'SELECT 99')
-    await wrapper.find('[data-test="btn-ch-query-lib-save"]').trigger('click')
-    // 已载入 → 不弹窗,直接原地更新。
-    expect(bodyEl('prompt-dialog')).toBeNull()
-    await vi.waitFor(() => {
-      expect(api.updateSavedQuery).toHaveBeenCalledWith({
-        id: 'q1',
-        name: '每日报表',
-        content: 'SELECT 99',
-      })
-    })
-    expect(api.saveSavedQuery).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('save-as always prompts and creates a new query without touching the loaded one', async () => {
-    ;(api.listSavedQueries as ReturnType<typeof vi.fn>).mockResolvedValue(savedQueries())
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
-    await openQueryLib(wrapper)
-    await wrapper.find('[data-test="ch-query-item-0"]').trigger('click')
-    await vi.waitFor(() => {
-      expect(cmInput(wrapper).state.doc.toString()).toContain('events')
-    })
-    await wrapper.find('[data-test="btn-ch-query-lib-save-as"]').trigger('click')
-    // 弹窗预填当前载入的名称。
+  it('saves the editor content as a new query file via the exposed requestSave and refreshes the list', async () => {
+    fileApp.ListQueryFiles.mockResolvedValue(queryFiles())
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 42')
+    const vm = exposedApi(wrapper)
+    expect(vm.currentFile()).toBeNull()
+    vm.requestSave()
     await vi.waitFor(() => {
       expect(bodyEl('prompt-dialog')).not.toBeNull()
     })
-    expect((bodyEl('prompt-input') as HTMLInputElement).value).toBe('每日报表')
-    await confirmPrompt('每日报表-副本')
+    // 基线:确认前的所有列表拉取都发生在此时(以其后新增的调用证明刷新)。
+    const listCallsBaseline = fileApp.ListQueryFiles.mock.calls.length
+    await confirmPrompt('新文件.sql')
     await vi.waitFor(() => {
-      expect(api.saveSavedQuery).toHaveBeenCalledWith({
-        name: '每日报表-副本',
-        console_type: 'ch-sql',
+      expect(fileApp.WriteQueryFile).toHaveBeenCalledWith({
+        dir: TEST_DIR,
+        name: '新文件.sql',
+        content: 'SELECT 42',
         connection_id: 'ch1',
-        content: 'SELECT date, count() AS c FROM events GROUP BY date',
       })
     })
-    expect(api.updateSavedQuery).not.toHaveBeenCalled()
+    // 写入后刷新列表,新文件成为当前打开文件。
+    await vi.waitFor(() => {
+      expect(fileApp.ListQueryFiles.mock.calls.length).toBeGreaterThan(listCallsBaseline)
+    })
+    expect(vm.currentFile()).toBe('新文件.sql')
     wrapper.unmount()
   })
 
-  it('deletes the loaded query after confirmation and clears the loaded state', async () => {
-    ;(api.listSavedQueries as ReturnType<typeof vi.fn>).mockResolvedValue(savedQueries())
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
-    await openQueryLib(wrapper)
-    await wrapper.find('[data-test="ch-query-item-0"]').trigger('click')
+  it('overwrites the open file directly on Ctrl+S without prompting', async () => {
+    fileApp.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'ch1' })
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    const vm = exposedApi(wrapper)
+    // 编辑器为空 → 不脏,直接载入,不弹确认。
+    vm.loadQueryFile('每日报表.sql')
     await vi.waitFor(() => {
-      expect(cmInput(wrapper).state.doc.toString()).toContain('events')
+      expect(cmInput(wrapper).state.doc.toString()).toBe('SELECT 1')
     })
-    await wrapper.find('[data-test="btn-ch-query-lib-delete"]').trigger('click')
-    expect(bodyEl('confirm-dialog')).not.toBeNull()
-    const msg = bodyEl('confirm-dialog-message')?.textContent ?? ''
-    expect(msg).toContain('每日报表')
+    expect(vm.currentFile()).toBe('每日报表.sql')
+    await typeSql(wrapper, 'SELECT updated')
+    pressSaveShortcut(wrapper, { ctrlKey: true })
+    await vi.waitFor(() => {
+      expect(fileApp.WriteQueryFile).toHaveBeenCalledWith({
+        dir: TEST_DIR,
+        name: '每日报表.sql',
+        content: 'SELECT updated',
+        connection_id: 'ch1',
+      })
+    })
+    // 已关联文件 → 直接覆盖,不弹名称输入。
+    expect(bodyEl('prompt-dialog')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('asks for overwrite confirmation when saving as an existing name, then writes', async () => {
+    fileApp.ListQueryFiles.mockResolvedValue(queryFiles())
+    // 重名判断基于 composable 的共享列表,先用探针拉取刷新。
+    await useQueryFiles({ connectionId: () => 'ch1' }).refreshFiles()
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 42')
+    exposedApi(wrapper).requestSaveAs()
+    await vi.waitFor(() => {
+      expect(bodyEl('prompt-dialog')).not.toBeNull()
+    })
+    expect(bodyEl('prompt-title')?.textContent).toBe('另存查询')
+    await confirmPrompt('每日报表.sql')
+    // 重名 → 弹覆盖确认。
+    await vi.waitFor(() => {
+      expect(bodyEl('confirm-dialog')).not.toBeNull()
+    })
+    expect(bodyEl('confirm-dialog-message')?.textContent).toContain('覆盖')
     ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
     await vi.waitFor(() => {
-      expect(api.deleteSavedQuery).toHaveBeenCalledWith({ id: 'q1' })
-      expect(bodyEl('confirm-dialog')).toBeNull()
+      expect(fileApp.WriteQueryFile).toHaveBeenCalledWith({
+        dir: TEST_DIR,
+        name: '每日报表.sql',
+        content: 'SELECT 42',
+        connection_id: 'ch1',
+      })
     })
-    // 载入状态已清空(删除后的列表刷新已完成,saving 复位,按钮恢复可用):
-    // 再次「保存」回到新建弹窗而不是原地更新。
     await vi.waitFor(() => {
-      expect((wrapper.find('[data-test="btn-ch-query-lib-save"]').element as HTMLButtonElement).disabled).toBe(false)
-    })
-    await wrapper.find('[data-test="btn-ch-query-lib-save"]').trigger('click')
-    await vi.waitFor(() => {
-      expect(bodyEl('prompt-dialog')).not.toBeNull()
-    })
-    expect(api.updateSavedQuery).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('shows an error when the query library fails to load', async () => {
-    ;(api.listSavedQueries as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('查询库加载失败'))
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
-    await wrapper.find('[data-test="btn-ch-query-lib-toggle"]').trigger('click')
-    await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="ch-query-lib-error"]').text()).toBe('查询库加载失败')
+      expect(exposedApi(wrapper).currentFile()).toBe('每日报表.sql')
     })
     wrapper.unmount()
   })
 
-  it('surfaces save errors in the library panel', async () => {
-    ;(api.listSavedQueries as ReturnType<typeof vi.fn>).mockResolvedValue([])
-    ;(api.saveSavedQuery as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('保存失败'))
-    const wrapper = mount(CHSqlConsole, { props: { connectionId: 'ch1' } })
-    await wrapper.find('[data-test="btn-ch-query-lib-toggle"]').trigger('click')
-    await typeSql(wrapper, 'SELECT 1')
-    await wrapper.find('[data-test="btn-ch-query-lib-save"]').trigger('click')
+  it('guards the exposed loadQueryFile with an unsaved-content confirmation', async () => {
+    fileApp.ReadQueryFile.mockResolvedValue({ content: 'SELECT from file', connection_id: 'ch1' })
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT draft')
+    // 无关联文件但已有未保存内容 → 先弹载入确认。
+    exposedApi(wrapper).loadQueryFile('每日报表.sql')
     await vi.waitFor(() => {
-      expect(bodyEl('prompt-dialog')).not.toBeNull()
+      expect(bodyEl('confirm-dialog')).not.toBeNull()
     })
-    await confirmPrompt('会失败的查询')
+    expect(bodyEl('confirm-dialog-message')?.textContent).toContain('未保存')
+    expect(fileApp.ReadQueryFile).not.toHaveBeenCalled()
+    // 确认后才真正读文件并回填编辑器。
+    ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="ch-query-lib-error"]').text()).toBe('保存失败')
+      expect(fileApp.ReadQueryFile).toHaveBeenCalledWith({ dir: TEST_DIR, name: '每日报表.sql' })
     })
+    await vi.waitFor(() => {
+      expect(cmInput(wrapper).state.doc.toString()).toBe('SELECT from file')
+    })
+    expect(exposedApi(wrapper).currentFile()).toBe('每日报表.sql')
     wrapper.unmount()
+  })
+
+  it('removes the current file via the exposed askRemoveCurrentFile after confirmation', async () => {
+    fileApp.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'ch1' })
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    const vm = exposedApi(wrapper)
+    vm.loadQueryFile('每日报表.sql')
+    await vi.waitFor(() => {
+      expect(cmInput(wrapper).state.doc.toString()).toBe('SELECT 1')
+    })
+    vm.askRemoveCurrentFile()
+    await vi.waitFor(() => {
+      expect(bodyEl('confirm-dialog')).not.toBeNull()
+    })
+    expect(bodyEl('confirm-dialog-message')?.textContent).toContain('每日报表.sql')
+    ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(fileApp.DeleteQueryFile).toHaveBeenCalledWith({ dir: TEST_DIR, name: '每日报表.sql' })
+    })
+    // 删除当前打开文件 → 编辑器清空、当前文件名清空。
+    await vi.waitFor(() => {
+      expect(cmInput(wrapper).state.doc.toString()).toBe('')
+    })
+    expect(vm.currentFile()).toBeNull()
+    wrapper.unmount()
+  })
+
+  // --- tab 标题跟随当前打开的 SQL 文件 ----------------------------------------
+  // 控制台把 tabs store 中自己的 tab 重命名为当前关联文件名;未关联时保持
+  // 默认标题「SQL 控制台」。
+  describe('tab 标题跟随当前 SQL 文件', () => {
+    function mountWithTitleTab() {
+      // 预置 id 为 'ch-tab1' 的 tab,标题为默认值。
+      const tabsStore = useTabsStore()
+      tabsStore.openTabs.push({ id: 'ch-tab1', kind: 'ch-sql', title: 'SQL 控制台', connectionId: 'ch1' })
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      return { wrapper, tabsStore }
+    }
+
+    it('载入文件后 tab 标题变为文件名', async () => {
+      fileApp.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'ch1' })
+      const { wrapper, tabsStore } = mountWithTitleTab()
+      expect(tabsStore.openTabs[0].title).toBe('SQL 控制台')
+      exposedApi(wrapper).loadQueryFile('每日报表.sql')
+      await vi.waitFor(() => {
+        expect(tabsStore.openTabs[0].title).toBe('每日报表.sql')
+      })
+      wrapper.unmount()
+    })
+
+    it('删除当前文件后回退默认标题「SQL 控制台」', async () => {
+      fileApp.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'ch1' })
+      const { wrapper, tabsStore } = mountWithTitleTab()
+      exposedApi(wrapper).loadQueryFile('每日报表.sql')
+      await vi.waitFor(() => {
+        expect(tabsStore.openTabs[0].title).toBe('每日报表.sql')
+      })
+      exposedApi(wrapper).askRemoveCurrentFile()
+      await vi.waitFor(() => {
+        expect(bodyEl('confirm-dialog')).not.toBeNull()
+      })
+      ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect(exposedApi(wrapper).currentFile()).toBeNull()
+      })
+      expect(tabsStore.openTabs[0].title).toBe('SQL 控制台')
+      wrapper.unmount()
+    })
+
+    it('保存为新文件后 tab 标题变为新文件名', async () => {
+      const { wrapper, tabsStore } = mountWithTitleTab()
+      await typeSql(wrapper, 'SELECT 42')
+      exposedApi(wrapper).requestSave()
+      await vi.waitFor(() => {
+        expect(bodyEl('prompt-dialog')).not.toBeNull()
+      })
+      await confirmPrompt('新文件.sql')
+      await vi.waitFor(() => {
+        expect(tabsStore.openTabs[0].title).toBe('新文件.sql')
+      })
+      wrapper.unmount()
+    })
+  })
+
+  // --- 查询结果行内编辑(仅单表 SELECT 结果可编辑) ---------------------------
+  // 双击单元格 → 行内输入 → 回车 → 确认弹窗(展示 ALTER 语句与匹配行数)→
+  // 确认执行后重新执行该条语句刷新结果。composable/parser 用真实实现,
+  // 只 mock wailsjs 绑定(CHPreviewCellUpdate / CHUpdateCell)。
+  describe('结果编辑', () => {
+    // 单表 SELECT 结果:4 列,首行含 NULL(note)以便覆盖 NULL 原值构造。
+    const singleTableSelect = (sql = "SELECT * FROM events WHERE id = 'a' LIMIT 10"): CHStatementResult => ({
+      sql,
+      duration_ms: 5,
+      columns: [
+        { name: 'id', type: 'String' },
+        { name: 'name', type: 'String' },
+        { name: 'age', type: 'UInt8' },
+        { name: 'note', type: 'Nullable(String)' },
+      ],
+      rows: [['a', 'alice', '30', null]],
+    })
+
+    // 运行给定语句并等待每条语句的结果卡片渲染完成。
+    async function mountWithResults(results: CHStatementResult[]): Promise<VueWrapper> {
+      ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(results)
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, results.map((r) => r.sql).join('; '))
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await vi.waitFor(() => {
+        expect(wrapper.findAll('[data-test="ch-stmt-card"]')).toHaveLength(results.length)
+      })
+      return wrapper
+    }
+
+    // 第 card 张结果卡片第 row 行第 col 列的数据单元格。
+    function cellTd(wrapper: VueWrapper, card: number, row: number, col: number) {
+      return wrapper
+        .findAll('[data-test="ch-stmt-card"]')[card]
+        .findAll('[data-test="ch-stmt-row"]')[row]
+        .findAll('td')[col]
+    }
+
+    // 双击单元格并在行内输入框中输入文本(不提交)。
+    async function startEdit(wrapper: VueWrapper, text: string): Promise<void> {
+      await cellTd(wrapper, 0, 0, 0).trigger('dblclick')
+      const editor = wrapper.find('[data-test="ch-cell-editor"]')
+      ;(editor.element as HTMLInputElement).value = text
+      await editor.trigger('input')
+    }
+
+    // 行内回车提交,等待确认弹窗出现。
+    async function submitAndOpenConfirm(wrapper: VueWrapper): Promise<void> {
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.enter')
+      await vi.waitFor(() => {
+        expect(bodyEl('confirm-dialog')).not.toBeNull()
+      })
+    }
+
+    it('单表 SELECT 结果双击出现行内编辑框,回车后确认弹窗展示 ALTER 语句与匹配行数', async () => {
+      const wrapper = await mountWithResults([singleTableSelect()])
+      await startEdit(wrapper, 'b')
+      await submitAndOpenConfirm(wrapper)
+      expect(bodyEl('confirm-dialog-message')?.textContent).toContain('ALTER TABLE events UPDATE')
+      expect(bodyEl('confirm-dialog-message')?.textContent).toContain('匹配 1 行')
+      // database 未限定 → 原样传空串;表名来自解析结果。
+      expect(cellApp.CHPreviewCellUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ connection_id: 'ch1', database: '', table: 'events' }),
+      )
+      wrapper.unmount()
+    })
+
+    it('确认后重新执行该条语句并替换其结果,其他语句结果不受影响', async () => {
+      const first = singleTableSelect()
+      const second: CHStatementResult = {
+        sql: 'SELECT 42',
+        duration_ms: 1,
+        columns: [{ name: 'answer', type: 'UInt8' }],
+        rows: [['42']],
+      }
+      const exec = api.chExecute as ReturnType<typeof vi.fn>
+      exec.mockResolvedValueOnce([first, second])
+      // 确认成功后的刷新:仅重跑第一条语句,返回更新后的行。
+      exec.mockResolvedValueOnce([{ ...first, rows: [['b', 'alice', '30', null]] }])
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, `${first.sql}; ${second.sql}`)
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await vi.waitFor(() => {
+        expect(wrapper.findAll('[data-test="ch-stmt-card"]')).toHaveLength(2)
+      })
+      await startEdit(wrapper, 'b')
+      await submitAndOpenConfirm(wrapper)
+      ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
+      // 刷新入参是该条语句的原文(而非整段脚本)。
+      await vi.waitFor(() => {
+        expect(exec).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: first.sql })
+      })
+      // 第一条结果被替换为刷新后的行;第二条结果保持原样。
+      await vi.waitFor(() => {
+        expect(cellTd(wrapper, 0, 0, 0).text()).toBe('b')
+      })
+      expect(cellTd(wrapper, 1, 0, 0).text()).toBe('42')
+      expect(cellApp.CHUpdateCell).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    })
+
+    it('预览入参:set 为编辑列与列类型,where 为整行列原值(NULL→null)', async () => {
+      const wrapper = await mountWithResults([singleTableSelect("SELECT * FROM analytics.events WHERE id = 'a' LIMIT 10")])
+      // 编辑第 2 列(name),其中 where 需含整行 4 列原值。
+      await cellTd(wrapper, 0, 0, 1).trigger('dblclick')
+      const editor = wrapper.find('[data-test="ch-cell-editor"]')
+      ;(editor.element as HTMLInputElement).value = 'carol'
+      await editor.trigger('input')
+      await editor.trigger('keydown.enter')
+      await vi.waitFor(() => {
+        expect(cellApp.CHPreviewCellUpdate).toHaveBeenCalledTimes(1)
+      })
+      expect(cellApp.CHPreviewCellUpdate).toHaveBeenCalledWith({
+        connection_id: 'ch1',
+        database: 'analytics',
+        table: 'events',
+        set: { column: 'name', type: 'String', value: 'carol' },
+        where: [
+          { column: 'id', type: 'String', value: 'a' },
+          { column: 'name', type: 'String', value: 'alice' },
+          { column: 'age', type: 'UInt8', value: '30' },
+          { column: 'note', type: 'Nullable(String)', value: null },
+        ],
+      })
+      wrapper.unmount()
+    })
+
+    it('空输入提交按 NULL 写入', async () => {
+      const wrapper = await mountWithResults([singleTableSelect()])
+      await startEdit(wrapper, '')
+      await submitAndOpenConfirm(wrapper)
+      expect(cellApp.CHPreviewCellUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ set: { column: 'id', type: 'String', value: null } }),
+      )
+      wrapper.unmount()
+    })
+
+    it('JOIN / GROUP BY 查询结果只读:双击无编辑框', async () => {
+      const join: CHStatementResult = {
+        sql: 'SELECT a.id FROM events a JOIN users b ON a.uid = b.id',
+        duration_ms: 1,
+        columns: [{ name: 'id', type: 'String' }],
+        rows: [['x']],
+      }
+      const group: CHStatementResult = {
+        sql: 'SELECT status, count() FROM events GROUP BY status',
+        duration_ms: 1,
+        columns: [
+          { name: 'status', type: 'String' },
+          { name: 'count()', type: 'UInt64' },
+        ],
+        rows: [['ok', '2']],
+      }
+      const wrapper = await mountWithResults([join, group])
+      for (const card of [0, 1]) {
+        const td = cellTd(wrapper, card, 0, 0)
+        await td.trigger('dblclick')
+        expect(td.find('[data-test="ch-cell-editor"]').exists()).toBe(false)
+        expect(td.attributes('title')).toContain('仅单表查询结果可编辑')
+      }
+      expect(cellApp.CHPreviewCellUpdate).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it('Esc / blur 取消编辑不发起预览', async () => {
+      const wrapper = await mountWithResults([singleTableSelect()])
+      await cellTd(wrapper, 0, 0, 0).trigger('dblclick')
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.esc')
+      expect(wrapper.find('[data-test="ch-cell-editor"]').exists()).toBe(false)
+      // blur 同样取消:再次进入编辑后失焦,编辑框消失。
+      await cellTd(wrapper, 0, 0, 0).trigger('dblclick')
+      await wrapper.find('[data-test="ch-cell-editor"]').trigger('blur')
+      expect(wrapper.find('[data-test="ch-cell-editor"]').exists()).toBe(false)
+      expect(cellApp.CHPreviewCellUpdate).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it('取消确认弹窗不执行更新', async () => {
+      const wrapper = await mountWithResults([singleTableSelect()])
+      await startEdit(wrapper, 'b')
+      await submitAndOpenConfirm(wrapper)
+      ;(bodyEl('confirm-dialog-cancel') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect(bodyEl('confirm-dialog')).toBeNull()
+      })
+      expect(cellApp.CHUpdateCell).not.toHaveBeenCalled()
+      // 结果保持原值。
+      expect(cellTd(wrapper, 0, 0, 0).text()).toBe('a')
+      wrapper.unmount()
+    })
+
+    it('更新失败时展示错误且不重新执行查询', async () => {
+      cellApp.CHUpdateCell.mockImplementationOnce(async () => {
+        throw new Error('模拟更新失败')
+      })
+      const wrapper = await mountWithResults([singleTableSelect()])
+      await startEdit(wrapper, 'b')
+      await submitAndOpenConfirm(wrapper)
+      ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="ch-sql-error"]').text()).toContain('模拟更新失败')
+      })
+      expect(api.chExecute).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    })
   })
 })

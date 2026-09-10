@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -213,6 +216,11 @@ type fakeCH struct {
 	clusterArg bool
 	execSQL    string
 	execResult []model.CHStatementResult
+	// 单元格更新能力(可选):记录委托参数并回放预设结果。
+	previewOut  model.CHCellUpdatePreview
+	previewCall chCellUpdateCall
+	updateCall  chCellUpdateCall
+	updateErr   error
 }
 
 func (f *fakeCH) Databases(context.Context) ([]string, error) { return f.dbs, nil }
@@ -350,3 +358,368 @@ func TestServiceCHTestConnectionValidates(t *testing.T) {
 
 // Ensure fakeCH satisfies the interface through the embedded fakeDataSource.
 var _ ClickHouseDataSource = (*fakeCH)(nil)
+
+// --- 单元格更新:fake 增加能力 + Service 委托 ---
+
+// chCellUpdateCall records the arguments of one cell-update delegation.
+type chCellUpdateCall struct {
+	database, table string
+	set             model.CHCellValue
+	where           []model.CHCellValue
+}
+
+func (f *fakeCH) PreviewCellUpdate(_ context.Context, database, table string, set model.CHCellValue, where []model.CHCellValue) (model.CHCellUpdatePreview, error) {
+	f.previewCall = chCellUpdateCall{database: database, table: table, set: set, where: where}
+	return f.previewOut, nil
+}
+
+func (f *fakeCH) UpdateCell(_ context.Context, database, table string, set model.CHCellValue, where []model.CHCellValue) error {
+	f.updateCall = chCellUpdateCall{database: database, table: table, set: set, where: where}
+	return f.updateErr
+}
+
+// TestServiceCHCellUpdateDelegates 锁定 Service 层委托:参数透传、结果与错误透传。
+func TestServiceCHCellUpdateDelegates(t *testing.T) {
+	fake := &fakeCH{
+		previewOut: model.CHCellUpdatePreview{
+			Statement:   "ALTER TABLE `logs`.`events` UPDATE `note` = 'x' WHERE `id` = 1 SETTINGS mutations_sync = 1",
+			MatchedRows: 2,
+		},
+	}
+	svc, id := newTestServiceWithCH(t, fake)
+	ctx := context.Background()
+	set := model.CHCellValue{Column: "note", Type: "String", Value: strP("x")}
+	where := []model.CHCellValue{{Column: "id", Type: "UInt64", Value: strP("1")}}
+
+	prev, err := svc.CHPreviewCellUpdate(ctx, id, "logs", "events", set, where)
+	if err != nil || prev.MatchedRows != 2 || prev.Statement != fake.previewOut.Statement {
+		t.Fatalf("CHPreviewCellUpdate: %v %+v", err, prev)
+	}
+	if fake.previewCall.database != "logs" || fake.previewCall.table != "events" ||
+		fake.previewCall.set.Column != "note" || len(fake.previewCall.where) != 1 {
+		t.Fatalf("preview args must pass through: %+v", fake.previewCall)
+	}
+
+	if err := svc.CHUpdateCell(ctx, id, "logs", "events", set, where); err != nil {
+		t.Fatalf("CHUpdateCell: %v", err)
+	}
+	if fake.updateCall.database != "logs" || fake.updateCall.table != "events" || fake.updateCall.set.Column != "note" {
+		t.Fatalf("update args must pass through: %+v", fake.updateCall)
+	}
+
+	fake.updateErr = errors.New("boom")
+	if err := svc.CHUpdateCell(ctx, id, "logs", "events", set, where); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("update error must surface, got %v", err)
+	}
+}
+
+// legacyCH 模拟旧池化客户端:方法集只有 ClickHouseDataSource,没有单元格
+// 更新能力 —— 必须得到明确错误而非 panic。
+type legacyCH struct{ ClickHouseDataSource }
+
+func TestServiceCHCellUpdateRejectsLegacyClient(t *testing.T) {
+	svc, id := newTestServiceWithCH(t, &fakeCH{})
+	if err := svc.pool.Put(id, &legacyCH{&fakeCH{}}); err != nil {
+		t.Fatalf("pool put: %v", err)
+	}
+	ctx := context.Background()
+	set := model.CHCellValue{Column: "note", Type: "String", Value: strP("x")}
+	where := []model.CHCellValue{{Column: "id", Type: "UInt64", Value: strP("1")}}
+	if _, err := svc.CHPreviewCellUpdate(ctx, id, "logs", "events", set, where); err == nil {
+		t.Fatal("legacy client must be rejected on preview")
+	}
+	if err := svc.CHUpdateCell(ctx, id, "logs", "events", set, where); err == nil {
+		t.Fatal("legacy client must be rejected on update")
+	}
+}
+
+// --- 单元格更新:语句构造(纯函数) ---
+
+func TestBuildCHCellUpdateStatement(t *testing.T) {
+	cases := []struct {
+		name  string
+		db    string
+		table string
+		set   model.CHCellValue
+		where []model.CHCellValue
+		want  string
+	}{
+		{
+			"numeric literals stay unquoted",
+			"logs", "events",
+			model.CHCellValue{Column: "cnt", Type: "UInt64", Value: strP("42")},
+			[]model.CHCellValue{{Column: "id", Type: "Int32", Value: strP("-3")}},
+			"ALTER TABLE `logs`.`events` UPDATE `cnt` = 42 WHERE `id` = -3 SETTINGS mutations_sync = 1",
+		},
+		{
+			"float and decimal literals stay unquoted",
+			"logs", "events",
+			model.CHCellValue{Column: "ratio", Type: "Float64", Value: strP("3.14")},
+			[]model.CHCellValue{{Column: "amount", Type: "Decimal(10, 2)", Value: strP("12.34")}},
+			"ALTER TABLE `logs`.`events` UPDATE `ratio` = 3.14 WHERE `amount` = 12.34 SETTINGS mutations_sync = 1",
+		},
+		{
+			"string literals escape quote and backslash",
+			"logs", "events",
+			model.CHCellValue{Column: "note", Type: "String", Value: strP("it's")},
+			[]model.CHCellValue{{Column: "path", Type: "String", Value: strP(`a\b`)}},
+			"ALTER TABLE `logs`.`events` UPDATE `note` = 'it\\'s' WHERE `path` = 'a\\\\b' SETTINGS mutations_sync = 1",
+		},
+		{
+			"date/datetime/uuid/enum/ipv quote as strings",
+			"logs", "events",
+			model.CHCellValue{Column: "day", Type: "Date", Value: strP("2026-09-10")},
+			[]model.CHCellValue{
+				{Column: "ts", Type: "DateTime64(3)", Value: strP("2026-09-10 00:00:00")},
+				{Column: "uid", Type: "UUID", Value: strP("6082f809-90b0-42c6-9b40-4f3ba0e1a2d1")},
+				{Column: "level", Type: "Enum8('low' = 1, 'high' = 2)", Value: strP("low")},
+				{Column: "ip", Type: "IPv4", Value: strP("1.2.3.4")},
+			},
+			"ALTER TABLE `logs`.`events` UPDATE `day` = '2026-09-10' WHERE `ts` = '2026-09-10 00:00:00' AND `uid` = '6082f809-90b0-42c6-9b40-4f3ba0e1a2d1' AND `level` = 'low' AND `ip` = '1.2.3.4' SETTINGS mutations_sync = 1",
+		},
+		{
+			"unknown type falls back to quoted string",
+			"logs", "events",
+			model.CHCellValue{Column: "city", Type: "LowCardinality(String)", Value: strP("bj")},
+			[]model.CHCellValue{{Column: "id", Type: "UInt64", Value: strP("1")}},
+			"ALTER TABLE `logs`.`events` UPDATE `city` = 'bj' WHERE `id` = 1 SETTINGS mutations_sync = 1",
+		},
+		{
+			"nullable column accepts NULL",
+			"logs", "events",
+			model.CHCellValue{Column: "note", Type: "Nullable(String)", Value: nil},
+			[]model.CHCellValue{{Column: "k", Type: "UInt64", Value: strP("1")}},
+			"ALTER TABLE `logs`.`events` UPDATE `note` = NULL WHERE `k` = 1 SETTINGS mutations_sync = 1",
+		},
+		{
+			"nullable where value becomes IS NULL",
+			"logs", "events",
+			model.CHCellValue{Column: "note", Type: "String", Value: strP("x")},
+			[]model.CHCellValue{
+				{Column: "k", Type: "UInt64", Value: strP("1")},
+				{Column: "ts", Type: "Nullable(DateTime)", Value: nil},
+			},
+			"ALTER TABLE `logs`.`events` UPDATE `note` = 'x' WHERE `k` = 1 AND `ts` IS NULL SETTINGS mutations_sync = 1",
+		},
+		{
+			"identifiers escape embedded backticks",
+			"d`b", "we`ird",
+			model.CHCellValue{Column: "col`x", Type: "UInt64", Value: strP("1")},
+			[]model.CHCellValue{{Column: "id", Type: "UInt64", Value: strP("1")}},
+			"ALTER TABLE `d``b`.`we``ird` UPDATE `col``x` = 1 WHERE `id` = 1 SETTINGS mutations_sync = 1",
+		},
+	}
+	for _, tc := range cases {
+		got, err := buildCHCellUpdateStatement(tc.db, tc.table, tc.set, tc.where)
+		if err != nil {
+			t.Fatalf("%s: unexpected error %v", tc.name, err)
+		}
+		if got != tc.want {
+			t.Fatalf("%s:\n got %q\nwant %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestBuildCHCellUpdateStatementErrors(t *testing.T) {
+	where1 := []model.CHCellValue{{Column: "id", Type: "UInt64", Value: strP("1")}}
+	setOK := model.CHCellValue{Column: "note", Type: "String", Value: strP("x")}
+	cases := []struct {
+		name    string
+		set     model.CHCellValue
+		where   []model.CHCellValue
+		wantErr string
+	}{
+		{"numeric set with unparseable value", model.CHCellValue{Column: "cnt", Type: "UInt64", Value: strP("abc")}, where1, "数值"},
+		{"numeric set with empty value", model.CHCellValue{Column: "cnt", Type: "Int64", Value: strP("")}, where1, "数值"},
+		{"numeric where with injection-ish text", setOK, []model.CHCellValue{{Column: "id", Type: "UInt64", Value: strP("1; DROP")}}, "数值"},
+		{"nil value on non-nullable set column", model.CHCellValue{Column: "note", Type: "String", Value: nil}, where1, "不可为 NULL"},
+		{"nil value on non-nullable where column", setOK, []model.CHCellValue{{Column: "ts", Type: "DateTime", Value: nil}}, "不可为 NULL"},
+		{"empty where rejects full-table update", setOK, nil, "where"},
+		{"empty set column", model.CHCellValue{Type: "UInt64", Value: strP("1")}, where1, "set"},
+	}
+	for _, tc := range cases {
+		got, err := buildCHCellUpdateStatement("logs", "events", tc.set, tc.where)
+		if err == nil {
+			t.Fatalf("%s: expected error, got statement %q", tc.name, got)
+		}
+		if !strings.Contains(err.Error(), tc.wantErr) {
+			t.Fatalf("%s: error %q must mention %q", tc.name, err, tc.wantErr)
+		}
+	}
+}
+
+// --- 单元格更新:预览/执行走 fake CH HTTP server ---
+
+func TestCHHTTPDriverPreviewCellUpdate(t *testing.T) {
+	var countSQL string
+	cl := newCHHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sqlText := string(body)
+		switch {
+		case strings.Contains(sqlText, "SELECT 1"):
+			io.WriteString(w, "1")
+		case strings.Contains(sqlText, "SELECT count()"):
+			countSQL = sqlText
+			io.WriteString(w, `["count()"]
+["UInt64"]
+[3]`)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, "unexpected query: "+sqlText)
+		}
+	})
+	set := model.CHCellValue{Column: "note", Type: "String", Value: strP("it's")}
+	where := []model.CHCellValue{{Column: "id", Type: "UInt64", Value: strP("7")}}
+	prev, err := cl.PreviewCellUpdate(context.Background(), "logs", "events", set, where)
+	if err != nil {
+		t.Fatalf("PreviewCellUpdate: %v", err)
+	}
+	want := "ALTER TABLE `logs`.`events` UPDATE `note` = 'it\\'s' WHERE `id` = 7 SETTINGS mutations_sync = 1"
+	if prev.Statement != want {
+		t.Fatalf("statement = %q, want %q", prev.Statement, want)
+	}
+	if prev.MatchedRows != 3 {
+		t.Fatalf("matched_rows = %d, want 3", prev.MatchedRows)
+	}
+	if !strings.Contains(countSQL, "SELECT count() FROM `logs`.`events` WHERE `id` = 7") {
+		t.Fatalf("count sql must reuse the same WHERE, got %q", countSQL)
+	}
+}
+
+func TestCHHTTPDriverUpdateCellExecutesMutation(t *testing.T) {
+	var execSQL string
+	cl := newCHHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sqlText := string(body)
+		if strings.Contains(sqlText, "ALTER TABLE") {
+			execSQL = sqlText
+			io.WriteString(w, "")
+			return
+		}
+		io.WriteString(w, "1")
+	})
+	set := model.CHCellValue{Column: "cnt", Type: "UInt64", Value: strP("42")}
+	where := []model.CHCellValue{
+		{Column: "id", Type: "UInt64", Value: strP("7")},
+		{Column: "day", Type: "Date", Value: strP("2026-09-10")},
+	}
+	if err := cl.UpdateCell(context.Background(), "logs", "events", set, where); err != nil {
+		t.Fatalf("UpdateCell: %v", err)
+	}
+	want := "ALTER TABLE `logs`.`events` UPDATE `cnt` = 42 WHERE `id` = 7 AND `day` = '2026-09-10' SETTINGS mutations_sync = 1"
+	if execSQL != want {
+		t.Fatalf("exec sql = %q, want %q", execSQL, want)
+	}
+	if !strings.Contains(execSQL, "SETTINGS mutations_sync = 1") {
+		t.Fatalf("mutation must run synchronously, got %q", execSQL)
+	}
+}
+
+// 空库名必须落到连接配置的默认库。
+func TestCHHTTPDriverUpdateCellUsesConfiguredDefaultDatabase(t *testing.T) {
+	var execSQL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sqlText := string(body)
+		if strings.Contains(sqlText, "ALTER TABLE") {
+			execSQL = sqlText
+			io.WriteString(w, "")
+			return
+		}
+		io.WriteString(w, "1")
+	}))
+	t.Cleanup(srv.Close)
+	cfg := model.ClickHouseConfig{
+		Hosts:    []string{strings.TrimPrefix(srv.URL, "http://")},
+		Username: "default",
+		Database: "logs",
+		Protocol: model.CHProtocolHTTP,
+	}
+	cl, err := NewCHClient(cfg)
+	if err != nil {
+		t.Fatalf("NewCHClient: %v", err)
+	}
+	t.Cleanup(func() { cl.Close() })
+	set := model.CHCellValue{Column: "cnt", Type: "UInt64", Value: strP("1")}
+	where := []model.CHCellValue{{Column: "id", Type: "UInt64", Value: strP("1")}}
+	if err := cl.UpdateCell(context.Background(), "", "events", set, where); err != nil {
+		t.Fatalf("UpdateCell: %v", err)
+	}
+	if !strings.Contains(execSQL, "ALTER TABLE `logs`.`events` UPDATE") {
+		t.Fatalf("empty database must resolve to the configured default, got %q", execSQL)
+	}
+}
+
+// --- PageRows 主键列(system.columns.is_in_primary_key,按 position 排序) ---
+
+func TestCHHTTPDriverPageRowsPrimaryKey(t *testing.T) {
+	cl := newCHHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sqlText := string(body)
+		switch {
+		case strings.Contains(sqlText, "SELECT 1"):
+			io.WriteString(w, "1")
+		case strings.Contains(sqlText, "system.tables"):
+			io.WriteString(w, `["engine","total_rows"]
+["String","UInt64"]
+["MergeTree",5]`)
+		case strings.Contains(sqlText, "system.columns"):
+			io.WriteString(w, `["name","type","comment","is_in_primary_key"]
+["String","String","String","UInt8"]
+["id","UInt64","",1]
+["name","String","用户名",0]`)
+		default:
+			io.WriteString(w, `["id","name"]
+["UInt64","String"]
+[1,"a"]`)
+		}
+	})
+	res, err := cl.PageRows(context.Background(), "logs", "events", "", "", true, 10, 0)
+	if err != nil {
+		t.Fatalf("PageRows: %v", err)
+	}
+	if len(res.PrimaryKey) != 1 || res.PrimaryKey[0] != "id" {
+		t.Fatalf("primary_key must follow is_in_primary_key in position order, got %#v", res.PrimaryKey)
+	}
+}
+
+func TestCHHTTPDriverPageRowsNoPrimaryKey(t *testing.T) {
+	// 两形:is_in_primary_key 全 0(无主键)与老响应缺该列,都必须落
+	// 空(非 nil)数组,前端拿到 [] 而非 null。
+	for _, colsJSON := range []string{
+		`["name","type","comment","is_in_primary_key"]
+["String","String","String","UInt8"]
+["id","UInt64","",0]
+["name","String","",0]`,
+		`["name","type","comment"]
+["String","String","String"]
+["id","UInt64",""]
+["name","String",""]`,
+	} {
+		cl := newCHHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			sqlText := string(body)
+			switch {
+			case strings.Contains(sqlText, "SELECT 1"):
+				io.WriteString(w, "1")
+			case strings.Contains(sqlText, "system.tables"):
+				io.WriteString(w, `["engine","total_rows"]
+["String","UInt64"]
+["MergeTree",5]`)
+			case strings.Contains(sqlText, "system.columns"):
+				io.WriteString(w, colsJSON)
+			default:
+				io.WriteString(w, `["id","name"]
+["UInt64","String"]
+[1,"a"]`)
+			}
+		})
+		res, err := cl.PageRows(context.Background(), "logs", "events", "", "", true, 10, 0)
+		if err != nil {
+			t.Fatalf("PageRows: %v", err)
+		}
+		if res.PrimaryKey == nil || len(res.PrimaryKey) != 0 {
+			t.Fatalf("no primary key must yield empty non-nil array, got %#v", res.PrimaryKey)
+		}
+	}
+}

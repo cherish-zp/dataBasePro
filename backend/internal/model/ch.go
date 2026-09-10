@@ -88,12 +88,43 @@ type CHTableInfo struct {
 }
 
 // CHPageRowsResult is one page of a table's rows. Cells are pre-formatted
-// strings; a nil cell means SQL NULL.
+// strings; a nil cell means SQL NULL. PrimaryKey lists the primary key column
+// names in defining order (system.columns.is_in_primary_key); empty when the
+// table has none.
 type CHPageRowsResult struct {
-	Columns   []CHColumn  `json:"columns"`
-	Rows      [][]*string `json:"rows"`
-	Engine    string      `json:"engine"`
-	TotalRows *int64      `json:"total_rows"`
+	Columns    []CHColumn  `json:"columns"`
+	Rows       [][]*string `json:"rows"`
+	Engine     string      `json:"engine"`
+	TotalRows  *int64      `json:"total_rows"`
+	PrimaryKey []string    `json:"primary_key"`
+}
+
+// CHCellValue binds one column to a typed value: Type carries the ClickHouse
+// type string (it drives how the backend renders the SQL literal) and a nil
+// Value means SQL NULL.
+type CHCellValue struct {
+	Column string  `json:"column"`
+	Type   string  `json:"type"`
+	Value  *string `json:"value"`
+}
+
+// CHCellUpdateRequest locates rows by Where and rewrites Set.Column in them
+// (single cell edit in the table detail / SQL result grid). Database may be
+// empty to target the connection's configured default database.
+type CHCellUpdateRequest struct {
+	ConnectionID string        `json:"connection_id"`
+	Database     string        `json:"database"`
+	Table        string        `json:"table"`
+	Set          CHCellValue   `json:"set"`
+	Where        []CHCellValue `json:"where"`
+}
+
+// CHCellUpdatePreview is the read-only outcome of a cell-update preview: the
+// exact statement the backend would run plus the number of rows matched by
+// the same WHERE conditions.
+type CHCellUpdatePreview struct {
+	Statement   string `json:"statement"`
+	MatchedRows int64  `json:"matched_rows"`
 }
 
 // CHStatementResult is the per-statement outcome of a multi-statement script:

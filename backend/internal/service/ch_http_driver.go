@@ -71,7 +71,6 @@ func (c *chHTTPConn) Ping(ctx context.Context) error {
 // 多节点按 Hosts 顺序尝试,首个成功的主机用于后续请求。
 func (c *chHTTPConn) query(ctx context.Context, sqlText string, args []driver.NamedValue) ([]string, [][]*string, error) {
 	sqlText = substituteArgs(sqlText, args)
-	fmt.Printf("DBG query sqlText=%q args=%v\n", sqlText, args)
 	transport := &http.Transport{}
 	if c.tlsCfg != nil {
 		transport.TLSClientConfig = c.tlsCfg
@@ -228,6 +227,10 @@ func parseCHHTTPJSONCompact(body []byte) (names []string, types []string, rows [
 		dataRow, err := lineArr(line)
 		if err != nil {
 			return nil, nil, nil, err
+		}
+		// 个别服务端对 0 行结果输出一行 []:跳过零格数据行,避免幽灵空行。
+		if len(dataRow) == 0 {
+			continue
 		}
 		cells := make([]*string, len(dataRow))
 		for i, v := range dataRow {
