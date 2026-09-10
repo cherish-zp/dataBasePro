@@ -277,18 +277,17 @@ describe('MessageBrowser', () => {
     })
   })
 
-  it('renders contextual query and producer toolbar buttons', () => {
+  it('renders contextual producer toolbar buttons; query console button is removed (顶栏新建查询覆盖)', () => {
     const { wrapper } = mountBrowser()
-    expect(wrapper.find('[data-test="btn-open-sql"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="btn-open-sql"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="btn-open-producer"]').exists()).toBe(true)
   })
 
-  it('emits open-sql and open-producer from the toolbar', async () => {
+  it('emits open-producer from the toolbar', async () => {
     const { wrapper } = mountBrowser()
-    await wrapper.find('[data-test="btn-open-sql"]').trigger('click')
-    expect(wrapper.emitted('open-sql')).toBeTruthy()
     await wrapper.find('[data-test="btn-open-producer"]').trigger('click')
     expect(wrapper.emitted('open-producer')).toBeTruthy()
+    expect(wrapper.emitted('open-sql')).toBeFalsy()
   })
 
   it('renders a disabled export control when there are no messages', async () => {

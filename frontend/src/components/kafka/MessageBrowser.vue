@@ -19,7 +19,7 @@ const props = withDefaults(
   }>(),
   { refreshRequest: 0 },
 )
-const emit = defineEmits<{ (e: 'open-sql'): void; (e: 'open-producer'): void }>()
+const emit = defineEmits<{ (e: 'open-producer'): void }>()
 
 const store = useBrowseStore()
 const st = computed(() => store.stateFor(props.tabId))
@@ -209,7 +209,6 @@ onMounted(runQuery)
         {{ st.loading ? '查询中…' : '查询' }}
       </button>
       <div class="filter-actions">
-        <button class="btn ghost" type="button" data-test="btn-open-sql" @click="emit('open-sql')">查询控制台</button>
         <button class="btn ghost" type="button" data-test="btn-open-producer" @click="emit('open-producer')">生产消息</button>
         <ExportDropdown :disabled="st.messages.length === 0" @export="exportAs" />
       </div>
