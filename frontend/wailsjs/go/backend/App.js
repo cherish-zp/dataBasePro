@@ -14,6 +14,18 @@ export function ApplyUpdate(arg1) {
   return window['go']['backend']['App']['ApplyUpdate'](arg1);
 }
 
+export function CHExecute(arg1) {
+  return window['go']['backend']['App']['CHExecute'](arg1);
+}
+
+export function CHPageRows(arg1) {
+  return window['go']['backend']['App']['CHPageRows'](arg1);
+}
+
+export function CHTruncateTable(arg1) {
+  return window['go']['backend']['App']['CHTruncateTable'](arg1);
+}
+
 export function CheckUpdate(arg1) {
   return window['go']['backend']['App']['CheckUpdate'](arg1);
 }
@@ -44,6 +56,10 @@ export function DeleteConnection(arg1) {
 
 export function DeleteConsumerGroup(arg1) {
   return window['go']['backend']['App']['DeleteConsumerGroup'](arg1);
+}
+
+export function DeleteSavedQuery(arg1) {
+  return window['go']['backend']['App']['DeleteSavedQuery'](arg1);
 }
 
 export function DeleteTopic(arg1) {
@@ -98,6 +114,14 @@ export function ListAudit(arg1) {
   return window['go']['backend']['App']['ListAudit'](arg1);
 }
 
+export function ListCHDatabases(arg1) {
+  return window['go']['backend']['App']['ListCHDatabases'](arg1);
+}
+
+export function ListCHTables(arg1) {
+  return window['go']['backend']['App']['ListCHTables'](arg1);
+}
+
 export function ListConnections() {
   return window['go']['backend']['App']['ListConnections']();
 }
@@ -106,8 +130,16 @@ export function ListConsumerGroups(arg1) {
   return window['go']['backend']['App']['ListConsumerGroups'](arg1);
 }
 
+export function ListDrivers() {
+  return window['go']['backend']['App']['ListDrivers']();
+}
+
 export function ListRedisDBs(arg1) {
   return window['go']['backend']['App']['ListRedisDBs'](arg1);
+}
+
+export function ListSavedQueries(arg1) {
+  return window['go']['backend']['App']['ListSavedQueries'](arg1);
 }
 
 export function ListTopics(arg1) {
@@ -206,8 +238,16 @@ export function ResetConsumerGroupOffset(arg1) {
   return window['go']['backend']['App']['ResetConsumerGroupOffset'](arg1);
 }
 
+export function SaveSavedQuery(arg1) {
+  return window['go']['backend']['App']['SaveSavedQuery'](arg1);
+}
+
 export function SaveTextFile(arg1) {
   return window['go']['backend']['App']['SaveTextFile'](arg1);
+}
+
+export function TestCHConnection(arg1) {
+  return window['go']['backend']['App']['TestCHConnection'](arg1);
 }
 
 export function TestConnection(arg1) {
@@ -224,4 +264,8 @@ export function UpdateConnection(arg1) {
 
 export function UpdateProgress() {
   return window['go']['backend']['App']['UpdateProgress']();
+}
+
+export function UpdateSavedQuery(arg1) {
+  return window['go']['backend']['App']['UpdateSavedQuery'](arg1);
 }

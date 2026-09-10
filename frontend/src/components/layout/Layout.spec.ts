@@ -8,6 +8,7 @@ import type { Connection } from '@/api/types'
 import Layout from './Layout.vue'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
 import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
+import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import { useConnectionsStore } from '@/store/connections'
 import { APP_VERSION } from '@/version'
 import { useTabsStore } from '@/store/tabs'
@@ -42,6 +43,17 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
         applyUpdate: vi.fn(async () => {}),
         updateProgress: vi.fn(async () => ({ phase: 'idle' as const, percent: 0 })),
         openURL: vi.fn(async () => {}),
+    listSavedQueries: vi.fn(async () => []),
+    saveSavedQuery: vi.fn(async (q: never) => ({}) as never),
+    updateSavedQuery: vi.fn(async () => ({}) as never),
+    deleteSavedQuery: vi.fn(async () => {}),
+        testCHConnection: vi.fn(async () => {}),
+        listCHDatabases: vi.fn(async () => []),
+        listCHTables: vi.fn(async () => []),
+        chPageRows: vi.fn(async () => ({ columns: [], rows: [], engine: '', total_rows: 0 })),
+        chTruncateTable: vi.fn(async () => {}),
+        chExecute: vi.fn(async () => []),
+        listDrivers: vi.fn(async () => []),
         redisHashSetField: vi.fn(async () => {}),
         redisHashDeleteField: vi.fn(async () => {}),
         redisListSetIndex: vi.fn(async () => {}),
@@ -168,6 +180,15 @@ describe('Layout', () => {
     expect(wrapper.find('[data-test="settings-panel"]').exists()).toBe(true)
     await wrapper.find('[data-test="modal-close"]').trigger('click')
     expect(wrapper.find('[data-test="settings-panel"]').exists()).toBe(false)
+  })
+
+  it('opens the update dialog when the settings panel emits check-update', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    await wrapper.find('[data-test="btn-settings"]').trigger('click')
+    expect(document.body.querySelector('[data-test="update-dialog"]')).toBeNull()
+    await wrapper.findComponent(SettingsPanel).vm.$emit('check-update')
+    await nextTick()
+    expect(document.body.querySelector('[data-test="update-dialog"]')).not.toBeNull()
   })
 
   it('keeps the top bar general (brand + settings, no connection/kafka actions)', () => {

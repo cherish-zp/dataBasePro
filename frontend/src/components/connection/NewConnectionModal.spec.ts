@@ -36,6 +36,17 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
         applyUpdate: vi.fn(async () => {}),
         updateProgress: vi.fn(async () => ({ phase: 'idle' as const, percent: 0 })),
         openURL: vi.fn(async () => {}),
+    listSavedQueries: vi.fn(async () => []),
+    saveSavedQuery: vi.fn(async (q: never) => ({}) as never),
+    updateSavedQuery: vi.fn(async () => ({}) as never),
+    deleteSavedQuery: vi.fn(async () => {}),
+        testCHConnection: vi.fn(async () => {}),
+        listCHDatabases: vi.fn(async () => []),
+        listCHTables: vi.fn(async () => []),
+        chPageRows: vi.fn(async () => ({ columns: [], rows: [], engine: '', total_rows: 0 })),
+        chTruncateTable: vi.fn(async () => {}),
+        chExecute: vi.fn(async () => []),
+        listDrivers: vi.fn(async () => []),
         redisHashSetField: vi.fn(async () => {}),
         redisHashDeleteField: vi.fn(async () => {}),
         redisListSetIndex: vi.fn(async () => {}),
@@ -228,7 +239,7 @@ describe('NewConnectionModal', () => {
 
   it('shows redis fields when type redis is selected and saves a redis connection', async () => {
     const wrapper = mountModal()
-    await wrapper.find('[data-test="input-conn-type"]').setValue('redis')
+    await wrapper.find('[data-test="type-card-redis"]').trigger('click')
     expect(wrapper.find('[data-test="input-brokers"]').exists()).toBe(false)
     const addr = wrapper.find('[data-test="input-addr"]')
     expect(addr.exists()).toBe(true)
@@ -253,7 +264,7 @@ describe('NewConnectionModal', () => {
 
   it('routes test connection to testRedisConnection when type is redis', async () => {
     const wrapper = mountModal()
-    await wrapper.find('[data-test="input-conn-type"]').setValue('redis')
+    await wrapper.find('[data-test="type-card-redis"]').trigger('click')
     await wrapper.find('[data-test="input-name"]').setValue('r')
     await wrapper.find('[data-test="input-addr"]').setValue('127.0.0.1:6379')
     await wrapper.find('[data-test="btn-test"]').trigger('click')
@@ -284,7 +295,7 @@ describe('NewConnectionModal', () => {
     await wrapper.find('[data-test="btn-save"]').trigger('click')
     await vi.waitFor(() => {
       expect(api.updateConnection).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'r1', name: 'redis-new' }),
+        expect.objectContaining({ id: 'r1', name: 'redis-new', type: 'redis' }),
       )
     })
   })
@@ -371,6 +382,7 @@ describe('NewConnectionModal', () => {
       expect(api2.updateConnection).toHaveBeenCalledWith({
         id: 'c-1',
         name: 'kerb-new',
+        type: 'kafka',
         config: expect.objectContaining({
           bootstrap_servers: ['a:9092', 'b:9092'],
           security_protocol: 'SASL_PLAINTEXT',
@@ -424,5 +436,219 @@ describe('NewConnectionModal', () => {
     expect(mountWith({ bootstrap_servers: ['h:1'], tls: { enabled: true } })).resolves.toBe('SSL')
     expect(mountWith({ bootstrap_servers: ['h:1'], sasl: { enabled: true, mechanism: 'PLAIN', username: 'u' }, tls: { enabled: true } })).resolves.toBe('SASL_SSL')
     expect(mountWith({ bootstrap_servers: ['h:1'] })).resolves.toBe('PLAINTEXT')
+  })
+
+  it('renders the two-stage type grid with three selectable cards', async () => {
+    const wrapper = mountModal()
+    for (const t of ['kafka', 'redis', 'clickhouse']) {
+      expect(wrapper.find(`[data-test="type-card-${t}"]`).exists()).toBe(true)
+    }
+    // 默认选中 kafka,下方渲染 kafka 表单。
+    expect(wrapper.find('[data-test="type-card-kafka"]').classes()).toContain('active')
+    expect(wrapper.find('[data-test="input-brokers"]').exists()).toBe(true)
+    await wrapper.find('[data-test="type-card-clickhouse"]').trigger('click')
+    expect(wrapper.find('[data-test="type-card-clickhouse"]').classes()).toContain('active')
+    expect(wrapper.find('[data-test="type-card-kafka"]').classes()).not.toContain('active')
+    expect(wrapper.find('[data-test="input-ch-hosts"]').exists()).toBe(true)
+  })
+
+  it('password inputs toggle visibility via eye button', async () => {
+    const wrapper = mountModal()
+    // kafka:密码框仅在 SASL 非 GSSAPI 时出现,先切到 SASL_PLAINTEXT。
+    await wrapper.find('[data-test="input-security-protocol"]').setValue('SASL_PLAINTEXT')
+    const kafkaInput = wrapper.find('[data-test="input-password"]')
+    expect(kafkaInput.attributes('type')).toBe('password')
+    const kafkaToggle = wrapper.find('[data-test="toggle-password-kafka"]')
+    expect(kafkaToggle.attributes('aria-label')).toBe('显示密码')
+    expect(kafkaToggle.attributes('type')).toBe('button')
+    await kafkaToggle.trigger('click')
+    expect(kafkaInput.attributes('type')).toBe('text')
+    expect(kafkaToggle.attributes('aria-label')).toBe('隐藏密码')
+    // 明文状态下输入仍能正常写入 v-model。
+    await kafkaInput.setValue('secret')
+    expect((kafkaInput.element as HTMLInputElement).value).toBe('secret')
+    await kafkaToggle.trigger('click')
+    expect(kafkaInput.attributes('type')).toBe('password')
+
+    // redis
+    await wrapper.find('[data-test="type-card-redis"]').trigger('click')
+    const redisInput = wrapper.find('[data-test="input-redis-password"]')
+    expect(redisInput.attributes('type')).toBe('password')
+    const redisToggle = wrapper.find('[data-test="toggle-password-redis"]')
+    expect(redisToggle.attributes('type')).toBe('button')
+    expect(redisToggle.attributes('aria-label')).toBe('显示密码')
+    await redisToggle.trigger('click')
+    expect(redisInput.attributes('type')).toBe('text')
+    await redisToggle.trigger('click')
+    expect(redisInput.attributes('type')).toBe('password')
+
+    // clickhouse
+    await wrapper.find('[data-test="type-card-clickhouse"]').trigger('click')
+    const chInput = wrapper.find('[data-test="input-ch-password"]')
+    expect(chInput.attributes('type')).toBe('password')
+    const chToggle = wrapper.find('[data-test="toggle-password-ch"]')
+    expect(chToggle.attributes('type')).toBe('button')
+    expect(chToggle.attributes('aria-label')).toBe('显示密码')
+    await chToggle.trigger('click')
+    expect(chInput.attributes('type')).toBe('text')
+    await chToggle.trigger('click')
+    expect(chInput.attributes('type')).toBe('password')
+  })
+
+  it('shows clickhouse fields and hides kafka/redis fields when clickhouse is selected', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-clickhouse"]').trigger('click')
+    expect(wrapper.find('[data-test="input-brokers"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-addr"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-ch-hosts"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="input-ch-username"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="input-ch-password"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="input-ch-database"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="input-ch-tls"]').exists()).toBe(true)
+    // 默认值:用户名与库均为 default。
+    expect((wrapper.find('[data-test="input-ch-username"]').element as HTMLInputElement).value).toBe('default')
+    expect((wrapper.find('[data-test="input-ch-database"]').element as HTMLInputElement).value).toBe('default')
+  })
+
+  it('keeps entered fields when switching between type cards', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-clickhouse"]').trigger('click')
+    await wrapper.find('[data-test="input-ch-hosts"]').setValue('n1:9000')
+    await wrapper.find('[data-test="type-card-kafka"]').trigger('click')
+    await wrapper.find('[data-test="input-brokers"]').setValue('b:9092')
+    await wrapper.find('[data-test="type-card-clickhouse"]').trigger('click')
+    expect((wrapper.find('[data-test="input-ch-hosts"]').element as HTMLInputElement).value).toBe('n1:9000')
+    await wrapper.find('[data-test="type-card-kafka"]').trigger('click')
+    expect((wrapper.find('[data-test="input-brokers"]').element as HTMLInputElement).value).toBe('b:9092')
+  })
+
+  it('saves a clickhouse connection with split hosts and type clickhouse', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-clickhouse"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('ch-local')
+    await wrapper.find('[data-test="input-ch-hosts"]').setValue('node1:9000, node2:9000,,')
+    await wrapper.find('[data-test="input-ch-username"]').setValue('alice')
+    await wrapper.find('[data-test="input-ch-password"]').setValue('pw')
+    await wrapper.find('[data-test="input-ch-database"]').setValue('logs')
+    await wrapper.find('[data-test="input-ch-tls"]').setValue(true)
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'ch-local',
+          type: 'clickhouse',
+          config: { hosts: ['node1:9000', 'node2:9000'], username: 'alice', password: 'pw', database: 'logs', tls: true, protocol: 'native' },
+        }),
+      )
+    })
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('prefills clickhouse fields in edit mode and updates through updateConnection', async () => {
+    const conn: Connection = {
+      id: 'ch1',
+      name: 'ch-old',
+      type: 'clickhouse',
+      config: { hosts: ['a:9000', 'b:9000'], username: 'default', password: 'pw', database: 'default', tls: true },
+      created_at: 1,
+      updated_at: 1,
+    }
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: conn } })
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="input-ch-hosts"]').element as HTMLInputElement).value).toBe('a:9000, b:9000')
+    })
+    expect((wrapper.find('[data-test="input-ch-username"]').element as HTMLInputElement).value).toBe('default')
+    expect((wrapper.find('[data-test="input-ch-database"]').element as HTMLInputElement).value).toBe('default')
+    expect((wrapper.find('[data-test="input-ch-tls"]').element as HTMLInputElement).checked).toBe(true)
+    await wrapper.find('[data-test="input-name"]').setValue('ch-new')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.updateConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'ch1',
+          name: 'ch-new',
+          config: expect.objectContaining({ hosts: ['a:9000', 'b:9000'] }),
+        }),
+      )
+    })
+  })
+
+  it('routes test connection to testCHConnection when clickhouse is selected', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-clickhouse"]').trigger('click')
+    await wrapper.find('[data-test="input-ch-hosts"]').setValue('n1:9000')
+    await wrapper.find('[data-test="btn-test"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.testCHConnection).toHaveBeenCalledWith(
+        expect.objectContaining({ hosts: ['n1:9000'] }),
+      )
+    })
+    expect(api.testConnection).not.toHaveBeenCalled()
+    expect(api.testRedisConnection).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="test-ok"]').exists()).toBe(true)
+  })
+
+  it('shows the CH protocol selector defaulting to native and saves http when chosen', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-clickhouse"]').trigger('click')
+    const sel = wrapper.find('[data-test="input-ch-protocol"]')
+    expect(sel.exists()).toBe(true)
+    expect((sel.element as HTMLSelectElement).value).toBe('native')
+    await sel.setValue('http')
+    await wrapper.find('[data-test="input-name"]').setValue('ch-http')
+    await wrapper.find('[data-test="input-ch-hosts"]').setValue('10.128.10.10:8123')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'ch-http',
+          type: 'clickhouse',
+          config: expect.objectContaining({ hosts: ['10.128.10.10:8123'], protocol: 'http' }),
+        }),
+      )
+    })
+  })
+
+  it('shows the default-port hint under the CH hosts input', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-clickhouse"]').trigger('click')
+    expect(wrapper.find('[data-test="ch-port-hint"]').text()).toContain('9000')
+    expect(wrapper.find('[data-test="ch-port-hint"]').text()).toContain('8123')
+  })
+
+  it('surfaces the backend port/protocol hint when the CH handshake fails', async () => {
+    ;(api.testCHConnection as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('clickhouse ping: [handshake] unexpected packet [72] from server — 端口疑似 HTTP,请将协议切换为 HTTP 后重试'),
+    )
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-clickhouse"]').trigger('click')
+    await wrapper.find('[data-test="input-ch-hosts"]').setValue('10.128.10.10:8123')
+    await wrapper.find('[data-test="btn-test"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="test-error"]').text()).toContain('端口疑似 HTTP')
+    })
+  })
+
+  it('carries the connection type when saving an edited clickhouse connection', async () => {
+    const conn: Connection = {
+      id: 'ch9',
+      name: 'ch-old',
+      type: 'clickhouse',
+      config: { hosts: ['h:9000'], username: 'default', database: 'default' },
+      created_at: 1,
+      updated_at: 1,
+    }
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: conn } })
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.updateConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'ch9',
+          name: 'ch-old',
+          type: 'clickhouse',
+          config: expect.objectContaining({ hosts: ['h:9000'], username: 'default', database: 'default' }),
+        }),
+      )
+    })
   })
 })

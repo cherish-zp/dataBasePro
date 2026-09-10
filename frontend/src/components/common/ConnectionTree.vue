@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
-import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo } from '@/api/types'
+import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo, CHTableInfo } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
 import { formatCount } from '@/utils/format'
+import { formatBytes } from '@/utils/bytes'
 import { CSV_MIME, exportCsv, saveFile, type ExportColumn } from '@/utils/export'
 import { useConnectionsStore, type ConnectionStatus } from '@/store/connections'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -19,6 +20,7 @@ const emit = defineEmits<{
   (e: 'open-lag', connectionId: string): void
   (e: 'open-redis-keys', connectionId: string, db: number): void
   (e: 'open-health', connectionId: string): void
+  (e: 'open-ch-table', connectionId: string, database: string, table: string): void
   (e: 'delete', connectionId: string): void
   (e: 'edit-connection', conn: Connection): void
   (e: 'new'): void
@@ -29,6 +31,8 @@ const connStore = useConnectionsStore()
 // Per data-source type metadata so the tree can grow to MySQL/ES later.
 const TYPE_META: Record<string, { label: string; icon: string }> = {
   kafka: { label: 'Kafka', icon: '⚡' },
+  redis: { label: 'Redis', icon: '🧱' },
+  clickhouse: { label: 'ClickHouse', icon: '🗄️' },
   mysql: { label: 'MySQL', icon: '🐬' },
   es: { label: 'ES', icon: '🔎' },
 }
@@ -105,6 +109,13 @@ function collectionsOf(type: string): ObjectCollection[] {
 const expanded = ref<Record<string, boolean>>({})
 const topicsByConn = ref<Record<string, Topic[]>>({})
 const redisDBs = ref<Record<string, RedisDBInfo[]>>({})
+const chDBs = ref<Record<string, string[]>>({})
+// 键为 `${connId}/${db}`:每个数据库节点独立缓存表清单与展开状态。
+const chTablesByDb = ref<Record<string, CHTableInfo[]>>({})
+const chTableLoadingByDb = ref<Record<string, boolean>>({})
+const chExpandedByDb = ref<Record<string, boolean>>({})
+// 键同 chDbKey:每个数据库节点独立的表名模糊过滤词。
+const chTableFilterByDb = ref<Record<string, string>>({})
 const groupsByConn = ref<Record<string, ConsumerGroup[]>>({})
 const loadingByConn = ref<Record<string, boolean>>({})
 const errorByConn = ref<Record<string, string>>({})
@@ -126,7 +137,10 @@ async function toggle(conn: Connection): Promise<void> {
     clearBatchState(id)
     return
   }
-  if (!topicsByConn.value[id] && !redisDBs.value[id] && (conn.type === 'kafka' || conn.type === 'redis')) {
+  if (
+    !topicsByConn.value[id] && !redisDBs.value[id] && !chDBs.value[id]
+    && (conn.type === 'kafka' || conn.type === 'redis' || conn.type === 'clickhouse')
+  ) {
     await load(id)
   }
 }
@@ -136,8 +150,13 @@ async function load(connId: string): Promise<void> {
   errorByConn.value[connId] = ''
   connStore.setStatus(connId, 'connecting')
   try {
-    if (props.connections.find((c) => c.id === connId)?.type === 'redis') {
+    const type = props.connections.find((c) => c.id === connId)?.type
+    if (type === 'redis') {
       redisDBs.value[connId] = await getApi().listRedisDBs(connId)
+      connStore.setStatus(connId, 'connected')
+    } else if (type === 'clickhouse') {
+      // 后端默认已过滤系统库。
+      chDBs.value[connId] = await getApi().listCHDatabases(connId)
       connStore.setStatus(connId, 'connected')
     } else {
       const [topics, groups] = await Promise.all([
@@ -157,6 +176,59 @@ async function load(connId: string): Promise<void> {
   // Message counts load in the background: they cost one batched offset
   // lookup, but must never delay or fail the tree itself.
   void loadCounts(connId)
+}
+
+// --- ClickHouse 二级树:数据库 → 表 ---
+
+function chDbKey(connId: string, db: string): string {
+  return `${connId}/${db}`
+}
+
+function isChDbExpanded(connId: string, db: string): boolean {
+  return !!chExpandedByDb.value[chDbKey(connId, db)]
+}
+
+async function toggleChDb(connId: string, db: string): Promise<void> {
+  const key = chDbKey(connId, db)
+  chExpandedByDb.value[key] = !chExpandedByDb.value[key]
+  if (!chExpandedByDb.value[key] || chTablesByDb.value[key]) return
+  // 首次展开懒加载表清单(不含 system 库表)。
+  chTableLoadingByDb.value[key] = true
+  try {
+    chTablesByDb.value[key] = await getApi().listCHTables({
+      connection_id: connId,
+      database: db,
+      show_system: false,
+    })
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    chTableLoadingByDb.value[key] = false
+  }
+}
+
+function chTableFilterOf(connId: string, db: string): string {
+  return (chTableFilterByDb.value[chDbKey(connId, db)] ?? '').trim()
+}
+
+// filteredChTables 对表名做本地模糊过滤(fuzzyScore),按相关度排序。
+function filteredChTables(connId: string, db: string): CHTableInfo[] {
+  const list = chTablesByDb.value[chDbKey(connId, db)] ?? []
+  const q = chTableFilterOf(connId, db)
+  if (!q) return list
+  return list
+    .map((t) => ({ t, score: fuzzyScore(q, t.name) }))
+    .filter((x) => x.score !== Infinity)
+    .sort((a, b) => a.score - b.score)
+    .map((x) => x.t)
+}
+
+// chDbCountLabel 数据库节点的表计数徽标:未过滤显示总数,过滤中显示「可见/总数」。
+function chDbCountLabel(connId: string, db: string): string {
+  const total = (chTablesByDb.value[chDbKey(connId, db)] ?? []).length
+  const q = chTableFilterOf(connId, db)
+  if (!q) return String(total)
+  return `${filteredChTables(connId, db).length}/${total}`
 }
 
 // countsByConn caches per-topic message counts per connection (retained =
@@ -811,6 +883,67 @@ function exportTopics(conn: Connection): void {
           </template>
         </template>
       </div>
+      <div v-else-if="isExpanded(conn.id) && conn.type === 'clickhouse'" class="conn-children">
+        <div v-if="loadingByConn[conn.id]" class="conn-loading" data-test="tree-loading">加载中…</div>
+        <div v-else-if="errorByConn[conn.id]" class="conn-error" data-test="tree-error">{{ errorByConn[conn.id] }}</div>
+        <template v-else>
+          <template v-for="db in chDBs[conn.id] ?? []" :key="db">
+            <div class="leaf ch-db-node" data-test="ch-db-node" :title="`数据库 ${db}`" @click="toggleChDb(conn.id, db)">
+              <span class="caret" :class="{ open: isChDbExpanded(conn.id, db) }" data-test="ch-db-caret">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                  <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              <span class="leaf-name" data-test="ch-db-name">{{ db }}</span>
+              <span
+                v-if="chTablesByDb[chDbKey(conn.id, db)]"
+                class="leaf-badge"
+                data-test="ch-db-count"
+              >{{ chDbCountLabel(conn.id, db) }}</span>
+            </div>
+            <template v-if="isChDbExpanded(conn.id, db)">
+              <div class="ch-table-filter">
+                <input
+                  v-model="chTableFilterByDb[chDbKey(conn.id, db)]"
+                  class="search-input ch-filter-input"
+                  type="search"
+                  data-test="ch-table-filter"
+                  placeholder="🔍 模糊搜索表…"
+                  autocapitalize="off"
+                  autocorrect="off"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div
+                v-if="chTableLoadingByDb[chDbKey(conn.id, db)]"
+                class="leaf muted"
+                data-test="ch-tables-loading"
+              >加载中…</div>
+              <template v-else>
+                <div
+                  v-for="t in filteredChTables(conn.id, db)"
+                  :key="t.name"
+                  class="leaf ch-table"
+                  data-test="ch-table-node"
+                  :title="`${t.name}(${t.engine})`"
+                  @dblclick="emit('open-ch-table', conn.id, db, t.name)"
+                >
+                  <span class="leaf-name" data-test="ch-table-name">{{ t.name }}</span>
+                  <span class="leaf-badge engine" data-test="ch-table-engine">{{ t.engine }}</span>
+                  <span class="leaf-badge" data-test="ch-table-rows">{{ formatBytes(t.total_rows) }}</span>
+                </div>
+                <div
+                  v-if="filteredChTables(conn.id, db).length === 0"
+                  class="leaf muted"
+                  data-test="ch-table-empty"
+                >{{ (chTablesByDb[chDbKey(conn.id, db)] ?? []).length === 0 ? '（无表）' : '无匹配表' }}</div>
+              </template>
+            </template>
+          </template>
+          <div v-if="(chDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="ch-db-empty">（无数据库）</div>
+        </template>
+      </div>
       <div v-else-if="isExpanded(conn.id)" class="conn-children">
         <div class="leaf muted" data-test="type-unsupported">{{ typeMeta(conn).label }} 类型暂未支持</div>
       </div>
@@ -887,6 +1020,8 @@ function exportTopics(conn: Connection): void {
 .conn-type-kafka { color: var(--info); background: var(--info-soft); }
 .conn-type-mysql { color: var(--warn); background: var(--warn-soft); }
 .conn-type-es { color: var(--ok); background: var(--ok-soft); }
+.conn-type-redis { color: var(--danger); background: var(--danger-soft); }
+.conn-type-clickhouse { color: var(--warn); background: var(--warn-soft); }
 .conn-status {
   width: 8px; height: 8px; border-radius: 50%; flex: none; margin: 0 6px;
   background: var(--text-tertiary);
@@ -894,6 +1029,8 @@ function exportTopics(conn: Connection): void {
 .conn-status-kafka { background: var(--ok); }
 .conn-status-mysql { background: var(--info); }
 .conn-status-es { background: var(--warn); }
+.conn-status-redis { background: var(--danger); }
+.conn-status-clickhouse { background: var(--warn); }
 .conn-status-connecting { background: var(--ok); animation: conn-pulse 1.1s ease-in-out infinite; }
 .conn-status-error { background: var(--danger); }
 .conn-status-disconnected { background: var(--text-tertiary); }
@@ -992,6 +1129,17 @@ function exportTopics(conn: Connection): void {
   background: var(--bg-hover); border-radius: 99px; padding: 0 7px; line-height: 17px;
   font-family: var(--mono);
 }
+.leaf-badge {
+  flex: none; font-size: 10px; color: var(--text-tertiary);
+  background: var(--bg-hover); border-radius: 99px; padding: 0 6px; line-height: 15px;
+  font-family: var(--mono); max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.leaf-badge.engine { color: var(--accent); background: var(--accent-soft); }
+.ch-db-node .caret { width: 14px; height: 14px; }
+.ch-table { padding-left: 22px; }
+/* DB 节点展开后的表过滤输入框:紧凑、宽约 90%,风格与树内搜索一致。 */
+.ch-table-filter { margin: 4px 0 2px; }
+.ch-table-filter .search-input { width: 90%; padding: 4px 8px; }
 .leaf-info:hover { color: var(--info); background: var(--info-soft); }
 .leaf-info:active { transform: scale(0.92); }
 .leaf-info:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }

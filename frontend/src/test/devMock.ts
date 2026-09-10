@@ -80,6 +80,10 @@ export function installDevMock(): void {
       redisSetString: async () => {},
       redisFlushDB: async () => {},
       redisFlushAll: async () => {},
+      listSavedQueries: async () => [],
+      saveSavedQuery: async () => ({}) as never,
+      updateSavedQuery: async () => ({}) as never,
+      deleteSavedQuery: async () => {},
       redisHashSetField: async () => {},
       redisHashDeleteField: async () => {},
       redisListSetIndex: async () => {},
@@ -95,6 +99,13 @@ export function installDevMock(): void {
       applyUpdate: async () => {},
       updateProgress: async () => ({ phase: 'idle' as const, percent: 0 }),
       openURL: async () => {},
+      testCHConnection: async () => {},
+      listCHDatabases: async () => ['default'],
+      listCHTables: async () => [],
+      chPageRows: async () => ({ columns: [], rows: [], engine: '', total_rows: 0 }),
+      chTruncateTable: async () => {},
+      chExecute: async () => [],
+      listDrivers: async () => [],
     }
     setApi(api)
 }

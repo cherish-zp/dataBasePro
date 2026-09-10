@@ -5,6 +5,7 @@ import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Connection, RedisConfigShape } from '@/api/types'
 import { CSV_MIME, saveFile } from '@/utils/export'
+import { formatBytes } from '@/utils/bytes'
 import { useConnectionsStore } from '@/store/connections'
 import ConnectionTree from './ConnectionTree.vue'
 
@@ -45,6 +46,17 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
         applyUpdate: vi.fn(async () => {}),
         updateProgress: vi.fn(async () => ({ phase: 'idle' as const, percent: 0 })),
         openURL: vi.fn(async () => {}),
+    listSavedQueries: vi.fn(async () => []),
+    saveSavedQuery: vi.fn(async (q: never) => ({}) as never),
+    updateSavedQuery: vi.fn(async () => ({}) as never),
+    deleteSavedQuery: vi.fn(async () => {}),
+        testCHConnection: vi.fn(async () => {}),
+        listCHDatabases: vi.fn(async () => []),
+        listCHTables: vi.fn(async () => []),
+        chPageRows: vi.fn(async () => ({ columns: [], rows: [], engine: '', total_rows: 0 })),
+        chTruncateTable: vi.fn(async () => {}),
+        chExecute: vi.fn(async () => []),
+        listDrivers: vi.fn(async () => []),
         redisHashSetField: vi.fn(async () => {}),
         redisHashDeleteField: vi.fn(async () => {}),
         redisListSetIndex: vi.fn(async () => {}),
@@ -1084,5 +1096,129 @@ describe('ConnectionTree', () => {
     const csv = vi.mocked(saveFile).mock.calls[0][1]
     expect(csv).toContain('t1,1')
     expect(csv).toContain('t2,3')
+  })
+
+  it('shows redis and clickhouse in the type metadata table', () => {
+    const ch = { ...conn('ch'), type: 'clickhouse' as const }
+    const rd = { ...conn('rd'), type: 'redis' as const }
+    const wrapper = mount(ConnectionTree, { props: { connections: [ch, rd] } })
+    expect(wrapper.findAll('[data-test="conn-type"]').map((n) => n.text())).toEqual(['ClickHouse', 'Redis'])
+  })
+
+  it('lists clickhouse databases when a clickhouse connection expands', async () => {
+    ;(api.listCHDatabases as ReturnType<typeof vi.fn>).mockResolvedValue(['default', 'logs'])
+    const ch = { ...conn('ch'), type: 'clickhouse' as const }
+    const wrapper = mount(ConnectionTree, { props: { connections: [ch] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="ch-db-node"]')).toHaveLength(2)
+    })
+    expect(api.listCHDatabases).toHaveBeenCalledWith('ch')
+    expect(api.listTopics).not.toHaveBeenCalled()
+    expect(wrapper.findAll('[data-test="ch-db-name"]').map((n) => n.text())).toEqual(['default', 'logs'])
+  })
+
+  it('lazily loads tables with engine and row badges when a database node expands', async () => {
+    ;(api.listCHDatabases as ReturnType<typeof vi.fn>).mockResolvedValue(['default'])
+    ;(api.listCHTables as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'events', engine: 'MergeTree', total_rows: 2048 },
+    ])
+    const ch = { ...conn('ch'), type: 'clickhouse' as const }
+    const wrapper = mount(ConnectionTree, { props: { connections: [ch] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="ch-db-node"]').exists()).toBe(true)
+    })
+    // 展开连接只拉数据库,表在数据库节点展开时才懒加载。
+    expect(api.listCHTables).not.toHaveBeenCalled()
+    await wrapper.find('[data-test="ch-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="ch-table-node"]').exists()).toBe(true)
+    })
+    expect(api.listCHTables).toHaveBeenCalledWith({ connection_id: 'ch', database: 'default', show_system: false })
+    expect(wrapper.find('[data-test="ch-table-name"]').text()).toBe('events')
+    expect(wrapper.find('[data-test="ch-table-engine"]').text()).toBe('MergeTree')
+    expect(wrapper.find('[data-test="ch-table-rows"]').text()).toBe(formatBytes(2048))
+  })
+
+  it('emits open-ch-table with database and table on table node double click', async () => {
+    ;(api.listCHDatabases as ReturnType<typeof vi.fn>).mockResolvedValue(['default'])
+    ;(api.listCHTables as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'events', engine: 'MergeTree', total_rows: 0 },
+    ])
+    const ch = { ...conn('ch'), type: 'clickhouse' as const }
+    const wrapper = mount(ConnectionTree, { props: { connections: [ch] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="ch-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="ch-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="ch-table-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="ch-table-node"]').trigger('dblclick')
+    expect(wrapper.emitted('open-ch-table')?.[0]).toEqual(['ch', 'default', 'events'])
+  })
+
+  it('embeds a fuzzy filter above the CH table list inside an expanded database', async () => {
+    ;(api.listCHDatabases as ReturnType<typeof vi.fn>).mockResolvedValue(['default'])
+    ;(api.listCHTables as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'user_events', engine: 'MergeTree', total_rows: 10 },
+      { name: 'order_events', engine: 'MergeTree', total_rows: 20 },
+      { name: 'dim_date', engine: 'Dictionary', total_rows: 0 },
+    ])
+    const ch = { ...conn('ch'), type: 'clickhouse' as const }
+    const wrapper = mount(ConnectionTree, { props: { connections: [ch] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="ch-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="ch-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="ch-table-node"]')).toHaveLength(3)
+    })
+    // 未过滤时计数徽标显示表总数。
+    expect(wrapper.find('[data-test="ch-db-count"]').text()).toBe('3')
+    const filter = wrapper.find('[data-test="ch-table-filter"]')
+    expect(filter.exists()).toBe(true)
+    // 输入即本地模糊过滤。
+    await filter.setValue('events')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="ch-table-node"]')).toHaveLength(2)
+    })
+    expect(wrapper.findAll('[data-test="ch-table-name"]').map((n) => n.text())).toEqual(['user_events', 'order_events'])
+    // 计数徽标随过滤更新为「可见/总数」。
+    expect(wrapper.find('[data-test="ch-db-count"]').text()).toBe('2/3')
+    // 过滤后的表节点仍可双击打开。
+    await wrapper.findAll('[data-test="ch-table-node"]')[0].trigger('dblclick')
+    expect(wrapper.emitted('open-ch-table')?.[0]).toEqual(['ch', 'default', 'user_events'])
+    // 清空恢复全部。
+    await filter.setValue('')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="ch-table-node"]')).toHaveLength(3)
+    })
+    expect(wrapper.find('[data-test="ch-db-count"]').text()).toBe('3')
+  })
+
+  it('shows a no-match hint when the CH table filter matches nothing', async () => {
+    ;(api.listCHDatabases as ReturnType<typeof vi.fn>).mockResolvedValue(['default'])
+    ;(api.listCHTables as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: 'events', engine: 'MergeTree', total_rows: 1 },
+    ])
+    const ch = { ...conn('ch'), type: 'clickhouse' as const }
+    const wrapper = mount(ConnectionTree, { props: { connections: [ch] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="ch-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="ch-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="ch-table-node"]')).toHaveLength(1)
+    })
+    await wrapper.find('[data-test="ch-table-filter"]').setValue('zzz')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="ch-table-node"]')).toHaveLength(0)
+      expect(wrapper.find('[data-test="ch-table-empty"]').text()).toBe('无匹配表')
+    })
   })
 })

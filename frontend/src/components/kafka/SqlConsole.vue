@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { getApi } from '@/api/client'
-import type { Message } from '@/api/types'
+import type { Message, SavedQuery } from '@/api/types'
 import { OffsetEarliest } from '@/api/types'
 import { parseSelect, matchesWhere } from '@/utils/sql'
 import { formatTime, displayValue } from '@/utils/format'
 import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, exportCsv, exportJsonl, saveFile } from '@/utils/export'
 import ExportDropdown from '@/components/common/ExportDropdown.vue'
+import PromptDialog from '@/components/common/PromptDialog.vue'
+import SqlEditor from '@/components/common/SqlEditor.vue'
+import type { SqlTableSchema } from '@/components/common/SqlEditor.vue'
 import { useSqlHistoryStore } from '@/store/sqlhistory'
 
 const props = defineProps<{
@@ -20,6 +23,21 @@ const sql = ref(`SELECT * FROM ${props.topic} LIMIT 100`)
 const running = ref(false)
 const error = ref<string | null>(null)
 const results = ref<Message[]>([])
+
+// --- CodeMirror 补全来源:当前连接的 topic 列表映射为 {name: topic} ----------
+// 仅作补全提示,拉取失败静默降级为空(不阻塞控制台主流程)。
+const tables = ref<SqlTableSchema[]>([])
+
+async function loadTables(): Promise<void> {
+  try {
+    const topics = await getApi().listTopics(props.connectionId)
+    tables.value = topics.map((t) => ({ name: t.name }))
+  } catch {
+    tables.value = []
+  }
+}
+
+onMounted(() => void loadTables())
 
 // Per-topic SQL draft cache (BL-007): unrun editor content survives a topic
 // switch. Component-local only — drafts are dropped on unmount and never
@@ -159,7 +177,111 @@ watch(historyOpen, (open) => {
   }
 })
 
-// onDocClick closes the history menu on clicks landing outside of it.
+// --- 查询库侧栏(保存的查询,按连接隔离) ------------------------------------
+// 打开面板时按当前连接拉取列表;单击条目 = 载入编辑器(记住条目 id)。
+// 「保存」:已载入条目 → updateSavedQuery,否则弹名称输入 → saveSavedQuery;
+// 「另存为」:强制弹名称输入 → saveSavedQuery;「删除」仅对已载入条目可用。
+const queryLibOpen = ref(false)
+const savedQueries = ref<SavedQuery[]>([])
+const queryLibError = ref<string | null>(null)
+const loadedQueryId = ref<string | null>(null)
+
+async function refreshSavedQueries(): Promise<void> {
+  queryLibError.value = null
+  try {
+    savedQueries.value = await getApi().listSavedQueries({
+      console_type: 'kafka-sql',
+      connection_id: props.connectionId,
+    })
+  } catch (e) {
+    queryLibError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function toggleQueryLib(): void {
+  queryLibOpen.value = !queryLibOpen.value
+  if (queryLibOpen.value) void refreshSavedQueries()
+}
+
+// 切换连接:保持编辑器 SQL 不动,仅按新连接刷新列表;旧连接的已载入条目
+// 不再属于当前列表,清空已载入状态以免 update/delete 打到不可见条目上。
+watch(
+  () => props.connectionId,
+  () => {
+    loadedQueryId.value = null
+    void loadTables()
+    if (queryLibOpen.value) void refreshSavedQueries()
+  },
+)
+
+function loadQuery(q: SavedQuery): void {
+  sql.value = q.content
+  loadedQueryId.value = q.id
+}
+
+// 名称输入弹窗:save(未载入条目时)与 save-as 共用。
+const nameDialogOpen = ref(false)
+const nameDialogMode = ref<'save' | 'save-as'>('save')
+
+function requestSaveQuery(forceNew: boolean): void {
+  if (!forceNew && loadedQueryId.value) {
+    void updateLoadedQuery()
+    return
+  }
+  nameDialogMode.value = forceNew ? 'save-as' : 'save'
+  nameDialogOpen.value = true
+}
+
+async function updateLoadedQuery(): Promise<void> {
+  const id = loadedQueryId.value
+  if (!id) return
+  const current = savedQueries.value.find((q) => q.id === id)
+  queryLibError.value = null
+  try {
+    const updated = await getApi().updateSavedQuery({ id, name: current?.name ?? '', content: sql.value })
+    await refreshSavedQueries()
+    loadedQueryId.value = updated.id
+  } catch (e) {
+    queryLibError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function confirmSaveQuery(name: string): Promise<void> {
+  nameDialogOpen.value = false
+  queryLibError.value = null
+  try {
+    const saved = await getApi().saveSavedQuery({
+      name,
+      console_type: 'kafka-sql',
+      connection_id: props.connectionId,
+      content: sql.value,
+    })
+    await refreshSavedQueries()
+    // 新建的条目即为「已载入」,后续保存走 update 而不是重复新建。
+    loadedQueryId.value = saved.id
+  } catch (e) {
+    queryLibError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+async function removeLoadedQuery(): Promise<void> {
+  const id = loadedQueryId.value
+  if (!id) return
+  queryLibError.value = null
+  try {
+    await getApi().deleteSavedQuery({ id })
+    loadedQueryId.value = null
+    await refreshSavedQueries()
+  } catch (e) {
+    queryLibError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function onSavedQueryName(v: string): void {
+  void confirmSaveQuery(v)
+}
+
+
 function onDocClick(e: MouseEvent): void {
   if (historyOpen.value && historyRoot.value && !historyRoot.value.contains(e.target as Node)) {
     historyOpen.value = false
@@ -173,16 +295,53 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 <template>
   <div class="sql-console" data-test="sql-console">
     <div class="sql-toolbar" data-test="sql-toolbar">
+      <button class="btn ghost" type="button" data-test="btn-query-lib-toggle" @click="toggleQueryLib">
+        查询库
+      </button>
+      <aside v-if="queryLibOpen" class="query-lib" data-test="query-lib">
+        <div class="ql-head">
+          <span class="ql-title">查询库</span>
+          <span class="ql-sub">保存的查询按连接隔离</span>
+        </div>
+        <div class="ql-actions">
+          <button class="btn mini" type="button" data-test="btn-query-save" @click="requestSaveQuery(false)">
+            保存
+          </button>
+          <button class="btn mini" type="button" data-test="btn-query-save-as" @click="requestSaveQuery(true)">
+            另存为
+          </button>
+          <button
+            class="btn mini"
+            type="button"
+            data-test="btn-query-delete"
+            :disabled="!loadedQueryId"
+            @click="removeLoadedQuery"
+          >
+            删除
+          </button>
+        </div>
+        <div v-if="queryLibError" class="ql-error" data-test="query-lib-error">{{ queryLibError }}</div>
+        <div class="ql-list">
+          <button
+            v-for="(q, i) in savedQueries"
+            :key="q.id"
+            class="ql-item"
+            type="button"
+            :class="{ active: q.id === loadedQueryId }"
+            :data-test="`query-item-${i}`"
+            @click="loadQuery(q)"
+          >
+            <span class="ql-name">{{ q.name }}</span>
+            <span class="ql-time">{{ new Date(q.updated_at).toLocaleString() }}</span>
+          </button>
+          <div v-if="!savedQueries.length" class="ql-empty" data-test="query-lib-empty">暂无保存的查询</div>
+        </div>
+      </aside>
       <label class="sql-field grow" data-test="sql-field">
         <span class="label">SQL</span>
-        <textarea
-          v-model="sql"
-          data-test="input-sql"
-          class="editor"
-          rows="3"
-          spellcheck="false"
-          @keydown="onEditorKeydown"
-        ></textarea>
+        <div class="cm-host" @keydown="onEditorKeydown">
+          <SqlEditor v-model="sql" :tables="tables" height="220px" data-test="input-sql" />
+        </div>
       </label>
       <div ref="historyRoot" class="history-menu" data-test="history-menu">
         <button class="btn ghost" type="button" data-test="history-toggle" @click="historyOpen = !historyOpen">
@@ -291,6 +450,15 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
       </div>
       <div v-else class="empty" data-test="sql-empty">暂无结果</div>
     </div>
+
+    <PromptDialog
+      :show="nameDialogOpen"
+      :title="nameDialogMode === 'save-as' ? '另存查询' : '保存查询'"
+      label="查询名称"
+      hint="保存的查询按连接隔离"
+      @confirm="onSavedQueryName"
+      @cancel="nameDialogOpen = false"
+    />
   </div>
 </template>
 
@@ -316,30 +484,39 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .sql-field { display: flex; flex-direction: column; gap: 5px; }
 .sql-field.grow { flex: 1; min-width: 0; }
 .label { font-size: 11px; font-weight: 600; color: var(--text-secondary); letter-spacing: 0.02em; }
-.editor {
-  width: 100%;
-  box-sizing: border-box;
-  resize: vertical;
-  font-family: var(--mono);
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--text);
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 9px 12px;
-  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
-}
-.editor:focus {
-  outline: none;
-  border-color: var(--accent);
-  background: var(--bg-elevated);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
+.cm-host { width: 100%; }
 .hint { font-size: 12px; color: var(--text-tertiary); padding: 7px 16px 0; }
 .hint code { background: var(--bg-subtle); padding: 1px 5px; border-radius: 5px; font-family: var(--mono); }
 .msg { font-size: 13px; border-radius: 9px; padding: 8px 12px; margin: 8px 16px 0; }
 .msg.err { background: var(--danger-soft); color: var(--danger); }
+/* 查询库侧栏:宽约 240px,与编辑器同高拉伸。 */
+.query-lib {
+  flex: none; width: 240px; align-self: stretch;
+  display: flex; flex-direction: column; gap: 8px; min-height: 0;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-subtle); padding: 10px;
+}
+.ql-head { display: flex; flex-direction: column; gap: 2px; }
+.ql-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.ql-sub { font-size: 11px; color: var(--text-tertiary); }
+.ql-actions { display: flex; gap: 6px; }
+.ql-error {
+  font-size: 12px; color: var(--danger); background: var(--danger-soft);
+  border-radius: 7px; padding: 6px 8px;
+}
+.ql-list { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.ql-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left;
+  border: 1px solid transparent; background: transparent; cursor: pointer; border-radius: 7px; padding: 6px 8px;
+  transition: background 0.1s ease;
+}
+.ql-item:hover { background: var(--bg-hover); }
+.ql-item.active { background: var(--accent-soft); }
+.ql-name {
+  width: 100%; font-size: 13px; color: var(--text); font-family: var(--font);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ql-time { font-size: 11px; color: var(--text-tertiary); }
+.ql-empty { font-size: 12px; color: var(--text-tertiary); padding: 4px 2px; }
 .results-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 16px 16px; }
 .results-header { display: flex; align-items: center; gap: 12px; justify-content: space-between; font-size: 13px; font-weight: 600; padding: 6px 0 10px; }
 .history-menu { position: relative; }
@@ -395,4 +572,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.primary { background: var(--accent); color: #fff; box-shadow: 0 1px 2px rgba(0, 113, 227, 0.3); }
 .btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn.mini { padding: 4px 10px; font-size: 12px; border-radius: 7px; background: var(--bg-elevated); color: var(--text); border-color: var(--border); }
+.btn.mini:hover:not(:disabled) { background: var(--bg-hover); }
 </style>

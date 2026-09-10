@@ -1,12 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { getApi } from '@/api/client'
-import type { Connection, ConnectionType, KafkaConfig } from '@/api/types'
+import type { Connection, ConnectionType, KafkaConfig, RedisConfigShape, CHConfigShape } from '@/api/types'
 
 export interface NewConnectionInput {
   name: string
   type: ConnectionType
-  config: KafkaConfig
+  config: KafkaConfig | RedisConfigShape | CHConfigShape
 }
 
 // ConnectionStatus reflects whether a connection is currently usable. The
@@ -62,7 +62,9 @@ export const useConnectionsStore = defineStore('connections', () => {
   // 相应重置为 unknown,避免残留过期的 'connected'。
   async function update(id: string, input: NewConnectionInput): Promise<Connection> {
     error.value = null
-    const updated = await getApi().updateConnection({ id, name: input.name, config: input.config })
+    // type 必须透传:后端 resolvedType 对空 type 默认 kafka,编辑
+    // redis/clickhouse 时不带会走错分支导致保存损坏。
+    const updated = await getApi().updateConnection({ id, name: input.name, type: input.type, config: input.config })
     const idx = connections.value.findIndex((c) => c.id === updated.id)
     if (idx !== -1) connections.value[idx] = updated
     statusById.value[updated.id] = 'unknown'

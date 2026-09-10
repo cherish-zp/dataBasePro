@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys'
+export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys' | 'ch-table' | 'ch-sql'
 
 export interface Tab {
   id: string
@@ -11,6 +11,9 @@ export interface Tab {
   topic?: string
   group?: string
   db?: number
+  // ClickHouse 表浏览器 / SQL 控制台携带的库与表名。
+  database?: string
+  table?: string
   partitions?: number[]
 }
 
@@ -143,6 +146,48 @@ export const useTabsStore = defineStore('tabs', () => {
     return tab
   }
 
+  // openCHTable opens a ClickHouse table browser keyed by connection +
+  // database + table; reopening an already open table only focuses it.
+  function openCHTable(connectionId: string, database: string, table: string): Tab {
+    const id = `ch:${connectionId}:${database}:${table}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'ch-table',
+      title: table,
+      connectionId,
+      database,
+      table,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  // openCHSql opens the ClickHouse SQL console for a connection. One console
+  // per connection: the id keys on the connection alone.
+  function openCHSql(connectionId: string): Tab {
+    const id = `ch-sql:${connectionId}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'ch-sql',
+      title: 'SQL 控制台',
+      connectionId,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
   function closeTab(id: string): void {
     const idx = openTabs.value.findIndex((t) => t.id === id)
     if (idx < 0) return
@@ -191,6 +236,8 @@ export const useTabsStore = defineStore('tabs', () => {
     openRedisKeys,
     openLag,
     openHealth,
+    openCHTable,
+    openCHSql,
     closeTab,
     closeOthers,
     closeAll,

@@ -35,6 +35,17 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
         applyUpdate: vi.fn(async () => {}),
         updateProgress: vi.fn(async () => ({ phase: 'idle' as const, percent: 0 })),
         openURL: vi.fn(async () => {}),
+    listSavedQueries: vi.fn(async () => []),
+    saveSavedQuery: vi.fn(async (q: never) => ({}) as never),
+    updateSavedQuery: vi.fn(async () => ({}) as never),
+    deleteSavedQuery: vi.fn(async () => {}),
+        testCHConnection: vi.fn(async () => {}),
+        listCHDatabases: vi.fn(async () => []),
+        listCHTables: vi.fn(async () => []),
+        chPageRows: vi.fn(async () => ({ columns: [], rows: [], engine: '', total_rows: 0 })),
+        chTruncateTable: vi.fn(async () => {}),
+        chExecute: vi.fn(async () => []),
+        listDrivers: vi.fn(async () => []),
         redisHashSetField: vi.fn(async () => {}),
         redisHashDeleteField: vi.fn(async () => {}),
         redisListSetIndex: vi.fn(async () => {}),
@@ -112,12 +123,33 @@ describe('connections store', () => {
     const updated = { ...conn('a'), name: 'renamed', updated_at: 99 }
     ;(api.updateConnection as ReturnType<typeof vi.fn>).mockResolvedValue(updated)
     const got = await store.update('a', { name: 'renamed', type: 'kafka', config: { bootstrap_servers: ['h:2'] } })
-    expect(api.updateConnection).toHaveBeenCalledWith({ id: 'a', name: 'renamed', config: { bootstrap_servers: ['h:2'] } })
+    expect(api.updateConnection).toHaveBeenCalledWith({ id: 'a', name: 'renamed', type: 'kafka', config: { bootstrap_servers: ['h:2'] } })
     expect(got).toEqual(updated)
     // 列表原位替换,顺序与其他连接保持不变。
     expect(store.connections.map((c) => c.id)).toEqual(['a', 'b'])
     expect(store.connections[0].name).toBe('renamed')
     expect(store.connections[0].updated_at).toBe(99)
+  })
+
+  it('update forwards the connection type to the api (redis/clickhouse edit fix)', async () => {
+    const store = useConnectionsStore()
+    ;(api.updateConnection as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'ch1',
+      name: 'ch',
+      type: 'clickhouse',
+      config: { hosts: ['h:9000'], username: 'default', database: 'default' },
+      created_at: 1,
+      updated_at: 2,
+    })
+    await store.update('ch1', {
+      name: 'ch',
+      type: 'clickhouse',
+      config: { hosts: ['h:9000'], username: 'default', database: 'default' },
+    })
+    // 后端 resolvedType 对空 type 默认 kafka,非 kafka 类型必须显式透传。
+    expect(api.updateConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'ch1', name: 'ch', type: 'clickhouse' }),
+    )
   })
 
   it('update resets the connection status to unknown (backend evicts the pool)', async () => {

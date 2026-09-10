@@ -48,6 +48,11 @@ import type {
   RedisSetStringRequest,
   RedisFlushRequest,
   RedisHashSetFieldRequest,
+  SavedQuery,
+  ListSavedQueriesRequest,
+  SaveSavedQueryRequest,
+  UpdateSavedQueryRequest,
+  DeleteSavedQueryRequest,
   RedisHashDeleteFieldRequest,
   RedisListSetIndexRequest,
   RedisListPushRequest,
@@ -56,6 +61,15 @@ import type {
   RedisSetRemoveRequest,
   RedisZSetAddRequest,
   RedisZSetRemoveRequest,
+  CHConfigShape,
+  CHListTablesRequest,
+  CHTableInfo,
+  CHPageRowsRequest,
+  CHPageRowsResult,
+  CHTruncateTableRequest,
+  CHExecuteRequest,
+  CHStatementResult,
+  DriverInfo,
 } from './types'
 
 export interface Api {
@@ -115,6 +129,17 @@ export interface Api {
   redisSetRemove(req: RedisSetRemoveRequest): Promise<void>
   redisZSetAdd(req: RedisZSetAddRequest): Promise<void>
   redisZSetRemove(req: RedisZSetRemoveRequest): Promise<void>
+  listSavedQueries(req: ListSavedQueriesRequest): Promise<SavedQuery[]>
+  saveSavedQuery(req: SaveSavedQueryRequest): Promise<SavedQuery>
+  updateSavedQuery(req: UpdateSavedQueryRequest): Promise<SavedQuery>
+  deleteSavedQuery(req: DeleteSavedQueryRequest): Promise<void>
+  testCHConnection(cfg: CHConfigShape): Promise<void>
+  listCHDatabases(id: string): Promise<string[]>
+  listCHTables(req: CHListTablesRequest): Promise<CHTableInfo[]>
+  chPageRows(req: CHPageRowsRequest): Promise<CHPageRowsResult>
+  chTruncateTable(req: CHTruncateTableRequest): Promise<void>
+  chExecute(req: CHExecuteRequest): Promise<CHStatementResult[]>
+  listDrivers(): Promise<DriverInfo[]>
 }
 
 // The Wails binding generator models Go `[]byte` fields as `number[]`, but
@@ -294,6 +319,41 @@ export class WailsApi implements Api {
   }
   redisZSetRemove(req: RedisZSetRemoveRequest): Promise<void> {
     return (App as unknown as { RedisZSetRemove: (req: never) => Promise<void> }).RedisZSetRemove(req as unknown as never)
+  }
+  listSavedQueries(req: ListSavedQueriesRequest): Promise<SavedQuery[]> {
+    return App.ListSavedQueries(req as unknown as never) as unknown as Promise<SavedQuery[]>
+  }
+  saveSavedQuery(req: SaveSavedQueryRequest): Promise<SavedQuery> {
+    return App.SaveSavedQuery(req as unknown as never) as unknown as Promise<SavedQuery>
+  }
+  updateSavedQuery(req: UpdateSavedQueryRequest): Promise<SavedQuery> {
+    return App.UpdateSavedQuery(req as unknown as never) as unknown as Promise<SavedQuery>
+  }
+  deleteSavedQuery(req: DeleteSavedQueryRequest): Promise<void> {
+    return App.DeleteSavedQuery(req as unknown as never) as unknown as Promise<void>
+  }
+  // 以下 ClickHouse 与驱动管理 API 的后端绑定尚未由 wails generate 生成,
+  // 先对模块形状断言,待主会话生成绑定后即可直接调用。
+  testCHConnection(cfg: CHConfigShape): Promise<void> {
+    return (App as unknown as { TestCHConnection: (cfg: never) => Promise<void> }).TestCHConnection(cfg as unknown as never)
+  }
+  listCHDatabases(id: string): Promise<string[]> {
+    return (App as unknown as { ListCHDatabases: (id: string) => Promise<string[]> }).ListCHDatabases(id) as unknown as Promise<string[]>
+  }
+  listCHTables(req: CHListTablesRequest): Promise<CHTableInfo[]> {
+    return (App as unknown as { ListCHTables: (req: never) => Promise<CHTableInfo[]> }).ListCHTables(req as unknown as never)
+  }
+  chPageRows(req: CHPageRowsRequest): Promise<CHPageRowsResult> {
+    return (App as unknown as { CHPageRows: (req: never) => Promise<CHPageRowsResult> }).CHPageRows(req as unknown as never)
+  }
+  chTruncateTable(req: CHTruncateTableRequest): Promise<void> {
+    return (App as unknown as { CHTruncateTable: (req: never) => Promise<void> }).CHTruncateTable(req as unknown as never)
+  }
+  chExecute(req: CHExecuteRequest): Promise<CHStatementResult[]> {
+    return (App as unknown as { CHExecute: (req: never) => Promise<CHStatementResult[]> }).CHExecute(req as unknown as never)
+  }
+  listDrivers(): Promise<DriverInfo[]> {
+    return (App as unknown as { ListDrivers: () => Promise<DriverInfo[]> }).ListDrivers() as unknown as Promise<DriverInfo[]>
   }
 }
 

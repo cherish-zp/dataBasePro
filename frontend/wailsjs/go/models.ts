@@ -114,6 +114,80 @@ export namespace backend {
 		    return a;
 		}
 	}
+	export class CHExecuteRequest {
+	    connection_id: string;
+	    sql: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CHExecuteRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.sql = source["sql"];
+	    }
+	}
+	export class CHPageRowsRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    where?: string;
+	    order_by?: string;
+	    asc: boolean;
+	    limit: number;
+	    offset: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CHPageRowsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.where = source["where"];
+	        this.order_by = source["order_by"];
+	        this.asc = source["asc"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class CHTablesRequest {
+	    connection_id: string;
+	    database: string;
+	    show_system: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CHTablesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.show_system = source["show_system"];
+	    }
+	}
+	export class CHTruncateTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    on_cluster?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CHTruncateTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.on_cluster = source["on_cluster"];
+	    }
+	}
 	export class CheckUpdateRequest {
 	    current_version: string;
 	
@@ -180,6 +254,18 @@ export namespace backend {
 	        this.group = source["group"];
 	    }
 	}
+	export class DeleteSavedQueryRequest {
+	    id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeleteSavedQueryRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	    }
+	}
 	export class DeleteTopicRequest {
 	    connection_id: string;
 	    topic: string;
@@ -218,6 +304,40 @@ export namespace backend {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.url = source["url"];
+	    }
+	}
+	export class DriverInfo {
+	    name: string;
+	    library: string;
+	    version: string;
+	    default_port: number;
+	    description: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DriverInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.library = source["library"];
+	        this.version = source["version"];
+	        this.default_port = source["default_port"];
+	        this.description = source["description"];
+	    }
+	}
+	export class ListSavedQueriesRequest {
+	    console_type?: string;
+	    connection_id?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ListSavedQueriesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.console_type = source["console_type"];
+	        this.connection_id = source["connection_id"];
 	    }
 	}
 	export class ProduceRequest {
@@ -482,6 +602,24 @@ export namespace backend {
 	        this.per_partition_offsets = source["per_partition_offsets"];
 	    }
 	}
+	export class SaveSavedQueryRequest {
+	    name: string;
+	    console_type: string;
+	    connection_id: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SaveSavedQueryRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.console_type = source["console_type"];
+	        this.connection_id = source["connection_id"];
+	        this.content = source["content"];
+	    }
+	}
 	export class SaveTextFileRequest {
 	    filename: string;
 	    content: string;
@@ -548,6 +686,22 @@ export namespace backend {
 	        this.phase = source["phase"];
 	        this.percent = source["percent"];
 	        this.error = source["error"];
+	    }
+	}
+	export class UpdateSavedQueryRequest {
+	    id: string;
+	    name: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateSavedQueryRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.content = source["content"];
 	    }
 	}
 
@@ -655,6 +809,134 @@ export namespace model {
 	        this.rack = source["rack"];
 	        this.version = source["version"];
 	        this.online = source["online"];
+	    }
+	}
+	export class CHColumn {
+	    name: string;
+	    type: string;
+	    comment?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CHColumn(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.comment = source["comment"];
+	    }
+	}
+	export class CHPageRowsResult {
+	    columns: CHColumn[];
+	    rows: string[][];
+	    engine: string;
+	    total_rows?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CHPageRowsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = this.convertValues(source["columns"], CHColumn);
+	        this.rows = source["rows"];
+	        this.engine = source["engine"];
+	        this.total_rows = source["total_rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CHStatementResult {
+	    sql: string;
+	    duration_ms: number;
+	    error?: string;
+	    columns?: CHColumn[];
+	    rows?: string[][];
+	
+	    static createFrom(source: any = {}) {
+	        return new CHStatementResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sql = source["sql"];
+	        this.duration_ms = source["duration_ms"];
+	        this.error = source["error"];
+	        this.columns = this.convertValues(source["columns"], CHColumn);
+	        this.rows = source["rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class CHTableInfo {
+	    name: string;
+	    engine: string;
+	    total_rows?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CHTableInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.engine = source["engine"];
+	        this.total_rows = source["total_rows"];
+	    }
+	}
+	export class ClickHouseConfig {
+	    hosts: string[];
+	    username: string;
+	    password?: string;
+	    database: string;
+	    tls?: boolean;
+	    protocol?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClickHouseConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hosts = source["hosts"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.database = source["database"];
+	        this.tls = source["tls"];
+	        this.protocol = source["protocol"];
 	    }
 	}
 	export class ClusterHealth {
@@ -1181,6 +1463,30 @@ export namespace model {
 		}
 	}
 	
+	export class SavedQuery {
+	    id: string;
+	    name: string;
+	    console_type: string;
+	    connection_id: string;
+	    content: string;
+	    created_at: number;
+	    updated_at: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new SavedQuery(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.console_type = source["console_type"];
+	        this.connection_id = source["connection_id"];
+	        this.content = source["content"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	    }
+	}
 	
 	export class Topic {
 	    name: string;

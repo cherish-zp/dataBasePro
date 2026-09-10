@@ -1,11 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mount, flushPromises, type VueWrapper, type DOMWrapper } from '@vue/test-utils'
+import { nextTick } from 'vue'
+import { EditorView } from '@codemirror/view'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
-import type { Message } from '@/api/types'
+import type { Message, SavedQuery } from '@/api/types'
 import { useSqlHistoryStore } from '@/store/sqlhistory'
 import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, exportCsv, exportJsonl, saveFile } from '@/utils/export'
+import SqlEditor from '@/components/common/SqlEditor.vue'
 import SqlConsole from './SqlConsole.vue'
 
 // Stub the DOM download trigger but keep the real CSV/JSONL builders, so the
@@ -45,6 +48,17 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
         applyUpdate: vi.fn(async () => {}),
         updateProgress: vi.fn(async () => ({ phase: 'idle' as const, percent: 0 })),
         openURL: vi.fn(async () => {}),
+    listSavedQueries: vi.fn(async () => []),
+    saveSavedQuery: vi.fn(async (q: never) => ({}) as never),
+    updateSavedQuery: vi.fn(async () => ({}) as never),
+    deleteSavedQuery: vi.fn(async () => {}),
+        testCHConnection: vi.fn(async () => {}),
+        listCHDatabases: vi.fn(async () => []),
+        listCHTables: vi.fn(async () => []),
+        chPageRows: vi.fn(async () => ({ columns: [], rows: [], engine: '', total_rows: 0 })),
+        chTruncateTable: vi.fn(async () => {}),
+        chExecute: vi.fn(async () => []),
+        listDrivers: vi.fn(async () => []),
         redisHashSetField: vi.fn(async () => {}),
         redisHashDeleteField: vi.fn(async () => {}),
         redisListSetIndex: vi.fn(async () => {}),
@@ -81,6 +95,58 @@ const msg = (key: string, value: string, offset = 0): Message => ({
   partition: 0, offset, timestamp: 1700000000000, key, value, headers: [],
 })
 
+// 查询库条目样例(镜像 model.SavedQuery)。
+const saved = (id: string, name: string, content: string): SavedQuery => ({
+  id,
+  name,
+  console_type: 'kafka-sql',
+  connection_id: 'c',
+  content,
+  created_at: 1700000000000,
+  updated_at: 1700000100000,
+})
+
+// --- CodeMirror 驱动(参照 SqlEditor.spec.ts 的 findFromDOM 做法) ---------------
+
+// CM6 会在宿主容器内创建自己的 .cm-editor 元素,借 findFromDOM 拿到 view。
+function cmView(wrapper: VueWrapper): EditorView {
+  const host = wrapper.find('[data-test="sql-editor-content"] .cm-editor').element as HTMLElement
+  const view = EditorView.findFromDOM(host)
+  expect(view, 'EditorView.findFromDOM 应能取到实例').not.toBeNull()
+  return view as EditorView
+}
+
+// 编辑器输入:对 CM 文档做全文替换 → update:modelValue → v-model 回写。
+async function setSql(wrapper: VueWrapper, value: string): Promise<void> {
+  const view = cmView(wrapper)
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } })
+  await nextTick()
+}
+
+// 编辑器内容断言:走 findComponent(SqlEditor) 暴露的 getValue()。
+function editorSql(wrapper: VueWrapper): string {
+  const vm = wrapper.findComponent(SqlEditor).vm as unknown as { getValue(): string }
+  return vm.getValue()
+}
+
+// ⌘Enter/IME 用例从 CM 的 contentDOM 触发(冒泡到控制台的 keydown 监听,与真实路径一致)。
+function cmContent(wrapper: VueWrapper): DOMWrapper<Element> {
+  return wrapper.find('[data-test="sql-editor-content"] .cm-content')
+}
+
+// PromptDialog Teleport 到 body,用原生事件驱动(参照 PromptDialog.spec.ts)。
+function promptEl(testId: string): HTMLElement | null {
+  return document.body.querySelector(`[data-test="${testId}"]`)
+}
+async function confirmPrompt(value: string): Promise<void> {
+  const input = promptEl('prompt-input') as HTMLInputElement
+  input.value = value
+  input.dispatchEvent(new Event('input', { bubbles: true }))
+  await nextTick()
+  promptEl('prompt-confirm')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await flushPromises()
+}
+
 function mountConsole(overrides: Partial<Api> = {}) {
   setActivePinia(createPinia())
   const api = fakeApi(overrides)
@@ -107,17 +173,30 @@ describe('SqlConsole', () => {
     expect(wrapper.find('[data-test="select-engine"]').exists()).toBe(false)
   })
 
-  it('stretches the sql editor across the toolbar next to the run button', () => {
+  it('uses the CodeMirror editor inside the toolbar next to the run button', () => {
     const { wrapper } = mountConsole()
     const toolbar = wrapper.find('[data-test="sql-toolbar"]')
     expect(toolbar.find('[data-test="input-sql"]').exists()).toBe(true)
+    expect(toolbar.findComponent(SqlEditor).exists()).toBe(true)
     expect(toolbar.find('[data-test="btn-run"]').exists()).toBe(true)
     expect(toolbar.find('[data-test="sql-field"]').classes()).toContain('grow')
   })
 
   it('prefills the query with the current topic', () => {
     const { wrapper } = mountConsole()
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toContain('orders')
+    expect(editorSql(wrapper)).toContain('orders')
+  })
+
+  it('maps the connection topics into the editor completion tables', async () => {
+    const { wrapper } = mountConsole({
+      listTopics: vi.fn(async () => [
+        { name: 'orders', partitions: [] },
+        { name: 'errors', partitions: [] },
+      ]),
+    })
+    await flushPromises()
+    const tables = wrapper.findComponent(SqlEditor).props('tables') as { name: string }[]
+    expect(tables.map((t) => t.name)).toEqual(['orders', 'errors'])
   })
 
   // Tab switch reuses the mounted console (only props change), so the topic
@@ -131,9 +210,7 @@ describe('SqlConsole', () => {
     expect(wrapper.findAll('[data-test="sql-row"]')).toHaveLength(1)
 
     await wrapper.setProps({ topic: 'bad_t81_test' })
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
-      'SELECT * FROM bad_t81_test LIMIT 100',
-    )
+    expect(editorSql(wrapper)).toBe('SELECT * FROM bad_t81_test LIMIT 100')
     expect(wrapper.findAll('[data-test="sql-row"]')).toHaveLength(0)
     expect(wrapper.find('[data-test="sql-empty"]').exists()).toBe(true)
 
@@ -147,40 +224,30 @@ describe('SqlConsole', () => {
   // draft and restored when switching back.
   it('shows the template for a topic without a saved draft', async () => {
     const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'k1'")
+    await setSql(wrapper, "SELECT * FROM orders WHERE key = 'k1'")
     await wrapper.setProps({ topic: 'bad_t81_test' })
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
-      'SELECT * FROM bad_t81_test LIMIT 100',
-    )
+    expect(editorSql(wrapper)).toBe('SELECT * FROM bad_t81_test LIMIT 100')
   })
 
   it('restores the unrun draft when switching back to the topic', async () => {
     const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'k1'")
+    await setSql(wrapper, "SELECT * FROM orders WHERE key = 'k1'")
     await wrapper.setProps({ topic: 'bad_t81_test' })
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
-      'SELECT * FROM bad_t81_test LIMIT 100',
-    )
+    expect(editorSql(wrapper)).toBe('SELECT * FROM bad_t81_test LIMIT 100')
     await wrapper.setProps({ topic: 'orders' })
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
-      "SELECT * FROM orders WHERE key = 'k1'",
-    )
+    expect(editorSql(wrapper)).toBe("SELECT * FROM orders WHERE key = 'k1'")
   })
 
   it('drops the saved draft when the editor is cleared before switching', async () => {
     const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'k1'")
+    await setSql(wrapper, "SELECT * FROM orders WHERE key = 'k1'")
     await wrapper.setProps({ topic: 'bad_t81_test' })
     await wrapper.setProps({ topic: 'orders' })
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
-      "SELECT * FROM orders WHERE key = 'k1'",
-    )
-    await wrapper.find('[data-test="input-sql"]').setValue('   ')
+    expect(editorSql(wrapper)).toBe("SELECT * FROM orders WHERE key = 'k1'")
+    await setSql(wrapper, '   ')
     await wrapper.setProps({ topic: 'bad_t81_test' })
     await wrapper.setProps({ topic: 'orders' })
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
-      'SELECT * FROM orders LIMIT 100',
-    )
+    expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 100')
   })
 
   // Clear-on-success must be observable (BL-007): after a successful run the
@@ -188,48 +255,42 @@ describe('SqlConsole', () => {
   // instead of resurrecting the just-run SQL via the switch-back watch.
   it('shows the template after a successful run round-trips A→B→A', async () => {
     const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 10')
+    await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
     await wrapper.find('[data-test="btn-run"]').trigger('click')
     await flushPromises()
     await wrapper.setProps({ topic: 'bad_t81_test' })
     await wrapper.setProps({ topic: 'orders' })
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
-      'SELECT * FROM orders LIMIT 100',
-    )
+    expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 100')
   })
 
   // Running clears the draft, but editing afterwards is a new pending change
   // that must still survive the round-trip.
   it('restores an edited draft after a run when switching back to the topic', async () => {
     const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 10')
+    await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
     await wrapper.find('[data-test="btn-run"]').trigger('click')
     await flushPromises()
-    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 20')
+    await setSql(wrapper, 'SELECT * FROM orders LIMIT 20')
     await wrapper.setProps({ topic: 'bad_t81_test' })
     await wrapper.setProps({ topic: 'orders' })
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
-      'SELECT * FROM orders LIMIT 20',
-    )
+    expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 20')
   })
 
   // Drafts are keyed by connection, so two sql tabs on different connections
   // that share a topic name do not leak each other's draft.
   it('keeps the draft separate for the same topic on a different connection', async () => {
     const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'k1'")
+    await setSql(wrapper, "SELECT * FROM orders WHERE key = 'k1'")
     await wrapper.setProps({ topic: 'bad_t81_test' })
     await wrapper.setProps({ connectionId: 'other-conn', topic: 'orders' })
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
-      'SELECT * FROM orders LIMIT 100',
-    )
+    expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 100')
   })
 
   it('runs a query and applies a WHERE key filter', async () => {
     const { wrapper, api } = mountConsole({
       consumeMessages: vi.fn(async () => [msg('k1', 'v1'), msg('k2', 'v2'), msg('k1', 'v3')]),
     })
-    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'k1'")
+    await setSql(wrapper, "SELECT * FROM orders WHERE key = 'k1'")
     await wrapper.find('[data-test="btn-run"]').trigger('click')
     await flushPromises()
     expect(api.consumeMessages).toHaveBeenCalledWith(
@@ -245,7 +306,7 @@ describe('SqlConsole', () => {
     const { wrapper } = mountConsole({
       consumeMessages: vi.fn(async () => [msg('a', 'hello'), msg('b', 'world')]),
     })
-    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE value LIKE '%ell%' LIMIT 1")
+    await setSql(wrapper, "SELECT * FROM orders WHERE value LIKE '%ell%' LIMIT 1")
     await wrapper.find('[data-test="btn-run"]').trigger('click')
     await flushPromises()
     const rows = wrapper.findAll('[data-test="sql-row"]')
@@ -255,7 +316,7 @@ describe('SqlConsole', () => {
 
   it('shows an error for invalid SQL', async () => {
     const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').setValue('INSERT INTO t VALUES (1)')
+    await setSql(wrapper, 'INSERT INTO t VALUES (1)')
     await wrapper.find('[data-test="btn-run"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="sql-error"]').exists()).toBe(true)
@@ -263,7 +324,7 @@ describe('SqlConsole', () => {
 
 
   it('surfaces backend errors', async () => {
-    const { wrapper } = mountConsole({
+    const { wrapper, api } = mountConsole({
       consumeMessages: vi.fn(async () => {
         throw new Error('cluster down')
       }),
@@ -288,7 +349,7 @@ describe('SqlConsole', () => {
     const { wrapper } = mountConsole({
       consumeMessages: vi.fn(async () => messages),
     })
-    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders')
+    await setSql(wrapper, 'SELECT * FROM orders')
     await wrapper.find('[data-test="btn-run"]').trigger('click')
     await flushPromises()
     const toggle = wrapper.find('[data-test="export-toggle"]')
@@ -307,7 +368,7 @@ describe('SqlConsole', () => {
     const { wrapper } = mountConsole({
       consumeMessages: vi.fn(async () => messages),
     })
-    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders')
+    await setSql(wrapper, 'SELECT * FROM orders')
     await wrapper.find('[data-test="btn-run"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-test="export-toggle"]').trigger('click')
@@ -328,7 +389,7 @@ describe('SqlConsole', () => {
 
   it('does not record a query that fails to parse', async () => {
     const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').setValue('INSERT INTO t VALUES (1)')
+    await setSql(wrapper, 'INSERT INTO t VALUES (1)')
     await wrapper.find('[data-test="btn-run"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="sql-error"]').exists()).toBe(true)
@@ -348,10 +409,10 @@ describe('SqlConsole', () => {
 
   it('refills the editor and re-executes from a history item', async () => {
     const { wrapper, api } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 10')
+    await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
     await wrapper.find('[data-test="btn-run"]').trigger('click')
     await flushPromises()
-    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 20')
+    await setSql(wrapper, 'SELECT * FROM orders LIMIT 20')
     await wrapper.find('[data-test="btn-run"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-test="history-toggle"]').trigger('click')
@@ -359,16 +420,14 @@ describe('SqlConsole', () => {
     expect(items).toHaveLength(2)
     await items[1].trigger('click')
     await flushPromises()
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
-      'SELECT * FROM orders LIMIT 10',
-    )
+    expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 10')
     expect(api.consumeMessages).toHaveBeenCalledTimes(3)
     expect(api.consumeMessages).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 10 }))
   })
 
   it('saves the current sql as a named favorite via the inline form', async () => {
     const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').setValue("SELECT * FROM orders WHERE key = 'x'")
+    await setSql(wrapper, "SELECT * FROM orders WHERE key = 'x'")
     await wrapper.find('[data-test="history-toggle"]').trigger('click')
     const save = wrapper.find('[data-test="fav-save"]')
     expect(save.attributes('disabled')).toBeUndefined()
@@ -385,7 +444,7 @@ describe('SqlConsole', () => {
 
   it('disables saving while the editor is empty', async () => {
     const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').setValue('   ')
+    await setSql(wrapper, '   ')
     await wrapper.find('[data-test="history-toggle"]').trigger('click')
     expect(wrapper.find('[data-test="fav-save"]').attributes('disabled')).toBeDefined()
     expect(wrapper.find('[data-test="fav-name-input"]').exists()).toBe(false)
@@ -421,7 +480,7 @@ describe('SqlConsole', () => {
     const { wrapper, api } = mountConsole({
       consumeMessages: vi.fn(async () => [msg('k1', 'v1')]),
     })
-    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter', metaKey: true })
+    await cmContent(wrapper).trigger('keydown', { key: 'Enter', metaKey: true })
     await flushPromises()
     expect(api.consumeMessages).toHaveBeenCalledWith(expect.objectContaining({ topic: 'orders' }))
     expect(wrapper.findAll('[data-test="sql-row"]')).toHaveLength(1)
@@ -429,21 +488,21 @@ describe('SqlConsole', () => {
 
   it('runs the query on ctrl+enter as the non-mac fallback', async () => {
     const { wrapper, api } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter', ctrlKey: true })
+    await cmContent(wrapper).trigger('keydown', { key: 'Enter', ctrlKey: true })
     await flushPromises()
     expect(api.consumeMessages).toHaveBeenCalledWith(expect.objectContaining({ topic: 'orders' }))
   })
 
   it('does not run on a plain enter', async () => {
     const { wrapper, api } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter' })
+    await cmContent(wrapper).trigger('keydown', { key: 'Enter' })
     await flushPromises()
     expect(api.consumeMessages).not.toHaveBeenCalled()
   })
 
   it('does not run while an IME composition is in progress', async () => {
     const { wrapper, api } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').trigger('keydown', {
+    await cmContent(wrapper).trigger('keydown', {
       key: 'Enter',
       metaKey: true,
       isComposing: true,
@@ -454,7 +513,7 @@ describe('SqlConsole', () => {
 
   it('does not run while the legacy IME keyCode 229 is set', async () => {
     const { wrapper, api } = mountConsole()
-    await wrapper.find('[data-test="input-sql"]').trigger('keydown', {
+    await cmContent(wrapper).trigger('keydown', {
       key: 'Enter',
       metaKey: true,
       keyCode: 229,
@@ -469,15 +528,15 @@ describe('SqlConsole', () => {
       consumeMessages: vi.fn(() => new Promise<Message[]>((r) => { resolve = r })),
     })
     // 第一次 ⌘Enter 开始执行，promise 未决 → running 为 true。
-    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter', metaKey: true })
+    await cmContent(wrapper).trigger('keydown', { key: 'Enter', metaKey: true })
     // 运行中再按 ⌘Enter 不应重复 fetch / 重复记历史。
-    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter', metaKey: true })
+    await cmContent(wrapper).trigger('keydown', { key: 'Enter', metaKey: true })
     expect(api.consumeMessages).toHaveBeenCalledTimes(1)
     expect(useSqlHistoryStore().history).toEqual(['SELECT * FROM orders LIMIT 100'])
     // 运行结束后 ⌘Enter 恢复可用。
     resolve([msg('k1', 'v1')])
     await flushPromises()
-    await wrapper.find('[data-test="input-sql"]').trigger('keydown', { key: 'Enter', metaKey: true })
+    await cmContent(wrapper).trigger('keydown', { key: 'Enter', metaKey: true })
     await flushPromises()
     expect(api.consumeMessages).toHaveBeenCalledTimes(2)
   })
@@ -489,7 +548,7 @@ describe('SqlConsole', () => {
     const { wrapper, api } = mountConsole({
       consumeMessages: vi.fn(() => new Promise<Message[]>((r) => { resolve = r })),
     })
-    await wrapper.find('[data-test="input-sql"]').setValue('SELECT * FROM orders LIMIT 10')
+    await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
     await wrapper.find('[data-test="btn-run"]').trigger('click')
     await wrapper.find('[data-test="history-toggle"]').trigger('click')
     await wrapper.findAll('[data-test="history-item"]')[0].trigger('click')
@@ -512,13 +571,170 @@ describe('SqlConsole', () => {
     await wrapper.find('[data-test="history-toggle"]').trigger('click')
     await wrapper.find('[data-test="fav-item"]').trigger('click')
     expect(api.consumeMessages).toHaveBeenCalledTimes(1)
-    expect((wrapper.find('[data-test="input-sql"]').element as HTMLTextAreaElement).value).toBe(
-      'SELECT * FROM orders LIMIT 100',
-    )
+    expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 100')
     resolve([msg('k1', 'v1')])
     await flushPromises()
     await wrapper.find('[data-test="fav-item"]').trigger('click')
     await flushPromises()
     expect(api.consumeMessages).toHaveBeenCalledTimes(2)
+  })
+
+  // --- 查询库(保存的查询,按连接隔离) ----------------------------------------
+
+  describe('查询库', () => {
+    // PromptDialog Teleport 到 body;每个用例后清掉残留,避免串扰后续断言。
+    afterEach(() => {
+      document.body.innerHTML = ''
+    })
+
+    it('默认折叠,点击切换按钮打开面板并拉取当前连接的查询列表', async () => {
+      const { wrapper, api } = mountConsole({
+        listSavedQueries: vi.fn(async () => [saved('q1', '近一小时错误', 'SELECT * FROM errors')]),
+      })
+      expect(wrapper.find('[data-test="query-lib"]').exists()).toBe(false)
+      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+      await flushPromises()
+      expect(api.listSavedQueries).toHaveBeenCalledWith({ console_type: 'kafka-sql', connection_id: 'c' })
+      const panel = wrapper.find('[data-test="query-lib"]')
+      expect(panel.exists()).toBe(true)
+      expect(panel.text()).toContain('查询库')
+      expect(panel.text()).toContain('保存的查询按连接隔离')
+      const items = wrapper.findAll('[data-test^="query-item-"]')
+      expect(items).toHaveLength(1)
+      expect(items[0].text()).toContain('近一小时错误')
+      expect(items[0].text()).toContain(new Date(1700000100000).toLocaleString())
+      // 再次点击 → 折叠。
+      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+      expect(wrapper.find('[data-test="query-lib"]').exists()).toBe(false)
+    })
+
+    it('新 SQL → 保存 → 弹名称输入 → 确认 → saveSavedQuery payload 正确并刷新列表', async () => {
+      let calls = 0
+      const { wrapper, api } = mountConsole({
+        listSavedQueries: vi.fn(async () => (calls++ > 0 ? [saved('q1', '我的查询', 'SELECT * FROM orders LIMIT 10')] : [])),
+        saveSavedQuery: vi.fn(async (q: { name: string; content: string }) => saved('q1', q.name, q.content)),
+      })
+      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+      await flushPromises()
+      await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
+      await wrapper.find('[data-test="btn-query-save"]').trigger('click')
+      // 弹出名称输入对话框。
+      expect(promptEl('prompt-dialog')).not.toBeNull()
+      await confirmPrompt('我的查询')
+      expect(api.saveSavedQuery).toHaveBeenCalledWith({
+        name: '我的查询',
+        console_type: 'kafka-sql',
+        connection_id: 'c',
+        content: 'SELECT * FROM orders LIMIT 10',
+      })
+      // 保存后刷新列表 → 第 2 次 listSavedQueries,新条目出现且被标记为已载入。
+      expect(api.listSavedQueries).toHaveBeenCalledTimes(2)
+      expect(wrapper.findAll('[data-test^="query-item-"]')).toHaveLength(1)
+      expect(wrapper.find('[data-test="btn-query-delete"]').attributes('disabled')).toBeUndefined()
+    })
+
+    it('已载入条目 → 保存直接 updateSavedQuery(带 id)并刷新列表', async () => {
+      const { wrapper, api } = mountConsole({
+        listSavedQueries: vi.fn(async () => [saved('q1', '近一小时错误', 'SELECT * FROM errors')]),
+      })
+      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+      await flushPromises()
+      await wrapper.findAll('[data-test^="query-item-"]')[0].trigger('click')
+      await setSql(wrapper, 'SELECT * FROM errors LIMIT 5')
+      await wrapper.find('[data-test="btn-query-save"]').trigger('click')
+      await flushPromises()
+      expect(api.updateSavedQuery).toHaveBeenCalledWith({
+        id: 'q1',
+        name: '近一小时错误',
+        content: 'SELECT * FROM errors LIMIT 5',
+      })
+      expect(api.saveSavedQuery).not.toHaveBeenCalled()
+      // 直接更新不弹名称输入。
+      expect(promptEl('prompt-dialog')).toBeNull()
+      expect(api.listSavedQueries).toHaveBeenCalledTimes(2)
+    })
+
+    it('另存为强制弹出名称输入并新建条目', async () => {
+      const { wrapper, api } = mountConsole({
+        listSavedQueries: vi.fn(async () => [saved('q1', '近一小时错误', 'SELECT * FROM errors')]),
+        saveSavedQuery: vi.fn(async (q: { name: string; content: string }) => saved('q2', q.name, q.content)),
+      })
+      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+      await flushPromises()
+      await wrapper.findAll('[data-test^="query-item-"]')[0].trigger('click')
+      await setSql(wrapper, 'SELECT * FROM errors LIMIT 5')
+      await wrapper.find('[data-test="btn-query-save-as"]').trigger('click')
+      expect(promptEl('prompt-dialog')).not.toBeNull()
+      await confirmPrompt('精简版')
+      expect(api.saveSavedQuery).toHaveBeenCalledWith({
+        name: '精简版',
+        console_type: 'kafka-sql',
+        connection_id: 'c',
+        content: 'SELECT * FROM errors LIMIT 5',
+      })
+      expect(api.updateSavedQuery).not.toHaveBeenCalled()
+      expect(api.listSavedQueries).toHaveBeenCalledTimes(2)
+    })
+
+    it('单击条目把 SQL 载入编辑器并记住该条目', async () => {
+      const { wrapper, api } = mountConsole({
+        listSavedQueries: vi.fn(async () => [
+          saved('q1', '近一小时错误', 'SELECT * FROM errors'),
+          saved('q2', '订单采样', 'SELECT * FROM orders LIMIT 50'),
+        ]),
+      })
+      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+      await flushPromises()
+      // 未载入任何条目 → 删除不可用。
+      expect(wrapper.find('[data-test="btn-query-delete"]').attributes('disabled')).toBeDefined()
+      await wrapper.findAll('[data-test^="query-item-"]')[1].trigger('click')
+      expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 50')
+      expect(wrapper.find('[data-test="btn-query-delete"]').attributes('disabled')).toBeUndefined()
+      // 单击条目只载入不执行。
+      expect(api.consumeMessages).not.toHaveBeenCalled()
+    })
+
+    it('删除已载入条目 → deleteSavedQuery + 列表刷新 + 清空已载入状态', async () => {
+      const { wrapper, api } = mountConsole({
+        listSavedQueries: vi.fn(async () => [saved('q1', '近一小时错误', 'SELECT * FROM errors')]),
+      })
+      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+      await flushPromises()
+      await wrapper.findAll('[data-test^="query-item-"]')[0].trigger('click')
+      await wrapper.find('[data-test="btn-query-delete"]').trigger('click')
+      await flushPromises()
+      expect(api.deleteSavedQuery).toHaveBeenCalledWith({ id: 'q1' })
+      expect(api.listSavedQueries).toHaveBeenCalledTimes(2)
+      expect(wrapper.find('[data-test="btn-query-delete"]').attributes('disabled')).toBeDefined()
+    })
+
+    it('listSavedQueries 失败 → 错误显示在面板内', async () => {
+      const { wrapper } = mountConsole({
+        listSavedQueries: vi.fn(async () => {
+          throw new Error('查询库不可用')
+        }),
+      })
+      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-test="query-lib-error"]').text()).toContain('查询库不可用')
+    })
+
+    it('切换连接保持编辑器 SQL,仅刷新列表并清空已载入状态', async () => {
+      const { wrapper, api } = mountConsole({
+        listSavedQueries: vi.fn(async () => [saved('q1', '近一小时错误', 'SELECT * FROM errors')]),
+      })
+      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+      await flushPromises()
+      await wrapper.findAll('[data-test^="query-item-"]')[0].trigger('click')
+      expect(editorSql(wrapper)).toBe('SELECT * FROM errors')
+      await wrapper.setProps({ connectionId: 'other' })
+      await flushPromises()
+      // SQL 内容保持不动。
+      expect(editorSql(wrapper)).toBe('SELECT * FROM errors')
+      // 列表按新连接刷新。
+      expect(api.listSavedQueries).toHaveBeenLastCalledWith({ console_type: 'kafka-sql', connection_id: 'other' })
+      // 已载入状态清空 → 旧连接条目不能再被 update/删除。
+      expect(wrapper.find('[data-test="btn-query-delete"]').attributes('disabled')).toBeDefined()
+    })
   })
 })

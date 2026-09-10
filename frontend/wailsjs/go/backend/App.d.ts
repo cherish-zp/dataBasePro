@@ -9,6 +9,12 @@ export function AlterTopicPartitions(arg1:backend.AlterTopicPartitionsRequest):P
 
 export function ApplyUpdate(arg1:backend.ApplyUpdateRequest):Promise<void>;
 
+export function CHExecute(arg1:backend.CHExecuteRequest):Promise<Array<model.CHStatementResult>>;
+
+export function CHPageRows(arg1:backend.CHPageRowsRequest):Promise<model.CHPageRowsResult>;
+
+export function CHTruncateTable(arg1:backend.CHTruncateTableRequest):Promise<void>;
+
 export function CheckUpdate(arg1:backend.CheckUpdateRequest):Promise<backend.UpdateCheckResult>;
 
 export function Connect(arg1:string):Promise<void>;
@@ -24,6 +30,8 @@ export function CreateTopic(arg1:backend.CreateTopicRequest):Promise<void>;
 export function DeleteConnection(arg1:string):Promise<void>;
 
 export function DeleteConsumerGroup(arg1:backend.DeleteConsumerGroupRequest):Promise<void>;
+
+export function DeleteSavedQuery(arg1:backend.DeleteSavedQueryRequest):Promise<void>;
 
 export function DeleteTopic(arg1:backend.DeleteTopicRequest):Promise<void>;
 
@@ -51,11 +59,19 @@ export function ListActiveProducers(arg1:backend.ActiveMembersRequest):Promise<A
 
 export function ListAudit(arg1:number):Promise<Array<model.AuditEntry>>;
 
+export function ListCHDatabases(arg1:string):Promise<Array<string>>;
+
+export function ListCHTables(arg1:backend.CHTablesRequest):Promise<Array<model.CHTableInfo>>;
+
 export function ListConnections():Promise<Array<model.Connection>>;
 
 export function ListConsumerGroups(arg1:string):Promise<Array<model.ConsumerGroup>>;
 
+export function ListDrivers():Promise<Array<backend.DriverInfo>>;
+
 export function ListRedisDBs(arg1:string):Promise<Array<model.RedisDBInfo>>;
+
+export function ListSavedQueries(arg1:backend.ListSavedQueriesRequest):Promise<Array<model.SavedQuery>>;
 
 export function ListTopics(arg1:string):Promise<Array<model.Topic>>;
 
@@ -105,7 +121,11 @@ export function RedisZSetRemove(arg1:backend.RedisZSetMemberRequest):Promise<voi
 
 export function ResetConsumerGroupOffset(arg1:backend.ResetOffsetRequest):Promise<void>;
 
+export function SaveSavedQuery(arg1:backend.SaveSavedQueryRequest):Promise<model.SavedQuery>;
+
 export function SaveTextFile(arg1:backend.SaveTextFileRequest):Promise<string>;
+
+export function TestCHConnection(arg1:model.ClickHouseConfig):Promise<void>;
 
 export function TestConnection(arg1:model.KafkaConfig):Promise<void>;
 
@@ -114,3 +134,5 @@ export function TestRedisConnection(arg1:model.RedisConfig):Promise<void>;
 export function UpdateConnection(arg1:backend.UpdateConnectionRequest):Promise<model.Connection>;
 
 export function UpdateProgress():Promise<backend.UpdateProgressInfo>;
+
+export function UpdateSavedQuery(arg1:backend.UpdateSavedQueryRequest):Promise<model.SavedQuery>;

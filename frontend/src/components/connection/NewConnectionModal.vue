@@ -2,7 +2,7 @@
 import { reactive, ref, computed, watch } from 'vue'
 import { getApi } from '@/api/client'
 import { useConnectionsStore } from '@/store/connections'
-import type { Connection, KafkaConfig, RedisConfigShape, SASLConfig, TLSConfig } from '@/api/types'
+import type { Connection, CHConfigShape, KafkaConfig, RedisConfigShape, SASLConfig, TLSConfig } from '@/api/types'
 
 const props = defineProps<{ show: boolean; connection?: Connection | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -11,9 +11,16 @@ const store = useConnectionsStore()
 
 const SECURITY_PROTOCOLS = ['PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'] as const
 
+// 两段式第一段:数据库类型卡片。数据来自本地常量数组,后续可换驱动管理页数据。
+const TYPE_CARDS: { type: 'kafka' | 'redis' | 'clickhouse'; label: string; icon: string }[] = [
+  { type: 'kafka', label: 'Kafka', icon: '⚡' },
+  { type: 'redis', label: 'Redis', icon: '🧱' },
+  { type: 'clickhouse', label: 'ClickHouse', icon: '🗄️' },
+]
+
 const form = reactive({
   name: '',
-  connType: 'kafka' as 'kafka' | 'redis',
+  connType: 'kafka' as 'kafka' | 'redis' | 'clickhouse',
   addr: '',
   redisPassword: '',
   redisDB: 0,
@@ -29,11 +36,21 @@ const form = reactive({
   serviceName: 'kafka',
   caCert: '',
   insecureSkipVerify: false,
+  chHosts: '',
+  chUsername: 'default',
+  chPassword: '',
+  chDatabase: 'default',
+  chTLS: false,
+  chProtocol: 'native' as 'native' | 'http',
 })
 const testing = ref(false)
 const tested = ref(false)
 const testError = ref<string | null>(null)
 const saveError = ref<string | null>(null)
+// 密码可见性:三个密码框(kafka/redis/clickhouse)各自独立切换,默认密文。
+const showKafkaPassword = ref(false)
+const showRedisPassword = ref(false)
+const showChPassword = ref(false)
 
 const editing = computed(() => !!props.connection)
 
@@ -60,6 +77,18 @@ function fillFrom(conn: Connection): void {
     form.redisPassword = cfg.password ?? ''
     form.redisDB = cfg.db ?? 0
     form.redisTLS = !!cfg.tls
+    return
+  }
+  if (conn.type === 'clickhouse') {
+    const cfg = conn.config as CHConfigShape
+    form.connType = 'clickhouse'
+    form.chHosts = cfg.hosts.join(', ')
+    form.chUsername = cfg.username
+    form.chPassword = cfg.password ?? ''
+    form.chDatabase = cfg.database
+    form.chTLS = !!cfg.tls
+    // 旧配置缺省 protocol 时按 native 回填,与后端归一逻辑一致。
+    form.chProtocol = cfg.protocol ?? 'native'
     return
   }
   form.connType = 'kafka'
@@ -103,6 +132,7 @@ watch(
 )
 
 const brokers = computed(() => form.brokers.split(',').map((s) => s.trim()).filter(Boolean))
+const chHosts = computed(() => form.chHosts.split(',').map((s) => s.trim()).filter(Boolean))
 const sasl = computed<SASLConfig | undefined>(() => {
   if (!isSasl.value) return undefined
   if (isGssapi.value) {
@@ -121,13 +151,24 @@ const tls = computed<TLSConfig | undefined>(() => {
   if (!isTLS.value && !form.caCert && !form.insecureSkipVerify) return undefined
   return { enabled: isTLS.value, ca_cert: form.caCert, insecure_skip_verify: form.insecureSkipVerify }
 })
-const config = computed<KafkaConfig | RedisConfigShape>(() => {
+const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape>(() => {
   if (form.connType === 'redis') {
     return {
       addr: form.addr,
       password: form.redisPassword || undefined,
       db: form.redisDB,
       tls: form.redisTLS,
+    }
+  }
+  if (form.connType === 'clickhouse') {
+    return {
+      hosts: chHosts.value,
+      username: form.chUsername,
+      password: form.chPassword || undefined,
+      database: form.chDatabase,
+      tls: form.chTLS,
+      // 显式携带(而非缺省省略),保存后编辑回填与后端归一都更清晰。
+      protocol: form.chProtocol,
     }
   }
   return {
@@ -141,9 +182,10 @@ const config = computed<KafkaConfig | RedisConfigShape>(() => {
 const nameInvalid = computed(() => form.name.trim() === '')
 const brokersInvalid = computed(() => form.connType === 'kafka' && brokers.value.length === 0)
 const addrInvalid = computed(() => form.connType === 'redis' && form.addr.trim() === '')
-const saveInvalid = computed(() => nameInvalid.value || brokersInvalid.value || addrInvalid.value)
+const chHostsInvalid = computed(() => form.connType === 'clickhouse' && chHosts.value.length === 0)
+const saveInvalid = computed(() => nameInvalid.value || brokersInvalid.value || addrInvalid.value || chHostsInvalid.value)
 // 测试连接不需要名称,只校验目标地址。
-const targetInvalid = computed(() => brokersInvalid.value || addrInvalid.value)
+const targetInvalid = computed(() => brokersInvalid.value || addrInvalid.value || chHostsInvalid.value)
 
 async function runTest(): Promise<void> {
   if (targetInvalid.value) return
@@ -151,9 +193,12 @@ async function runTest(): Promise<void> {
   tested.value = false
   testError.value = null
   try {
-    // 按类型分派:redis 走 TestRedisConnection,kafka 走原 TestConnection。
+    // 按类型分派:redis 走 TestRedisConnection,clickhouse 走 TestCHConnection,
+    // kafka 走原 TestConnection。
     if (form.connType === 'redis') {
       await getApi().testRedisConnection(config.value as RedisConfigShape)
+    } else if (form.connType === 'clickhouse') {
+      await getApi().testCHConnection(config.value as CHConfigShape)
     } else {
       await store.testConnection(config.value as KafkaConfig)
     }
@@ -170,9 +215,11 @@ async function save(): Promise<void> {
   if (saveInvalid.value) return
   try {
     if (props.connection) {
-      await store.update(props.connection.id, { name: form.name.trim(), type: props.connection.type, config: config.value as KafkaConfig })
+      // type 用 form.connType(预填自连接类型):携带显式类型避免后端
+      // resolvedType 对空 type 默认 kafka,导致 redis/clickhouse 走错分支。
+      await store.update(props.connection.id, { name: form.name.trim(), type: form.connType, config: config.value })
     } else {
-      await store.create({ name: form.name.trim(), type: form.connType, config: config.value as KafkaConfig })
+      await store.create({ name: form.name.trim(), type: form.connType, config: config.value })
     }
     emit('close')
   } catch (e) {
@@ -200,10 +247,20 @@ function close(): void {
         </div>
         <div class="field">
           <label class="label">数据库类型</label>
-          <select v-model="form.connType" class="input" data-test="input-conn-type">
-            <option value="kafka">Kafka</option>
-            <option value="redis">Redis</option>
-          </select>
+          <div class="type-grid" data-test="type-grid">
+            <button
+              v-for="c in TYPE_CARDS"
+              :key="c.type"
+              type="button"
+              class="type-card"
+              :class="{ active: form.connType === c.type }"
+              :data-test="`type-card-${c.type}`"
+              @click="form.connType = c.type"
+            >
+              <span class="type-card-icon">{{ c.icon }}</span>
+              <span class="type-card-label">{{ c.label }}</span>
+            </button>
+          </div>
         </div>
         <template v-if="form.connType === 'redis'">
           <div class="field">
@@ -212,11 +269,82 @@ function close(): void {
           </div>
           <div class="field">
             <label class="label">密码(可选)</label>
-            <input v-model="form.redisPassword" type="password" data-test="input-redis-password" class="input" />
+            <div class="password-wrap">
+              <input v-model="form.redisPassword" :type="showRedisPassword ? 'text' : 'password'" data-test="input-redis-password" class="input password-input" />
+              <button
+                type="button"
+                class="eye-btn"
+                tabindex="-1"
+                data-test="toggle-password-redis"
+                :aria-label="showRedisPassword ? '隐藏密码' : '显示密码'"
+                @click="showRedisPassword = !showRedisPassword"
+              >
+                <svg v-if="showRedisPassword" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </div>
           </div>
           <div class="field">
             <label class="label">DB(集群模式固定 0)</label>
             <input v-model.number="form.redisDB" data-test="input-redis-db" class="input" type="number" min="0" />
+          </div>
+        </template>
+        <template v-else-if="form.connType === 'clickhouse'">
+          <div class="field">
+            <label class="label">节点地址 <span class="req">*</span>(多节点逗号分隔)</label>
+            <input v-model="form.chHosts" data-test="input-ch-hosts" class="input" placeholder="node1:9000,node2:9000" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            <span class="hint" data-test="ch-port-hint">原生协议默认端口 9000;HTTP 协议默认端口 8123</span>
+            <span v-if="chHostsInvalid" class="err">至少填写一个节点</span>
+          </div>
+          <div class="field">
+            <label class="label">协议</label>
+            <select v-model="form.chProtocol" class="input" data-test="input-ch-protocol">
+              <option value="native">Native(9000)</option>
+              <option value="http">HTTP(8123)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="label">用户名</label>
+            <input v-model="form.chUsername" data-test="input-ch-username" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label class="label">密码</label>
+            <div class="password-wrap">
+              <input v-model="form.chPassword" :type="showChPassword ? 'text' : 'password'" data-test="input-ch-password" class="input password-input" />
+              <button
+                type="button"
+                class="eye-btn"
+                tabindex="-1"
+                data-test="toggle-password-ch"
+                :aria-label="showChPassword ? '隐藏密码' : '显示密码'"
+                @click="showChPassword = !showChPassword"
+              >
+                <svg v-if="showChPassword" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label">数据库</label>
+            <input v-model="form.chDatabase" data-test="input-ch-database" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label class="checkbox-label">
+              <input v-model="form.chTLS" type="checkbox" data-test="input-ch-tls" />
+              启用 TLS
+            </label>
           </div>
         </template>
         <template v-else>
@@ -248,7 +376,26 @@ function close(): void {
             </div>
             <div class="field">
               <label class="label">密码</label>
-              <input v-model="form.password" type="password" data-test="input-password" class="input" />
+              <div class="password-wrap">
+                <input v-model="form.password" :type="showKafkaPassword ? 'text' : 'password'" data-test="input-password" class="input password-input" />
+                <button
+                  type="button"
+                  class="eye-btn"
+                  tabindex="-1"
+                  data-test="toggle-password-kafka"
+                  :aria-label="showKafkaPassword ? '隐藏密码' : '显示密码'"
+                  @click="showKafkaPassword = !showKafkaPassword"
+                >
+                  <svg v-if="showKafkaPassword" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </template>
           <template v-else>
@@ -324,6 +471,21 @@ function close(): void {
 .modal-body { padding: 16px 18px; }
 .field { margin-bottom: 12px; }
 .label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.type-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.type-card {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 10px 6px; cursor: pointer;
+  background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 10px;
+  color: var(--text); font-family: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.type-card:hover { border-color: var(--accent); background: var(--bg-elevated); }
+.type-card.active {
+  border-color: var(--accent); background: var(--bg-elevated);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.type-card-icon { font-size: 20px; line-height: 1; }
+.type-card-label { font-size: 12px; font-weight: 500; }
 .req { color: var(--danger); }
 .input {
   width: 100%; box-sizing: border-box;
@@ -332,8 +494,19 @@ function close(): void {
   transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 .input:focus { outline: none; border-color: var(--accent); background: var(--bg-elevated); box-shadow: 0 0 0 3px var(--accent-soft); }
+.password-wrap { position: relative; }
+/* 右侧留白加大,避免输入文字被眼睛图标遮挡。 */
+.password-input { padding-right: 34px; }
+.eye-btn {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; border: none; background: none;
+  color: var(--text-tertiary); cursor: pointer; border-radius: 5px;
+}
+.eye-btn:hover { color: var(--text); background: var(--bg-hover); }
 .textarea { resize: vertical; }
 .checkbox-label { font-size: 13px; color: var(--text); display: flex; gap: 6px; align-items: center; }
+.hint { display: block; font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }
 .err { color: var(--danger); font-size: 12px; }
 .msg { margin-top: 8px; font-size: 13px; border-radius: 7px; padding: 8px 10px; }
 .msg.ok { background: var(--ok-soft); color: var(--ok); }

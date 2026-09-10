@@ -1,6 +1,6 @@
 // Types mirroring the Go model package (snake_case JSON fields).
 
-export type ConnectionType = 'kafka' | 'mysql' | 'es' | 'redis'
+export type ConnectionType = 'kafka' | 'mysql' | 'es' | 'redis' | 'clickhouse'
 
 export interface SASLConfig {
   enabled: boolean
@@ -34,19 +34,23 @@ export interface Connection {
   id: string
   name: string
   type: ConnectionType
-  // 按类型多态:kafka → KafkaConfig,redis → RedisConfigShape
-  config: KafkaConfig | RedisConfigShape
+  // 按类型多态:kafka → KafkaConfig,redis → RedisConfigShape,
+  // clickhouse → CHConfigShape
+  config: KafkaConfig | RedisConfigShape | CHConfigShape
   created_at: number
   updated_at: number
 }
 
 // 编辑已有连接的请求（镜像后端 UpdateConnectionRequest）：config 与
 // CreateConnection 的 config 同形，id 定位已存在的连接；后端保持
-// id/created_at 不变并刷新 updated_at。
+// id/created_at 不变并刷新 updated_at。type 可选镜像后端 resolvedType
+// 的宽松语义（空则默认 kafka），但调用方必须显式携带原类型：否则编辑
+// redis/clickhouse 连接会被后端当成 kafka 处理（store 层已固定透传）。
 export interface UpdateConnectionRequest {
   id: string
   name: string
-  config: KafkaConfig
+  type?: ConnectionType
+  config: KafkaConfig | RedisConfigShape | CHConfigShape
 }
 
 export interface Partition {
@@ -510,4 +514,129 @@ export interface RedisZSetRemoveRequest {
   db: number
   key: string
   member: string
+}
+
+// --- ClickHouse(镜像 backend/model/clickhouse.go) ---
+
+// 多节点部署:hosts 为原生 TCP 端口地址列表(如 node1:9000),与 Redis 的
+// 单字符串 Addr 严格区分。password 缺省表示无密码。protocol 指定连接协议:
+// native 为原生 TCP(默认端口 9000),http 为 HTTP 接口(默认端口 8123);
+// 旧配置缺省时后端按 native 处理(用户把 8123 填进 native 会报
+// handshake unexpected packet,应改选 http)。
+export interface CHConfigShape {
+  hosts: string[]
+  username: string
+  password?: string
+  database: string
+  tls?: boolean
+  protocol?: 'native' | 'http'
+}
+
+export interface CHListTablesRequest {
+  connection_id: string
+  database: string
+  // true 时包含 system.* 库;树/浏览器默认 false(后端同样默认过滤)。
+  show_system: boolean
+}
+
+// 一张表:engine 为 system.tables.engine,total_rows 为近似行数(不可用时 0)。
+export interface CHTableInfo {
+  name: string
+  engine: string
+  total_rows: number
+}
+
+// 列头:列名 + ClickHouse 类型(如 UInt32 / String / Nullable(Int64));
+// comment 为列注释(system.columns.comment),wire 形状 {name, type, comment?},
+// 后端旧版本可能不返回,前端对空 comment 不渲染描述。
+export interface CHColumn {
+  name: string
+  type: string
+  comment?: string
+}
+
+export interface CHPageRowsRequest {
+  connection_id: string
+  database: string
+  table: string
+  // 用户输入的原生 WHERE 片段(不带 WHERE 关键字),空省略。
+  where?: string
+  order_by?: string
+  asc?: boolean
+  limit: number
+  offset: number
+}
+
+// rows 单元格为 string 或 null(NULL);后端把非字符串列格式化为字符串。
+export interface CHPageRowsResult {
+  columns: CHColumn[]
+  rows: (string | null)[][]
+  engine: string
+  total_rows: number
+}
+
+export interface CHTruncateTableRequest {
+  connection_id: string
+  database: string
+  table: string
+  // Distributed 引擎时为 true,后端拼 ON CLUSTER。
+  on_cluster?: boolean
+}
+
+export interface CHExecuteRequest {
+  connection_id: string
+  sql: string
+}
+
+// 多语句逐条返回:每条一条结果,失败语句带 error 文本;成功语句带列与行。
+export interface CHStatementResult {
+  sql: string
+  duration_ms: number
+  error?: string
+  columns?: CHColumn[]
+  rows?: (string | null)[][]
+}
+
+// 驱动管理页一行(镜像 model.DriverInfo):驱动为内置原生实现,
+// 无需外部路径。
+export interface DriverInfo {
+  name: string
+  library: string
+  version: string
+  default_port: number
+  description: string
+}
+
+// --- SQL 查询库(保存的查询,镜像 backend/model.SavedQuery) ---
+
+export interface SavedQuery {
+  id: string
+  name: string
+  console_type: string // 'kafka-sql' | 'ch-sql'(后续扩展)
+  connection_id: string
+  content: string
+  created_at: number
+  updated_at: number
+}
+
+export interface ListSavedQueriesRequest {
+  console_type?: string
+  connection_id?: string
+}
+
+export interface SaveSavedQueryRequest {
+  name: string
+  console_type: string
+  connection_id: string
+  content: string
+}
+
+export interface UpdateSavedQueryRequest {
+  id: string
+  name: string
+  content: string
+}
+
+export interface DeleteSavedQueryRequest {
+  id: string
 }

@@ -11,6 +11,8 @@ import SqlConsole from '@/components/kafka/SqlConsole.vue'
 import GlobalLagView from '@/components/kafka/GlobalLagView.vue'
 import RedisKeysView from '@/components/kafka/RedisKeysView.vue'
 import ClusterHealthPanel from '@/components/kafka/ClusterHealthPanel.vue'
+import CHTableBrowser from '@/components/kafka/CHTableBrowser.vue'
+import CHSqlConsole from '@/components/kafka/CHSqlConsole.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import UpdateDialog from './UpdateDialog.vue'
 import StatusBar from '@/components/layout/StatusBar.vue'
@@ -99,6 +101,16 @@ function openRedisKeys(connectionId: string, db: number): void {
   tabs.openRedisKeys(connectionId, db)
 }
 
+// ClickHouse 表浏览器:双击树上的表节点打开/聚焦对应 tab。
+function openCHTable(connectionId: string, database: string, table: string): void {
+  tabs.openCHTable(connectionId, database, table)
+}
+
+// 表浏览器内「在 SQL 控制台打开」:打开该连接的 CH SQL 控制台 tab。
+function openCHSql(connectionId: string): void {
+  tabs.openCHSql(connectionId)
+}
+
 function openLag(connectionId: string): void {
   tabs.openLag(connectionId)
 }
@@ -129,9 +141,10 @@ function openSqlTab(): void {
 }
 
 // refreshActive bumps the unified refresh counter for the active tab. sql
-// consoles own their editor state and are excluded from unified refresh.
+// consoles (Kafka and ClickHouse) own their editor state and are excluded
+// from unified refresh.
 function refreshActive(): void {
-  if (!active.value || active.value.kind === 'sql') return
+  if (!active.value || active.value.kind === 'sql' || active.value.kind === 'ch-sql') return
   refreshRequest.value++
 }
 
@@ -269,7 +282,7 @@ function onTabDragEnd(): void {
         class="btn ghost"
         type="button"
         data-test="btn-refresh-active"
-        :disabled="!active || active.kind === 'sql'"
+        :disabled="!active || active.kind === 'sql' || active.kind === 'ch-sql'"
         @click="refreshActive"
       >
         刷新
@@ -298,6 +311,7 @@ function onTabDragEnd(): void {
           @open-lag="openLag"
           @open-redis-keys="openRedisKeys"
           @open-health="openHealth"
+          @open-ch-table="openCHTable"
           @delete="removeConnection"
           @edit-connection="editConnection"
           @new="emit('new')"
@@ -378,6 +392,18 @@ function onTabDragEnd(): void {
           <template v-else-if="active.kind === 'health'">
             <ClusterHealthPanel :connection-id="active.connectionId" :refresh-request="refreshRequest" />
           </template>
+          <template v-else-if="active.kind === 'ch-table'">
+            <CHTableBrowser
+              :key="active.id"
+              :connection-id="active.connectionId"
+              :database="active.database ?? ''"
+              :table="active.table ?? ''"
+              @open-ch-sql="openCHSql(active.connectionId)"
+            />
+          </template>
+          <template v-else-if="active.kind === 'ch-sql'">
+            <CHSqlConsole :key="active.id" :connection-id="active.connectionId" />
+          </template>
         </div>
       </main>
     </div>
@@ -392,7 +418,8 @@ function onTabDragEnd(): void {
       :partitions="activeTopic.partitions ?? []"
       @close="showProducer = false"
     />
-    <SettingsPanel :show="showSettings" @close="showSettings = false" />
+    <!-- 设置面板「关于」页点检查更新:沿用已有 UpdateDialog,避免重复弹窗。 -->
+    <SettingsPanel :show="showSettings" @close="showSettings = false" @check-update="showUpdate = true" />
     <UpdateDialog :show="showUpdate" @close="showUpdate = false" />
     <CommandPalette ref="paletteRef" />
 
@@ -417,7 +444,7 @@ function onTabDragEnd(): void {
         </button>
         <button class="context-item" type="button" data-test="context-close-all" @click="contextCloseAll">关闭全部</button>
         <button
-          v-if="contextTab.kind !== 'sql'"
+          v-if="contextTab.kind !== 'sql' && contextTab.kind !== 'ch-sql'"
           class="context-item"
           type="button"
           data-test="context-refresh"
