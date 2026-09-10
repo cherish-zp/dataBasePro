@@ -2,12 +2,13 @@
 import { computed, onMounted, ref, unref, watch } from 'vue'
 import { getApi } from '@/api/client'
 import type { CHStatementResult } from '@/api/types'
-import { CSV_MIME, JSONL_MIME, exportCsv, exportJsonl, saveFile, type ExportColumn } from '@/utils/export'
 import { parseCHSingleTableSelect } from '@/utils/chSql'
+import { splitSqlStatements } from '@/utils/sqlSplit'
 import { useCHCellUpdate } from '@/composables/chCellUpdate'
 import { useQueryFiles } from '@/composables/queryFiles'
 import { useTabsStore } from '@/store/tabs'
 import SqlEditor from '@/components/common/SqlEditor.vue'
+import SqlResultCard from '@/components/common/SqlResultCard.vue'
 import PromptDialog from '@/components/common/PromptDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
@@ -37,31 +38,194 @@ async function loadTables(): Promise<void> {
   }
 }
 
-// 运行:编辑器有选区 → 仅执行选中文本;否则执行整段(多语句由后端拆分)。
-async function run(): Promise<void> {
+// --- 语句状态标记 -------------------------------------------------------------
+// markedStatements 保存最近一次运行的语句级状态(运行中/成功/失败);编辑器
+// 内容变化后按语句文本(trim 后相等)对 split 结果重新定位,匹配不到的丢弃。
+interface MarkedStatement {
+  text: string
+  status: 'ok' | 'fail' | 'running'
+  detail?: string
+}
+const markedStatements = ref<MarkedStatement[]>([])
+
+const statementMarks = computed(() => {
+  const segs = splitSqlStatements(sql.value)
+  const used = new Set<number>()
+  const marks: { from: number; status: 'ok' | 'fail' | 'running'; detail?: string }[] = []
+  for (const m of markedStatements.value) {
+    const idx = segs.findIndex((s, i) => !used.has(i) && s.text.trim() === m.text.trim())
+    if (idx === -1) continue
+    used.add(idx)
+    marks.push({ from: segs[idx].from, status: m.status, detail: m.detail })
+  }
+  return marks
+})
+
+// 返回结果与发起文本按顺序映射成语句标记:耗时来自 duration_ms,错误用原文。
+function marksFromResults(texts: string[], res: CHStatementResult[]): MarkedStatement[] {
+  return res.map((r, i): MarkedStatement => ({
+    text: texts[i] ?? r.sql,
+    status: r.error ? 'fail' : 'ok',
+    detail: r.error ?? `${r.duration_ms} ms`,
+  }))
+}
+
+// --- 光标位置与「执行当前语句」 ------------------------------------------------
+// SqlEditor 的 cursor emit(1 基行列)记录最新光标;⌘Enter 时把行列换算成文本
+// offset,在 split 结果中定位光标所在语句段(段间空白归属前一段)。
+const cursorPos = ref({ line: 1, col: 1 })
+
+function onCursor(pos: { line: number; col: number }): void {
+  cursorPos.value = { line: pos.line, col: pos.col }
+}
+
+function cursorOffset(text: string, pos: { line: number; col: number }): number {
+  const lines = text.split('\n')
+  let offset = 0
+  for (let i = 0; i < Math.min(pos.line - 1, lines.length); i++) offset += lines[i].length + 1
+  const lineText = lines[Math.min(Math.max(pos.line - 1, 0), lines.length - 1)] ?? ''
+  return offset + Math.min(Math.max(pos.col - 1, 0), lineText.length)
+}
+
+function statementAtCursor(): string | null {
+  const segs = splitSqlStatements(sql.value)
+  if (segs.length === 0) return null
+  const offset = cursorOffset(sql.value, cursorPos.value)
+  const seg =
+    segs.find((s) => offset >= s.from && offset <= s.to) ??
+    [...segs].reverse().find((s) => s.to <= offset)
+  return (seg ?? segs[0]).text
+}
+
+// 单语句执行:只发该段文本,结果数组替换为该条结果;发起即置 running 标记。
+async function runSingle(text: string): Promise<void> {
   if (running.value) return
-  const selection = editor.value?.getSelection() ?? ''
-  const script = selection.trim() !== '' ? selection : sql.value
-  if (!script.trim()) return
+  if (!text.trim()) return
   running.value = true
   error.value = null
-  results.value = []
+  resultsOpen.value = true
+  markedStatements.value = [{ text, status: 'running' }]
   try {
-    results.value = await getApi().chExecute({
-      connection_id: props.connectionId,
-      sql: script,
-    })
+    const res = await getApi().chExecute({ connection_id: props.connectionId, sql: text })
+    results.value = res
+    markedStatements.value = marksFromResults([text], res)
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    const msg = e instanceof Error ? e.message : String(e)
+    error.value = msg
+    markedStatements.value = [{ text, status: 'fail', detail: msg }]
   } finally {
     running.value = false
   }
 }
 
+// ⌘Enter:选区非空仍执行选中文本(沿用 getSelection 优先);否则执行光标所在语句。
+async function runCurrentStatement(): Promise<void> {
+  const selection = editor.value?.getSelection() ?? ''
+  if (selection.trim() !== '') {
+    await runSingle(selection)
+    return
+  }
+  const text = statementAtCursor()
+  if (text === null || !text.trim()) return
+  await runSingle(text)
+}
+
+// 运行全部:整段脚本交给后端拆分,标记按 split 段与返回结果顺序映射。
+async function runAll(): Promise<void> {
+  if (running.value) return
+  const script = sql.value
+  if (!script.trim()) return
+  running.value = true
+  error.value = null
+  resultsOpen.value = true
+  const segs = splitSqlStatements(script)
+  markedStatements.value = segs.map((s): MarkedStatement => ({ text: s.text, status: 'running' }))
+  try {
+    const res = await getApi().chExecute({ connection_id: props.connectionId, sql: script })
+    results.value = res
+    markedStatements.value = res.map((r, i): MarkedStatement => ({
+      text: segs[i]?.text ?? r.sql,
+      status: r.error ? 'fail' : 'ok',
+      detail: r.error ?? `${r.duration_ms} ms`,
+    }))
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    error.value = msg
+    markedStatements.value = segs.map((s): MarkedStatement => ({ text: s.text, status: 'fail', detail: msg }))
+  } finally {
+    running.value = false
+  }
+}
+
+// SqlEditor 主动请求执行某条语句(如编辑器内置快捷键)——走单语句逻辑。
+function onRunStatement(text: string): void {
+  void runSingle(text)
+}
+
+// --- IDE 式布局:可拖拽结果区 ---------------------------------------------------
+// 结果区仅打开时渲染;高度 160..窗口 80% 可拖拽,双击分隔条恢复 50/50,
+// 持久化到 localStorage(两控制台共用同一 key)。
+const RESULTS_HEIGHT_KEY = 'dbclient-sql-results-height'
+const MIN_RESULTS_HEIGHT = 160
+const DEFAULT_RESULTS_HEIGHT = 320
+
+const resultsOpen = ref(false)
+const rootRef = ref<HTMLElement | null>(null)
+
+function maxResultsHeight(): number {
+  return Math.max(MIN_RESULTS_HEIGHT, Math.floor(window.innerHeight * 0.8))
+}
+
+function clampResultsHeight(h: number): number {
+  return Math.min(maxResultsHeight(), Math.max(MIN_RESULTS_HEIGHT, h))
+}
+
+function readStoredResultsHeight(): number {
+  const v = Number(localStorage.getItem(RESULTS_HEIGHT_KEY))
+  if (!Number.isFinite(v) || v <= 0) return DEFAULT_RESULTS_HEIGHT
+  return clampResultsHeight(Math.round(v))
+}
+
+const resultsHeight = ref(readStoredResultsHeight())
+const resultsResizing = ref(false)
+let resultsDragStartY = 0
+let resultsDragStartHeight = 0
+
+function startResultsResize(e: MouseEvent): void {
+  resultsResizing.value = true
+  resultsDragStartY = e.clientY
+  resultsDragStartHeight = resultsHeight.value
+  window.addEventListener('mousemove', onResultsResize)
+  window.addEventListener('mouseup', endResultsResize)
+}
+
+function onResultsResize(e: MouseEvent): void {
+  // 结果区在下方:向上拖(dy 为负)增高。
+  resultsHeight.value = clampResultsHeight(resultsDragStartHeight - (e.clientY - resultsDragStartY))
+}
+
+function endResultsResize(): void {
+  resultsResizing.value = false
+  localStorage.setItem(RESULTS_HEIGHT_KEY, String(resultsHeight.value))
+  window.removeEventListener('mousemove', onResultsResize)
+  window.removeEventListener('mouseup', endResultsResize)
+}
+
+// 双击分隔条:恢复上下 50/50(容器无布局高度时按窗口高折半)。
+function resetResultsHeight(): void {
+  const total = rootRef.value?.clientHeight || window.innerHeight
+  resultsHeight.value = clampResultsHeight(Math.round(total / 2))
+  localStorage.setItem(RESULTS_HEIGHT_KEY, String(resultsHeight.value))
+}
+
+// --- 状态栏:光标行列 / 语句条数 / 最近耗时 ------------------------------------
+const statementCount = computed(() => splitSqlStatements(sql.value).length)
+const lastDurationMs = computed(() => results.value.reduce((sum, r) => sum + (r.duration_ms ?? 0), 0))
+
 // --- 查询结果行内编辑(仅单表 SELECT 结果可编辑) -----------------------------
-// 结果若来自单表 SELECT(允许 WHERE/ORDER BY/LIMIT),双击单元格进入行内
-// 编辑;回车后经 chCellUpdate composable 预览(确认弹窗展示 ALTER 语句全文
-// 与匹配行数),确认执行成功后重新执行该条语句刷新结果。复杂查询只读。
+// 结果若来自单表 SELECT(允许 WHERE/ORDER BY/LIMIT),卡片发出 cell-dblclick
+// 进入行内编辑;edit-commit 后经 chCellUpdate composable 预览(确认弹窗展示
+// ALTER 语句全文与匹配行数),确认执行成功后重新执行该条语句刷新结果。
 const cu = useCHCellUpdate()
 const cuOpen = computed(() => unref(cu.confirmOpen))
 const cuStatement = computed(() => unref(cu.statement) ?? '')
@@ -73,7 +237,7 @@ const editableResults = computed<boolean[]>(() =>
   results.value.map((r) => !r.error && parseCHSingleTableSelect(r.sql) !== null),
 )
 
-// 行内编辑状态:目标(结果索引/行索引/列索引)+ 草稿;null 表示未在编辑。
+// 行内编辑状态:目标(结果索引/行索引/列索引)+ 初始草稿;null 表示未在编辑。
 interface CellEdit {
   stmtIndex: number
   rowIndex: number
@@ -82,12 +246,14 @@ interface CellEdit {
 }
 const cellEdit = ref<CellEdit | null>(null)
 
-function isEditing(stmtIndex: number, rowIndex: number, colIndex: number): boolean {
+// 卡片的 editing prop:仅当该卡对应单元格处于编辑态时非空。
+function editingFor(stmtIndex: number): { row: number; col: number; draft: string } | null {
   const e = cellEdit.value
-  return !!e && e.stmtIndex === stmtIndex && e.rowIndex === rowIndex && e.colIndex === colIndex
+  if (!e || e.stmtIndex !== stmtIndex) return null
+  return { row: e.rowIndex, col: e.colIndex, draft: e.draft }
 }
 
-// 进入编辑:原始值取结果行内存;NULL → 空输入框。运行中禁止进入编辑。
+// 进入编辑:原始值取结果行内存(NULL→空草稿)。运行中或不可编辑结果忽略。
 function startCellEdit(stmtIndex: number, rowIndex: number, colIndex: number): void {
   if (running.value || !editableResults.value[stmtIndex]) return
   const row = results.value[stmtIndex]?.rows?.[rowIndex]
@@ -100,15 +266,12 @@ function startCellEdit(stmtIndex: number, rowIndex: number, colIndex: number): v
   }
 }
 
-// 行内输入框渲染后自动聚焦(函数 ref 挂载时机即焦点时机)。
-function setCellInputRef(el: unknown): void {
-  const input = el as HTMLInputElement | null
-  if (input && typeof input.focus === 'function') input.focus()
-}
-
 function cancelCellEdit(): void {
   cellEdit.value = null
 }
+
+// 卡片事件适配:edit-commit 的 value 契约为 string|null(实现恒为字符串),
+// 统一归一化为空串(空输入按 NULL 写入)。
 
 // where 条件 = 整行所有列的原值(列名/类型取结果列定义,NULL 列 value=null)。
 function buildWhere(r: CHStatementResult, rowIndex: number): { column: string; type: string; value: string | null }[] {
@@ -117,20 +280,20 @@ function buildWhere(r: CHStatementResult, rowIndex: number): { column: string; t
 }
 
 // 回车提交:构造 set(空输入→null)与整行 where,交给 composable 预览并弹确认。
-function commitCellEdit(): void {
+function commitCellEdit(stmtIndex: number, value: string): void {
   const e = cellEdit.value
-  if (!e) return
-  const r = results.value[e.stmtIndex]
+  if (!e || e.stmtIndex !== stmtIndex) return
+  const r = results.value[stmtIndex]
   const parsed = r ? parseCHSingleTableSelect(r.sql) : null
   const col = r?.columns?.[e.colIndex]
   cellEdit.value = null
   if (!r || !parsed || !col) return
-  pendingStmtIndex = e.stmtIndex
+  pendingStmtIndex = stmtIndex
   void cu.request({
     connection_id: props.connectionId,
     database: parsed.database,
     table: parsed.table,
-    set: { column: col.name, type: col.type, value: e.draft === '' ? null : e.draft },
+    set: { column: col.name, type: col.type, value: value === '' ? null : value },
     where: buildWhere(r, e.rowIndex),
   })
 }
@@ -161,6 +324,12 @@ async function confirmCellUpdate(): Promise<void> {
     if (fresh.length > 0) {
       // 仅替换该索引的结果,其他语句结果保持不变。
       results.value = results.value.map((old, i) => (i === idx ? fresh[0] : old))
+      // 刷新同样更新该语句的标记(新耗时或错误)。
+      const m = markedStatements.value.find((x) => x.text.trim() === target.sql.trim())
+      if (m) {
+        m.status = fresh[0].error ? 'fail' : 'ok'
+        m.detail = fresh[0].error ?? `${fresh[0].duration_ms} ms`
+      }
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
@@ -213,9 +382,10 @@ watch(
   { immediate: true },
 )
 
-// ⌘S / Ctrl+S 保存;⌘Enter / Ctrl+Enter 运行(与 Kafka SQL 控制台一致,忽略
-// IME 组合中的按键)。SqlEditor 不绑定这些组合键,事件从 CodeMirror
-// contentDOM 冒泡到外层容器在此接住;与运行按钮一样遵循「选中优先」。
+// ⌘S / Ctrl+S 保存;⌘Enter / Ctrl+Enter 执行当前语句;⌘Shift+Enter 运行全部
+// (与 Kafka/MySQL SQL 控制台一致,忽略 IME 组合中的按键)。事件从 CodeMirror
+// contentDOM 冒泡到外层容器在此接住;编辑器自带的 run-statement emit 也接入,
+// 双入口由 running 守卫去重。
 function onEditorKeydown(e: KeyboardEvent): void {
   if (e.isComposing || e.keyCode === 229) return
   if (running.value) return
@@ -224,9 +394,14 @@ function onEditorKeydown(e: KeyboardEvent): void {
     qf.requestSave()
     return
   }
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'Enter') {
+    e.preventDefault()
+    void runAll()
+    return
+  }
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
     e.preventDefault()
-    void run()
+    void runCurrentStatement()
   }
 }
 
@@ -279,100 +454,79 @@ defineExpose({
 onMounted(() => {
   void loadTables()
 })
-
-// 导出第 i 条语句的结果。行是数组,列头来自后端返回的 columns;文件名
-// ch-result-<i> 与语句顺序一一对应。
-type Row = (string | null)[]
-
-function exportResult(r: CHStatementResult, index: number, format: 'csv' | 'jsonl'): void {
-  const cols: ExportColumn<Row>[] = (r.columns ?? []).map((c, i) => ({
-    label: c.name,
-    value: (row) => row[i] ?? '',
-  }))
-  const name = `ch-result-${index}`
-  if (format === 'csv') {
-    void saveFile(name, exportCsv(r.rows ?? [], cols), CSV_MIME)
-  } else {
-    void saveFile(name, exportJsonl(r.rows ?? []), JSONL_MIME)
-  }
-}
 </script>
 
 <template>
-  <div class="ch-sql" data-test="ch-sql-console">
-    <div class="toolbar">
-      <label class="sql-field grow" @keydown="onEditorKeydown">
-        <span class="label">SQL(支持多语句,以分号分隔;选中运行只执行选中文本;⌘S 保存)</span>
+  <div ref="rootRef" class="ch-sql" data-test="ch-sql-console">
+    <div class="editor-pane">
+      <div class="command-bar">
+        <button class="btn primary" type="button" data-test="btn-ch-run" :disabled="running || !sql.trim()" @click="runAll">
+          {{ running ? '运行中…' : '运行全部' }}
+        </button>
+        <span class="toolbar-hint">⌘Enter 执行当前语句 · ⌘Shift+Enter 运行全部 · ⌘S 保存</span>
+      </div>
+      <div class="editor-wrap" @keydown="onEditorKeydown">
         <SqlEditor
           ref="editor"
           v-model="sql"
           :tables="tables"
-          height="260px"
+          height="100%"
+          statement-gutter
+          :statement-marks="statementMarks"
+          highlight-cursor-statement
           data-test="ch-sql-input"
           placeholder="SELECT database, table FROM system.tables WHERE database = 'default'"
+          @run-statement="onRunStatement"
+          @cursor="onCursor"
         />
-      </label>
-      <button class="btn primary" type="button" data-test="btn-ch-run" :disabled="running || !sql.trim()" @click="run">
-        {{ running ? '运行中…' : '运行' }}
-      </button>
+      </div>
+
+      <!-- 运行错误与单元格更新失败(cu.error)共用错误展示区;语句级错误由
+           SqlResultCard 的错误卡渲染。 -->
+      <div v-if="error || cuError" class="msg err" data-test="ch-sql-error">{{ error || cuError }}</div>
     </div>
 
-    <!-- 运行错误与单元格更新失败(cu.error)共用错误展示区。 -->
-    <div v-if="error || cuError" class="msg err" data-test="ch-sql-error">{{ error || cuError }}</div>
-
-    <div class="results" data-test="ch-results">
-      <div v-if="results.length === 0 && !error" class="empty" data-test="ch-results-empty">运行后在此查看每条语句的结果</div>
-      <div v-for="(r, i) in results" :key="i" class="stmt-card" data-test="ch-stmt-card">
-        <div class="stmt-head">
-          <span class="mono stmt-sql" data-test="ch-stmt-sql">{{ r.sql }}</span>
-          <span class="stmt-ms" data-test="ch-stmt-ms">{{ r.duration_ms }} ms</span>
-          <span class="spacer"></span>
-          <template v-if="!r.error && (r.rows?.length ?? 0) > 0">
-            <button class="btn ghost small" type="button" data-test="btn-ch-export-csv" @click="exportResult(r, i, 'csv')">CSV</button>
-            <button class="btn ghost small" type="button" data-test="btn-ch-export-jsonl" @click="exportResult(r, i, 'jsonl')">JSONL</button>
-          </template>
+    <!-- 结果区:仅打开时渲染,高度可拖拽(160..窗口 80%),双击分隔条恢复 50/50。 -->
+    <template v-if="resultsOpen">
+      <div
+        class="splitter"
+        :class="{ active: resultsResizing }"
+        data-test="console-splitter"
+        title="拖拽调整结果区高度,双击恢复 50/50"
+        @mousedown.prevent="startResultsResize"
+        @dblclick="resetResultsHeight"
+      ></div>
+      <div class="results-pane" data-test="results-pane" :style="{ height: `${resultsHeight}px` }">
+        <div class="results-head">
+          <span class="results-title">结果</span>
+          <button class="results-close" type="button" data-test="results-close" title="关闭结果区" @click="resultsOpen = false">×</button>
         </div>
-        <div v-if="r.error" class="msg err stmt-error" data-test="ch-stmt-error">{{ r.error }}</div>
-        <div v-else class="table-wrap">
-          <table class="table" data-test="ch-stmt-grid">
-            <thead>
-              <tr>
-                <th v-for="c in r.columns ?? []" :key="c.name">
-                  {{ c.name }}
-                  <span class="col-type">{{ c.type }}</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(row, ri) in r.rows ?? []" :key="ri" data-test="ch-stmt-row">
-                <td
-                  v-for="(cell, ci) in row"
-                  :key="ci"
-                  class="mono"
-                  :class="{ 'cell-null': cell === null }"
-                  :title="editableResults[i] ? '双击编辑' : '仅单表查询结果可编辑'"
-                  @dblclick="startCellEdit(i, ri, ci)"
-                >
-                  <input
-                    v-if="cellEdit && isEditing(i, ri, ci)"
-                    :ref="setCellInputRef"
-                    v-model="cellEdit.draft"
-                    class="cell-editor"
-                    data-test="ch-cell-editor"
-                    @keydown.enter.prevent="commitCellEdit"
-                    @keydown.esc.prevent="cancelCellEdit"
-                    @blur="cancelCellEdit"
-                  />
-                  <template v-else>{{ cell ?? 'NULL' }}</template>
-                </td>
-              </tr>
-              <tr v-if="(r.rows?.length ?? 0) === 0">
-                <td :colspan="(r.columns?.length ?? 1)" class="empty">无结果行</td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="results-body" data-test="results-body">
+          <div v-if="results.length === 0" class="empty" data-test="results-empty">⌘Enter 执行当前语句 · ⌘Shift+Enter 运行全部</div>
+          <SqlResultCard
+            v-for="(r, i) in results"
+            :key="i"
+            :statement="r.sql"
+            :duration-ms="r.duration_ms"
+            :columns="r.columns ?? []"
+            :rows="r.rows ?? []"
+            :insert-target="parseCHSingleTableSelect(r.sql)"
+            :export-name="`ch-result-${i}`"
+            :error="r.error ?? null"
+            :editing="editingFor(i)"
+            @cell-dblclick="(row, col) => startCellEdit(i, row, col)"
+            @edit-commit="(value) => commitCellEdit(i, value ?? '')"
+            @edit-cancel="cancelCellEdit"
+          />
         </div>
       </div>
+    </template>
+
+    <!-- 状态栏:光标行列 / 语句条数 / 最近耗时。 -->
+    <div class="statusbar" data-test="console-statusbar">
+      <span data-test="statusbar-cursor">行 {{ cursorPos.line }} : 列 {{ cursorPos.col }}</span>
+      <span data-test="statusbar-statements">语句 {{ statementCount }} 条</span>
+      <span data-test="statusbar-duration">最近耗时 {{ lastDurationMs }} ms</span>
     </div>
 
     <!-- 查询文件相关弹窗:名称输入(保存/另存为)、覆盖确认、删除确认由
@@ -429,44 +583,41 @@ function exportResult(r: CHStatementResult, index: number, format: 'csv' | 'json
   color: var(--text); font-family: var(--font);
 }
 
-.toolbar { display: flex; align-items: flex-end; gap: 12px; }
-.sql-field { display: flex; flex-direction: column; gap: 5px; }
-.sql-field.grow { flex: 1; min-width: 0; }
-.label { font-size: 11px; font-weight: 600; color: var(--text-secondary); letter-spacing: 0.02em; }
-.mono { font-family: var(--mono); }
+/* 编辑器区:占据结果区之外的剩余空间。 */
+.editor-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.command-bar { flex: none; display: flex; align-items: center; gap: 10px; padding-bottom: 8px; }
+.toolbar-hint { font-size: 12px; color: var(--text-tertiary); }
+.editor-wrap { flex: 1; min-height: 0; display: flex; }
+.editor-wrap :deep(.sql-editor) { flex: 1; min-width: 0; }
 .msg { font-size: 13px; border-radius: 9px; padding: 8px 12px; }
 .msg.err { background: var(--danger-soft); color: var(--danger); }
-.toolbar + .msg { margin-top: 10px; }
-.results { flex: 1; min-height: 0; overflow: auto; margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+.editor-wrap + .msg { margin-top: 10px; }
+
+/* 可拖拽分隔条与结果区。 */
+.splitter { flex: none; height: 7px; margin: 4px -16px; cursor: row-resize; }
+.splitter:hover, .splitter.active { background: var(--accent-soft); }
+.results-pane {
+  flex: none; display: flex; flex-direction: column;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated); overflow: hidden;
+}
+.results-head { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--border); }
+.results-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.results-close {
+  margin-left: auto; border: none; background: transparent; color: var(--text-secondary);
+  font-size: 14px; line-height: 1; cursor: pointer; padding: 2px 7px; border-radius: 5px;
+}
+.results-close:hover { background: var(--bg-hover); color: var(--text); }
+.results-body { flex: 1; min-height: 0; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 12px; }
 .empty { text-align: center; color: var(--text-tertiary); padding: 24px; font-size: 13px; }
-.stmt-card {
-  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated);
-  padding: 10px 12px;
+
+/* 状态栏:光标行列 / 语句条数 / 最近耗时。 */
+.statusbar {
+  flex: none; display: flex; gap: 14px; margin-top: 8px;
+  font-size: 11px; color: var(--text-tertiary); font-family: var(--mono);
 }
-.stmt-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.stmt-sql { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-secondary); }
-.stmt-ms { flex: none; font-size: 11px; color: var(--text-tertiary); font-family: var(--mono); }
-.spacer { flex: none; }
-.stmt-error { margin-top: 4px; }
-.table-wrap { overflow: auto; max-height: 360px; border: 1px solid var(--border); border-radius: 8px; }
-.table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.table th {
-  position: sticky; top: 0; background: var(--bg-subtle); text-align: left;
-  padding: 6px 10px; color: var(--text-secondary); font-weight: 600; border-bottom: 1px solid var(--border);
-}
-.col-type { font-size: 11px; color: var(--text-tertiary); font-family: var(--mono); font-weight: 400; margin-left: 4px; }
-.table td { padding: 5px 10px; border-bottom: 1px solid var(--border); word-break: break-all; }
-.cell-null { color: var(--text-tertiary); font-style: italic; }
-.cell-editor {
-  width: 100%; box-sizing: border-box; padding: 2px 5px;
-  font-family: var(--mono); font-size: 13px; color: var(--text); background: var(--bg);
-  border: 1px solid var(--accent); border-radius: 5px; outline: none;
-}
+
 .btn { border-radius: 7px; padding: 7px 14px; font-size: 13px; cursor: pointer; border: 1px solid transparent; transition: background 0.15s ease, opacity 0.15s ease; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.primary { background: var(--accent); color: #fff; }
 .btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
-.btn.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }
-.btn.ghost:hover:not(:disabled) { background: var(--bg-hover); }
-.btn.small { padding: 3px 9px; font-size: 12px; }
 </style>

@@ -9,17 +9,13 @@ import type { Message } from '@/api/types'
 import { useSqlHistoryStore } from '@/store/sqlhistory'
 import { useTabsStore } from '@/store/tabs'
 import { parseSelect } from '@/utils/sql'
-import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, exportCsv, exportJsonl, saveFile } from '@/utils/export'
+import { formatTime, displayValue } from '@/utils/format'
+import { MESSAGE_EXPORT_COLUMNS } from '@/utils/export'
+import { splitSqlStatements } from '@/utils/sqlSplit'
 import { useQueryFiles } from '@/composables/queryFiles'
 import SqlEditor from '@/components/common/SqlEditor.vue'
+import SqlResultCard from '@/components/common/SqlResultCard.vue'
 import SqlConsole from './SqlConsole.vue'
-
-// Stub the DOM download trigger but keep the real CSV/JSONL builders, so the
-// assertions check exactly what the component passes to saveFile.
-vi.mock('@/utils/export', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/utils/export')>()
-  return { ...actual, downloadFile: vi.fn(), saveFile: vi.fn(async () => {}) }
-})
 
 // parseSelect 以可透传的 spy 替换:仅「无表名守卫」用例需要桩掉解析结果
 // (模拟 FROM 可省略的解析),其余用例经透传走真实实现。
@@ -137,6 +133,11 @@ async function setSql(wrapper: VueWrapper, value: string): Promise<void> {
   await nextTick()
 }
 
+// 编辑器选区:只改 selection 不改文档(不触发 update:modelValue)。
+function setSelection(wrapper: VueWrapper, from: number, to: number): void {
+  cmView(wrapper).dispatch({ selection: { anchor: from, head: to } })
+}
+
 // 编辑器内容断言:走 findComponent(SqlEditor) 暴露的 getValue()。
 function editorSql(wrapper: VueWrapper): string {
   const vm = wrapper.findComponent(SqlEditor).vm as unknown as { getValue(): string }
@@ -161,6 +162,34 @@ async function confirmPrompt(value: string): Promise<void> {
   await flushPromises()
 }
 
+// 结果卡喂参断言辅助。
+function resultCard(wrapper: VueWrapper) {
+  const card = wrapper.findComponent(SqlResultCard)
+  expect(card.exists(), '结果卡应已渲染').toBe(true)
+  return card
+}
+function cardRows(wrapper: VueWrapper): (string | null)[][] {
+  return resultCard(wrapper).props('rows') as (string | null)[][]
+}
+
+// 点击运行按钮并等待完成。
+async function runOnce(wrapper: VueWrapper): Promise<void> {
+  await wrapper.find('[data-test="btn-run"]').trigger('click')
+  await flushPromises()
+}
+
+// jsdom 对 PointerEvent 支持不稳,直接派发带 clientY 的原生 Event。
+function firePointer(target: EventTarget, type: string, clientY: number): void {
+  const ev = new Event(type, { bubbles: true })
+  Object.defineProperty(ev, 'clientY', { value: clientY })
+  target.dispatchEvent(ev)
+}
+
+// 结果区高度(内联 style,由 resultsHeight 驱动)。
+function resultsStyleHeight(wrapper: VueWrapper): string {
+  return (wrapper.find('[data-test="sql-results"]').element as HTMLElement).style.height
+}
+
 function mountConsole(overrides: Partial<Api> = {}, mountProps: { topic?: string } = {}) {
   setActivePinia(createPinia())
   const api = fakeApi(overrides)
@@ -170,6 +199,8 @@ function mountConsole(overrides: Partial<Api> = {}, mountProps: { topic?: string
   })
   return { wrapper, api }
 }
+
+const RESULTS_HEIGHT_KEY = 'dbclient-sql-results-height'
 
 describe('SqlConsole', () => {
   // The console persists query history to localStorage; start every test from
@@ -197,13 +228,24 @@ describe('SqlConsole', () => {
     expect(wrapper.find('[data-test="btn-sql-file-area"]').exists()).toBe(false)
   })
 
-  it('uses the CodeMirror editor inside the toolbar next to the run button', () => {
+  it('命令条收纳运行按钮与历史菜单,编辑器独立全宽(与结果区同宽)', () => {
     const { wrapper } = mountConsole()
     const toolbar = wrapper.find('[data-test="sql-toolbar"]')
-    expect(toolbar.find('[data-test="input-sql"]').exists()).toBe(true)
-    expect(toolbar.findComponent(SqlEditor).exists()).toBe(true)
     expect(toolbar.find('[data-test="btn-run"]').exists()).toBe(true)
-    expect(toolbar.find('[data-test="sql-field"]').classes()).toContain('grow')
+    expect(toolbar.find('[data-test="history-menu"]').exists()).toBe(true)
+    // 编辑器不再挤在工具栏里,而是独占全宽(与结果区对齐)。
+    expect(toolbar.find('[data-test="input-sql"]').exists()).toBe(false)
+    const host = wrapper.find('.editor-host')
+    expect(host.find('[data-test="input-sql"]').exists()).toBe(true)
+    expect(host.findComponent(SqlEditor).exists()).toBe(true)
+  })
+
+  it('passes the shared IDE editor wiring (statement gutter, marks, cursor highlight)', () => {
+    const { wrapper } = mountConsole()
+    const se = wrapper.findComponent(SqlEditor)
+    expect(se.props('statementGutter')).toBe(true)
+    expect(se.props('highlightCursorStatement')).toBe(true)
+    expect(se.props('statementMarks')).toEqual([])
   })
 
   it('prefills the query with the current topic', () => {
@@ -229,17 +271,15 @@ describe('SqlConsole', () => {
     const { wrapper, api } = mountConsole({
       consumeMessages: vi.fn(async () => [msg('k1', 'v1')]),
     })
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.findAll('[data-test="sql-row"]')).toHaveLength(1)
+    await runOnce(wrapper)
+    expect(cardRows(wrapper)).toHaveLength(1)
 
     await wrapper.setProps({ topic: 'bad_t81_test' })
     expect(editorSql(wrapper)).toBe('SELECT * FROM bad_t81_test LIMIT 100')
-    expect(wrapper.findAll('[data-test="sql-row"]')).toHaveLength(0)
-    expect(wrapper.find('[data-test="sql-empty"]').exists()).toBe(true)
+    expect(wrapper.findComponent(SqlResultCard).exists()).toBe(false)
+    expect(wrapper.find('[data-test="results-empty"]').exists()).toBe(true)
 
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
+    await runOnce(wrapper)
     expect(api.consumeMessages).toHaveBeenLastCalledWith(expect.objectContaining({ topic: 'bad_t81_test' }))
   })
 
@@ -280,8 +320,7 @@ describe('SqlConsole', () => {
   it('shows the template after a successful run round-trips A→B→A', async () => {
     const { wrapper } = mountConsole()
     await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
+    await runOnce(wrapper)
     await wrapper.setProps({ topic: 'bad_t81_test' })
     await wrapper.setProps({ topic: 'orders' })
     expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 100')
@@ -292,8 +331,7 @@ describe('SqlConsole', () => {
   it('restores an edited draft after a run when switching back to the topic', async () => {
     const { wrapper } = mountConsole()
     await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
+    await runOnce(wrapper)
     await setSql(wrapper, 'SELECT * FROM orders LIMIT 20')
     await wrapper.setProps({ topic: 'bad_t81_test' })
     await wrapper.setProps({ topic: 'orders' })
@@ -315,15 +353,14 @@ describe('SqlConsole', () => {
       consumeMessages: vi.fn(async () => [msg('k1', 'v1'), msg('k2', 'v2'), msg('k1', 'v3')]),
     })
     await setSql(wrapper, "SELECT * FROM orders WHERE key = 'k1'")
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
+    await runOnce(wrapper)
     expect(api.consumeMessages).toHaveBeenCalledWith(
       expect.objectContaining({ connection_id: 'c', topic: 'orders', partition: -1, offset: -2 }),
     )
-    const rows = wrapper.findAll('[data-test="sql-row"]').map((r) => r.text())
+    const rows = cardRows(wrapper)
     expect(rows).toHaveLength(2)
-    expect(rows[0]).toContain('k1')
-    expect(rows[1]).toContain('k1')
+    expect(rows[0]?.[3]).toBe('k1')
+    expect(rows[1]?.[3]).toBe('k1')
   })
 
   it('applies a LIKE filter and LIMIT', async () => {
@@ -331,91 +368,187 @@ describe('SqlConsole', () => {
       consumeMessages: vi.fn(async () => [msg('a', 'hello'), msg('b', 'world')]),
     })
     await setSql(wrapper, "SELECT * FROM orders WHERE value LIKE '%ell%' LIMIT 1")
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
-    const rows = wrapper.findAll('[data-test="sql-row"]')
+    await runOnce(wrapper)
+    const rows = cardRows(wrapper)
     expect(rows).toHaveLength(1)
-    expect(rows[0].text()).toContain('hello')
+    expect(rows[0]?.[4]).toBe('hello')
   })
 
   it('shows an error for invalid SQL', async () => {
     const { wrapper } = mountConsole()
     await setSql(wrapper, 'INSERT INTO t VALUES (1)')
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
+    await runOnce(wrapper)
     expect(wrapper.find('[data-test="sql-error"]').exists()).toBe(true)
   })
 
-
-  it('surfaces backend errors', async () => {
-    const { wrapper, api } = mountConsole({
+  // 整次请求级错误(Kafka run 的失败形态)走结果卡 error,保持与其他控制台
+  // 一致的卡片视觉;解析类错误仍走 sql-error。
+  it('surfaces backend errors on the result card error slot', async () => {
+    const { wrapper } = mountConsole({
       consumeMessages: vi.fn(async () => {
         throw new Error('cluster down')
       }),
     })
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
-    await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="sql-error"]').text()).toContain('cluster down')
-    })
+    await runOnce(wrapper)
+    expect(wrapper.find('[data-test="sql-error"]').exists()).toBe(false)
+    const card = resultCard(wrapper)
+    expect(card.props('error')).toContain('cluster down')
+    expect(cardRows(wrapper)).toHaveLength(0)
   })
 
-  it('renders a disabled export control until results exist', () => {
+  // --- 结果区开合与高度(IDE 式布局) ------------------------------------------
+
+  it('keeps the results area closed until an execution starts', () => {
     const { wrapper } = mountConsole()
-    const toggle = wrapper.find('[data-test="export-toggle"]')
-    expect(toggle.exists()).toBe(true)
-    expect(toggle.attributes('disabled')).toBeDefined()
-    expect(wrapper.find('[data-test="export-csv"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="sql-results"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="console-splitter"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="result-card"]').exists()).toBe(false)
   })
 
-  it('exports query results as CSV via the dropdown', async () => {
-    const messages: Message[] = [msg('中文键', 'a,b'), msg('k2', 'v2')]
+  it('shows the empty guidance card with the shortcut hints when there are no results', async () => {
+    const { wrapper } = mountConsole({ consumeMessages: vi.fn(async () => []) })
+    await runOnce(wrapper)
+    const empty = wrapper.find('[data-test="results-empty"]')
+    expect(empty.exists()).toBe(true)
+    expect(empty.text()).toContain('⌘Enter 执行')
+    expect(empty.text()).toContain('⌘Shift+Enter 运行全部')
+    expect(wrapper.findComponent(SqlResultCard).exists()).toBe(false)
+  })
+
+  it('closes the results area from the × button', async () => {
+    const { wrapper } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k1', 'v1')]) })
+    await runOnce(wrapper)
+    expect(wrapper.find('[data-test="sql-results"]').exists()).toBe(true)
+    await wrapper.find('[data-test="results-close"]').trigger('click')
+    expect(wrapper.find('[data-test="sql-results"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="console-splitter"]').exists()).toBe(false)
+  })
+
+  it('reopens the results area on the next execution after closing', async () => {
+    const { wrapper } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k1', 'v1')]) })
+    await runOnce(wrapper)
+    await wrapper.find('[data-test="results-close"]').trigger('click')
+    expect(wrapper.find('[data-test="sql-results"]').exists()).toBe(false)
+    await runOnce(wrapper)
+    expect(wrapper.find('[data-test="sql-results"]').exists()).toBe(true)
+    expect(cardRows(wrapper)).toHaveLength(1)
+  })
+
+  it('drags the splitter to resize with clamping and persists the height', async () => {
+    const { wrapper } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k1', 'v1')]) })
+    await runOnce(wrapper)
+    const splitter = wrapper.find('[data-test="console-splitter"]')
+    // 默认 320;向上拖 100px → 420。
+    firePointer(splitter.element, 'pointerdown', 400)
+    firePointer(window, 'pointermove', 300)
+    await nextTick()
+    expect(resultsStyleHeight(wrapper)).toBe('420px')
+    expect(localStorage.getItem(RESULTS_HEIGHT_KEY)).toBe('420')
+    // 拖过窗口 80%(768 * 0.8 = 614)→ 截断。
+    firePointer(window, 'pointermove', 50)
+    await nextTick()
+    expect(resultsStyleHeight(wrapper)).toBe('614px')
+    // 向下拖过头 → 下限 160。
+    firePointer(window, 'pointermove', 900)
+    await nextTick()
+    expect(resultsStyleHeight(wrapper)).toBe('160px')
+    firePointer(window, 'pointerup', 900)
+  })
+
+  it('resets the height to 50/50 on splitter double click and persists it', async () => {
+    const { wrapper } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k1', 'v1')]) })
+    await runOnce(wrapper)
+    await wrapper.find('[data-test="console-splitter"]').trigger('dblclick')
+    expect(resultsStyleHeight(wrapper)).toBe('384px')
+    expect(localStorage.getItem(RESULTS_HEIGHT_KEY)).toBe('384')
+  })
+
+  it('restores a persisted results height at mount', async () => {
+    localStorage.setItem(RESULTS_HEIGHT_KEY, '240')
+    const { wrapper } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k1', 'v1')]) })
+    await runOnce(wrapper)
+    expect(resultsStyleHeight(wrapper)).toBe('240px')
+  })
+
+  it('clamps an out-of-range persisted height at mount', async () => {
+    localStorage.setItem(RESULTS_HEIGHT_KEY, '99999')
+    const { wrapper } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k1', 'v1')]) })
+    await runOnce(wrapper)
+    expect(resultsStyleHeight(wrapper)).toBe('614px')
+  })
+
+  // --- 状态栏 -----------------------------------------------------------------
+
+  it('shows the cursor line:col from the editor cursor event', async () => {
+    const { wrapper } = mountConsole()
+    const bar = wrapper.find('[data-test="console-statusbar"]')
+    expect(bar.text()).toContain('1:1')
+    wrapper.findComponent(SqlEditor).vm.$emit('cursor', { line: 3, col: 7 })
+    await nextTick()
+    expect(bar.text()).toContain('3:7')
+  })
+
+  it('counts the statements in the editor', async () => {
+    const { wrapper } = mountConsole()
+    const bar = wrapper.find('[data-test="console-statusbar"]')
+    expect(bar.text()).toContain('语句 1 条')
+    await setSql(wrapper, 'SELECT * FROM orders LIMIT 10;\nSELECT * FROM errors LIMIT 5')
+    expect(bar.text()).toContain('语句 2 条')
+  })
+
+  it('shows the last run duration once a query completed', async () => {
+    const { wrapper } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k1', 'v1')]) })
+    const bar = wrapper.find('[data-test="console-statusbar"]')
+    expect(bar.text()).toContain('—')
+    await runOnce(wrapper)
+    expect(bar.text()).toMatch(/最近耗时 \d+ ms/)
+  })
+
+  // --- 结果卡喂参(与 MESSAGE_EXPORT_COLUMNS 导出列/列序一致) ------------------
+
+  it('feeds the result card the message columns in export order', async () => {
+    const messages: Message[] = [msg('中文键', 'a,b', 3)]
     const { wrapper } = mountConsole({
       consumeMessages: vi.fn(async () => messages),
     })
     await setSql(wrapper, 'SELECT * FROM orders')
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
-    const toggle = wrapper.find('[data-test="export-toggle"]')
-    expect(toggle.attributes('disabled')).toBeUndefined()
-    await toggle.trigger('click')
-    await wrapper.find('[data-test="export-csv"]').trigger('click')
-    expect(vi.mocked(saveFile)).toHaveBeenCalledWith(
-      'query-results',
-      exportCsv(messages, MESSAGE_EXPORT_COLUMNS),
-      CSV_MIME,
+    await runOnce(wrapper)
+    const card = resultCard(wrapper)
+    expect(card.props('exportName')).toBe('query-results')
+    // 消息无 INSERT 语义,恒传 null(卡片据此禁用「插入」按钮)。
+    expect(card.props('insertTarget')).toBeNull()
+    expect((card.props('columns') as { name: string }[]).map((c) => c.name)).toEqual(
+      MESSAGE_EXPORT_COLUMNS.map((c) => c.label),
     )
+    expect(card.props('rows') as (string | null)[][]).toEqual([
+      ['0', '3', formatTime(1700000000000), '中文键', 'a,b'],
+    ])
+    expect(card.props('statement')).toBe('SELECT * FROM orders')
+    expect(card.props('error')).toBeNull()
+    expect(typeof card.props('durationMs')).toBe('number')
   })
 
-  it('exports query results as JSONL via the dropdown', async () => {
-    const messages: Message[] = [msg('k1', 'v1')]
+  it('maps empty key/value cells to the display placeholder', async () => {
     const { wrapper } = mountConsole({
-      consumeMessages: vi.fn(async () => messages),
+      consumeMessages: vi.fn(async () => [msg('', '', 7)]),
     })
-    await setSql(wrapper, 'SELECT * FROM orders')
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
-    await wrapper.find('[data-test="export-toggle"]').trigger('click')
-    await wrapper.find('[data-test="export-jsonl"]').trigger('click')
-    expect(vi.mocked(saveFile)).toHaveBeenCalledWith(
-      'query-results',
-      exportJsonl(messages),
-      JSONL_MIME,
-    )
+    await runOnce(wrapper)
+    const rows = cardRows(wrapper)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.[3]).toBe(displayValue(''))
+    expect(rows[0]?.[4]).toBe(displayValue(''))
   })
 
   it('records an executed query into the history store', async () => {
     const { wrapper } = mountConsole()
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
+    await runOnce(wrapper)
     expect(useSqlHistoryStore().history).toEqual(['SELECT * FROM orders LIMIT 100'])
   })
 
   it('does not record a query that fails to parse', async () => {
     const { wrapper } = mountConsole()
     await setSql(wrapper, 'INSERT INTO t VALUES (1)')
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
+    await runOnce(wrapper)
     expect(wrapper.find('[data-test="sql-error"]').exists()).toBe(true)
     expect(useSqlHistoryStore().history).toEqual([])
   })
@@ -434,11 +567,9 @@ describe('SqlConsole', () => {
   it('refills the editor and re-executes from a history item', async () => {
     const { wrapper, api } = mountConsole()
     await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
+    await runOnce(wrapper)
     await setSql(wrapper, 'SELECT * FROM orders LIMIT 20')
-    await wrapper.find('[data-test="btn-run"]').trigger('click')
-    await flushPromises()
+    await runOnce(wrapper)
     await wrapper.find('[data-test="history-toggle"]').trigger('click')
     const items = wrapper.findAll('[data-test="history-item"]')
     expect(items).toHaveLength(2)
@@ -498,7 +629,7 @@ describe('SqlConsole', () => {
     expect(api.consumeMessages).not.toHaveBeenCalled()
   })
 
-  // --- ⌘Enter shortcut (4.3) -------------------------------------------------
+  // --- ⌘Enter / ⌘Shift+Enter 快捷键(4.3) --------------------------------------
 
   it('runs the query on cmd+enter in the editor', async () => {
     const { wrapper, api } = mountConsole({
@@ -507,7 +638,7 @@ describe('SqlConsole', () => {
     await cmContent(wrapper).trigger('keydown', { key: 'Enter', metaKey: true })
     await flushPromises()
     expect(api.consumeMessages).toHaveBeenCalledWith(expect.objectContaining({ topic: 'orders' }))
-    expect(wrapper.findAll('[data-test="sql-row"]')).toHaveLength(1)
+    expect(cardRows(wrapper)).toHaveLength(1)
   })
 
   it('runs the query on ctrl+enter as the non-mac fallback', async () => {
@@ -563,6 +694,92 @@ describe('SqlConsole', () => {
     await cmContent(wrapper).trigger('keydown', { key: 'Enter', metaKey: true })
     await flushPromises()
     expect(api.consumeMessages).toHaveBeenCalledTimes(2)
+  })
+
+  // ⌘Shift+Enter = 运行全部:无视选区,对整段内容发起执行(Kafka 等价于 run)。
+  // 用「两语句整段必然解析失败」与「单语句选区能成功」区分整段/选区两条路径。
+  it('runs the whole editor content on cmd+shift+enter even with a selection', async () => {
+    const { wrapper, api } = mountConsole()
+    const doc = 'SELECT * FROM orders LIMIT 5\nSELECT * FROM orders LIMIT 9'
+    await setSql(wrapper, doc)
+    setSelection(wrapper, 0, 'SELECT * FROM orders LIMIT 5'.length)
+    await cmContent(wrapper).trigger('keydown', { key: 'Enter', metaKey: true, shiftKey: true })
+    await flushPromises()
+    expect(api.consumeMessages).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="sql-error"]').exists()).toBe(true)
+  })
+
+  it('runs only the selection on cmd+enter', async () => {
+    const { wrapper, api } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k', 'v')]) })
+    await setSql(wrapper, 'SELECT * FROM orders LIMIT 5\nSELECT * FROM orders LIMIT 9')
+    setSelection(wrapper, 0, 'SELECT * FROM orders LIMIT 5'.length)
+    await cmContent(wrapper).trigger('keydown', { key: 'Enter', metaKey: true })
+    await flushPromises()
+    expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+    expect(api.consumeMessages).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 5 }))
+  })
+
+  it('runs the whole editor content from the toolbar button ignoring the selection', async () => {
+    const { wrapper, api } = mountConsole()
+    await setSql(wrapper, 'SELECT * FROM orders LIMIT 5\nSELECT * FROM orders LIMIT 9')
+    setSelection(wrapper, 0, 'SELECT * FROM orders LIMIT 5'.length)
+    await runOnce(wrapper)
+    expect(api.consumeMessages).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="sql-error"]').exists()).toBe(true)
+  })
+
+  // --- 语句槽(▶)与语句状态 marks ----------------------------------------------
+
+  it('runs the clicked gutter statement', async () => {
+    const { wrapper, api } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k1', 'v1')]) })
+    wrapper.findComponent(SqlEditor).vm.$emit('run-statement', 'SELECT * FROM errors LIMIT 5')
+    await flushPromises()
+    expect(api.consumeMessages).toHaveBeenCalledWith(expect.objectContaining({ topic: 'errors', limit: 5 }))
+  })
+
+  it('marks the executed statement running then ok with its duration', async () => {
+    let resolve!: (rows: Message[]) => void
+    const { wrapper } = mountConsole({
+      consumeMessages: vi.fn(() => new Promise<Message[]>((r) => { resolve = r })),
+    })
+    await wrapper.find('[data-test="btn-run"]').trigger('click')
+    const se = wrapper.findComponent(SqlEditor)
+    expect(se.props('statementMarks')).toEqual([{ from: 0, status: 'running' }])
+    resolve([msg('k1', 'v1')])
+    await flushPromises()
+    const marks = se.props('statementMarks') as Array<{ from: number; status: string; detail?: string }>
+    expect(marks).toHaveLength(1)
+    expect(marks[0]).toMatchObject({ from: 0, status: 'ok' })
+    expect(marks[0].detail).toMatch(/^\d+ ms$/)
+  })
+
+  it('marks the statement failed with the error detail', async () => {
+    const { wrapper } = mountConsole({
+      consumeMessages: vi.fn(async () => {
+        throw new Error('cluster down')
+      }),
+    })
+    await runOnce(wrapper)
+    const se = wrapper.findComponent(SqlEditor)
+    expect(se.props('statementMarks')).toEqual([{ from: 0, status: 'fail', detail: 'cluster down' }])
+  })
+
+  it('re-matches marks by statement text after edits and drops stale ones', async () => {
+    const { wrapper } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k1', 'v1')]) })
+    await runOnce(wrapper)
+    const doc = 'SELECT 1;\nSELECT * FROM orders LIMIT 100'
+    await setSql(wrapper, doc)
+    const se = wrapper.findComponent(SqlEditor)
+    const expectedFrom = splitSqlStatements(doc).find(
+      (s) => s.text.trim() === 'SELECT * FROM orders LIMIT 100',
+    )?.from
+    const marks = se.props('statementMarks') as Array<{ from: number; status: string }>
+    expect(marks).toHaveLength(1)
+    expect(marks[0].from).toBe(expectedFrom)
+    expect(marks[0].status).toBe('ok')
+    // 文本不再匹配(编辑过)→ 语句标记消失。
+    await setSql(wrapper, 'SELECT * FROM errors LIMIT 100')
+    expect(se.props('statementMarks')).toEqual([])
   })
 
   // History/favorites application goes through applyQuery; like the ⌘Enter

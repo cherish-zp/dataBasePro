@@ -114,3 +114,114 @@ describe('SqlEditor', () => {
     expect(document.activeElement === cmView(wrapper).contentDOM).toBe(true)
   })
 })
+
+// —— 语句级增强(▶ 运行槽 / 状态标记 / cursor 事件 / 光标语句高亮)——
+describe('SqlEditor 语句级增强', () => {
+  // seg1: from 0 to 9(含分号);seg2: from 10 to 18(尾句无分号)。
+  const doc = 'SELECT 1;\nSELECT 2'
+
+  it('statementGutter:每条语句首行渲染 ▶,点击 emit run-statement(语句原文)', async () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: doc, statementGutter: true } })
+    const btns = wrapper.findAll('.cm-run-statement')
+    expect(btns).toHaveLength(2)
+    expect(btns[0].attributes('title')).toBe('执行该语句')
+    await btns[0].trigger('mousedown')
+    await btns[1].trigger('mousedown')
+    const emitted = wrapper.emitted('run-statement')
+    expect(emitted?.[0]).toEqual(['SELECT 1;'])
+    expect(emitted?.[1]).toEqual(['SELECT 2'])
+  })
+
+  it('statementGutter:默认关闭不渲染,运行期开启后出现', async () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: doc } })
+    expect(wrapper.find('.cm-run-statement').exists()).toBe(false)
+    await wrapper.setProps({ statementGutter: true })
+    expect(wrapper.findAll('.cm-run-statement')).toHaveLength(2)
+  })
+
+  it('statementGutter:文档编辑后 ▶ 跟随最新拆分结果', async () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: doc, statementGutter: true } })
+    expect(wrapper.findAll('.cm-run-statement')).toHaveLength(2)
+    // 在句间插入新语句 → 3 条。
+    cmView(wrapper).dispatch({ changes: { from: 9, insert: 'SELECT 3;\n' } })
+    expect(wrapper.findAll('.cm-run-statement')).toHaveLength(3)
+  })
+
+  it('statementMarks:✓/✗ 渲染并悬浮 detail,映射不到的 from 忽略', () => {
+    const wrapper = mount(SqlEditor, {
+      props: {
+        modelValue: doc,
+        statementMarks: [
+          { from: 0, status: 'ok', detail: '12 ms' },
+          { from: 10, status: 'fail', detail: 'boom' },
+          { from: 999, status: 'running' },
+        ],
+      },
+    })
+    expect(wrapper.findAll('.cm-statement-mark')).toHaveLength(2)
+    expect(wrapper.findAll('.cm-statement-mark-ok')).toHaveLength(1)
+    expect(wrapper.findAll('.cm-statement-mark-fail')).toHaveLength(1)
+    expect(wrapper.find('.cm-statement-mark-ok').attributes('title')).toBe('12 ms')
+    expect(wrapper.find('.cm-statement-mark-fail').attributes('title')).toBe('boom')
+  })
+
+  it('statementMarks:running 渲染转圈,prop 更新后重渲染', async () => {
+    const wrapper = mount(SqlEditor, {
+      props: { modelValue: doc, statementMarks: [{ from: 0, status: 'running' }] },
+    })
+    expect(wrapper.findAll('.cm-statement-mark-running')).toHaveLength(1)
+    await wrapper.setProps({ statementMarks: [{ from: 0, status: 'ok', detail: '9 ms' }] })
+    expect(wrapper.findAll('.cm-statement-mark-running')).toHaveLength(0)
+    expect(wrapper.findAll('.cm-statement-mark-ok')).toHaveLength(1)
+  })
+
+  it('cursor:光标移动 emit 1 基行列', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: doc } })
+    cmView(wrapper).dispatch({ selection: { anchor: 11 } }) // 第 2 行第 2 列
+    const emitted = wrapper.emitted('cursor')
+    expect(emitted?.length).toBeGreaterThan(0)
+    expect(emitted?.at(-1)).toEqual([{ line: 2, col: 2 }])
+  })
+
+  it('cursor:文档编辑同样触发,行内列号正确', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: 'AB' } })
+    cmView(wrapper).dispatch({ changes: { from: 2, insert: 'CD' }, selection: { anchor: 4 } })
+    const emitted = wrapper.emitted('cursor')
+    expect(emitted?.length).toBeGreaterThan(0)
+    // 插入后主光标移到 offset 4 → 第 1 行第 5 列。
+    expect(emitted?.at(-1)).toEqual([{ line: 1, col: 5 }])
+  })
+
+  it('highlightCursorStatement:光标所在语句整段高亮(cm-current-statement)', () => {
+    const wrapper = mount(SqlEditor, {
+      props: { modelValue: doc, highlightCursorStatement: true },
+    })
+    cmView(wrapper).dispatch({ selection: { anchor: 12 } })
+    const marks = wrapper.findAll('.cm-current-statement')
+    expect(marks).toHaveLength(1)
+    expect(marks[0].text()).toBe('SELECT 2')
+  })
+
+  it('highlightCursorStatement:默认关闭不渲染高亮', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: doc } })
+    cmView(wrapper).dispatch({ selection: { anchor: 12 } })
+    expect(wrapper.find('.cm-current-statement').exists()).toBe(false)
+  })
+
+  it('highlightCursorStatement:光标位于语句外(前导空白/注释)不高亮', () => {
+    const wrapper = mount(SqlEditor, {
+      props: { modelValue: '  -- 头注释\nSELECT 1', highlightCursorStatement: true },
+    })
+    cmView(wrapper).dispatch({ selection: { anchor: 1 } })
+    expect(wrapper.find('.cm-current-statement').exists()).toBe(false)
+  })
+
+  it('highlightCursorStatement:运行期开启后随光标高亮', async () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: doc } })
+    cmView(wrapper).dispatch({ selection: { anchor: 3 } })
+    expect(wrapper.find('.cm-current-statement').exists()).toBe(false)
+    await wrapper.setProps({ highlightCursorStatement: true })
+    cmView(wrapper).dispatch({ selection: { anchor: 3 } })
+    expect(wrapper.findAll('.cm-current-statement')).toHaveLength(1)
+  })
+})

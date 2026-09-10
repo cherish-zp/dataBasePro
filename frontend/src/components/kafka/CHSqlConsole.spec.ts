@@ -6,19 +6,12 @@ import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { CHStatementResult } from '@/api/types'
-import { CSV_MIME, JSONL_MIME, saveFile } from '@/utils/export'
 import { QUERY_DIR_KEY } from '@/utils/queryDir'
 import { useQueryFiles } from '@/composables/queryFiles'
 import { useTabsStore } from '@/store/tabs'
 import SqlEditor from '@/components/common/SqlEditor.vue'
+import SqlResultCard from '@/components/common/SqlResultCard.vue'
 import CHSqlConsole from './CHSqlConsole.vue'
-
-// Stub the save trigger but keep the real CSV/JSONL builders, so assertions
-// check exactly what the component passes to saveFile.
-vi.mock('@/utils/export', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/utils/export')>()
-  return { ...actual, downloadFile: vi.fn(), saveFile: vi.fn(async () => {}) }
-})
 
 // 查询文件走后端 App 绑定;组件经共享 composable 调用这四个方法,测试里
 // 整体替换该模块(不 mock composable 本体)。结果行内编辑经 chCellUpdate
@@ -141,14 +134,9 @@ const twoStatements = (): CHStatementResult[] => [
   { sql: 'SELECT bad', duration_ms: 3, error: 'Syntax error (multi-statements not allowed)' },
 ]
 
-// 假文件列表(镜像后端 QueryFileInfo 形状,后端返回裸数组)。
-const queryFiles = (): { name: string; connection_id: string; size_bytes: number; mod_time_ms: number }[] => [
-  { name: '每日报表.sql', connection_id: 'ch1', size_bytes: 42, mod_time_ms: 1725840000000 },
-  { name: '重试扫描.sql', connection_id: 'ch2', size_bytes: 13, mod_time_ms: 1725840100000 },
-]
-
-// 测试统一使用的查询目录(localStorage 注入)。
+// 测试统一使用的查询目录(localStorage 注入)与结果区高度 key(两控制台共用)。
 const TEST_DIR = '/Users/test/queries'
+const RESULTS_HEIGHT_KEY = 'dbclient-sql-results-height'
 
 // SqlEditor 内部由 CM6 创建自己的 .cm-editor,借 findFromDOM 拿到 view 实例
 // (与 SqlEditor.spec.ts 同一套方法)。
@@ -171,6 +159,27 @@ function pressSaveShortcut(wrapper: VueWrapper, mods: { metaKey?: boolean; ctrlK
   cmInput(wrapper).contentDOM.dispatchEvent(
     new KeyboardEvent('keydown', { key: 's', ...mods, bubbles: true }),
   )
+}
+
+// 在编辑器里按 ⌘/Ctrl+Enter(可带 Shift = 运行全部)。
+function pressRunShortcut(
+  wrapper: VueWrapper,
+  mods: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean } = { metaKey: true },
+): void {
+  cmInput(wrapper).contentDOM.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Enter', ...mods, bubbles: true }),
+  )
+}
+
+// 运行结果以 SqlResultCard 渲染:按组件实例断言 props。
+function resultCards(wrapper: VueWrapper) {
+  return wrapper.findAllComponents(SqlResultCard)
+}
+
+async function waitForCards(wrapper: VueWrapper, n: number): Promise<void> {
+  await vi.waitFor(() => {
+    expect(resultCards(wrapper)).toHaveLength(n)
+  })
 }
 
 // PromptDialog / ConfirmDialog teleport 到 body。
@@ -213,66 +222,282 @@ describe('CHSqlConsole', () => {
     // (探针实例不 mock 本体,只用它重置/填充共享列表)。
     useQueryFiles({ connectionId: () => 'ch1' }).files.value = []
     localStorage.setItem(QUERY_DIR_KEY, TEST_DIR)
+    localStorage.removeItem(RESULTS_HEIGHT_KEY)
     document.body.innerHTML = ''
   })
 
-  it('runs SQL typed into the CodeMirror editor and renders one card per statement with rows or error text', async () => {
+  // --- 运行全部与逐条卡片 ------------------------------------------------------
+
+  it('运行全部:整段脚本发给后端,每条语句渲染一张 SqlResultCard', async () => {
     ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(twoStatements())
     const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
-    await vi.waitFor(() => {
-      expect(wrapper.findAll('[data-test="ch-stmt-card"]')).toHaveLength(2)
-    })
+    await waitForCards(wrapper, 2)
     expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1; SELECT bad' })
-    const cards = wrapper.findAll('[data-test="ch-stmt-card"]')
-    // 第一条:SQL、耗时、结果网格(NULL 单元格)。
-    expect(cards[0].find('[data-test="ch-stmt-sql"]').text()).toBe('SELECT 1')
-    expect(cards[0].find('[data-test="ch-stmt-ms"]').text()).toContain('12')
-    expect(cards[0].find('[data-test="ch-stmt-error"]').exists()).toBe(false)
-    expect(cards[0].findAll('[data-test="ch-stmt-row"]')).toHaveLength(2)
-    expect(cards[0].findAll('[data-test="ch-stmt-row"]')[1].findAll('td')[0].text()).toBe('NULL')
-    // 第二条:错误文本。
-    expect(cards[1].find('[data-test="ch-stmt-sql"]').text()).toBe('SELECT bad')
-    expect(cards[1].find('[data-test="ch-stmt-error"]').text()).toBe('Syntax error (multi-statements not allowed)')
-    // 错误语句没有结果网格。
-    expect(cards[1].find('[data-test="ch-stmt-grid"]').exists()).toBe(false)
+    const cards = resultCards(wrapper)
+    // 第一条:语句原文、耗时、列与行(NULL 单元格)都经 props 传入卡片。
+    expect(cards[0].props('statement')).toBe('SELECT 1')
+    expect(cards[0].props('durationMs')).toBe(12)
+    expect(cards[0].props('columns')).toEqual([{ name: 'one', type: 'UInt8' }])
+    expect(cards[0].props('rows')).toEqual([['1'], [null]])
+    expect(cards[0].props('error')).toBeFalsy()
+    // 第二条:错误文本经 error prop 传入,由卡片渲染错误卡。
+    expect(cards[1].props('statement')).toBe('SELECT bad')
+    expect(cards[1].props('error')).toBe('Syntax error (multi-statements not allowed)')
+    wrapper.unmount()
   })
 
-  it('exports a statement result via saveFile as CSV and JSONL named ch-result-<i>', async () => {
+  it('导出交给 SqlResultCard:exportName 按语句序号命名为 ch-result-<i>', async () => {
     ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(twoStatements())
     const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
-    await vi.waitFor(() => {
-      expect(wrapper.findAll('[data-test="ch-stmt-card"]')).toHaveLength(2)
-    })
-    const cards = wrapper.findAll('[data-test="ch-stmt-card"]')
-    await cards[0].find('[data-test="btn-ch-export-csv"]').trigger('click')
-    expect(vi.mocked(saveFile)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(saveFile)).toHaveBeenNthCalledWith(1, 'ch-result-0', expect.stringContaining('one'), CSV_MIME)
-    await cards[0].find('[data-test="btn-ch-export-jsonl"]').trigger('click')
-    expect(vi.mocked(saveFile)).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(saveFile)).toHaveBeenNthCalledWith(2, 'ch-result-0', expect.any(String), JSONL_MIME)
-    // 错误语句没有导出入口。
-    expect(cards[1].find('[data-test="btn-ch-export-csv"]').exists()).toBe(false)
+    await waitForCards(wrapper, 2)
+    const cards = resultCards(wrapper)
+    expect(cards[0].props('exportName')).toBe('ch-result-0')
+    expect(cards[1].props('exportName')).toBe('ch-result-1')
+    wrapper.unmount()
   })
+
+  it('运行全部按钮忽略选区,始终执行整段脚本', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(twoStatements())
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1; SELECT 2')
+    // 选中第二段 'SELECT 2'(10..18),运行全部仍发整段脚本。
+    cmInput(wrapper).dispatch({ selection: { anchor: 10, head: 18 } })
+    await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+    await waitForCards(wrapper, 2)
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1; SELECT 2' })
+    wrapper.unmount()
+  })
+
+  // --- ⌘Enter 执行当前语句 / ⌘Shift+Enter 运行全部 -----------------------------
 
   it('runs on Cmd/Ctrl+Enter pressed inside the CodeMirror editor', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockImplementation(async (req: { sql: string }) => [
+      { sql: req.sql, duration_ms: 1, columns: [{ name: 'one', type: 'UInt8' }], rows: [['1']] },
+    ])
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1')
+    // SqlEditor 自身不处理该组合键时事件从 CM contentDOM 冒泡到外层容器。
+    pressRunShortcut(wrapper)
+    await waitForCards(wrapper, 1)
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1' })
+  })
+
+  it('⌘Enter 无选区时只执行光标所在语句(结果只有一张卡)', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockImplementation(async (req: { sql: string }) => [
+      { sql: req.sql, duration_ms: 1, columns: [{ name: 'one', type: 'UInt8' }], rows: [['1']] },
+    ])
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1; SELECT bad')
+    // 显式把光标放回文档起始 → 执行第一条语句(split 文本含结尾分号)。
+    wrapper.findComponent(SqlEditor).vm.$emit('cursor', { line: 1, col: 1 })
+    await nextTick()
+    pressRunShortcut(wrapper)
+    await waitForCards(wrapper, 1)
+    expect(api.chExecute).toHaveBeenCalledTimes(1)
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1;' })
+    wrapper.unmount()
+  })
+
+  it('⌘Enter 按 cursor emit 的最新位置定位语句', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockImplementation(async (req: { sql: string }) => [
+      { sql: req.sql, duration_ms: 1, columns: [{ name: 'one', type: 'UInt8' }], rows: [['1']] },
+    ])
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1; SELECT bad')
+    // 光标落在第二段 'SELECT bad' 内(offset 12 → 1 基 1 行 13 列)。
+    wrapper.findComponent(SqlEditor).vm.$emit('cursor', { line: 1, col: 13 })
+    await nextTick()
+    pressRunShortcut(wrapper)
+    await waitForCards(wrapper, 1)
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT bad' })
+    wrapper.unmount()
+  })
+
+  it('runs only the selection on Cmd+Enter as well', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockImplementation(async (req: { sql: string }) => [
+      { sql: req.sql, duration_ms: 1, columns: [{ name: 'one', type: 'UInt8' }], rows: [['1']] },
+    ])
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1; SELECT 2')
+    cmInput(wrapper).dispatch({ selection: { anchor: 0, head: 8 } })
+    pressRunShortcut(wrapper)
+    await waitForCards(wrapper, 1)
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1' })
+    expect(api.chExecute).toHaveBeenCalledTimes(1)
+  })
+
+  it('⌘Shift+Enter 运行全部语句', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(twoStatements())
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1; SELECT bad')
+    pressRunShortcut(wrapper, { metaKey: true, shiftKey: true })
+    await waitForCards(wrapper, 2)
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1; SELECT bad' })
+    wrapper.unmount()
+  })
+
+  it('监听 SqlEditor 的 run-statement emit,按单语句逻辑执行', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockImplementation(async (req: { sql: string }) => [
+      { sql: req.sql, duration_ms: 1, columns: [{ name: 'one', type: 'UInt8' }], rows: [['1']] },
+    ])
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1; SELECT bad')
+    wrapper.findComponent(SqlEditor).vm.$emit('run-statement', 'SELECT bad')
+    await waitForCards(wrapper, 1)
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT bad' })
+    wrapper.unmount()
+  })
+
+  // --- 结果区开合与拖拽 --------------------------------------------------------
+
+  it('结果区初始关闭,运行后打开;点击 × 关闭回编辑器铺满,再运行重新打开', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(
+      [{ sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'one', type: 'UInt8' }], rows: [['1']] }],
+    )
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    expect(wrapper.find('[data-test="results-pane"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="console-splitter"]').exists()).toBe(false)
+    await typeSql(wrapper, 'SELECT 1')
+    await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+    await waitForCards(wrapper, 1)
+    expect(wrapper.find('[data-test="results-pane"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="console-splitter"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="results-close"]').exists()).toBe(true)
+    // × 关闭:结果区与分隔条一并消失。
+    await wrapper.find('[data-test="results-close"]').trigger('click')
+    expect(wrapper.find('[data-test="results-pane"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="console-splitter"]').exists()).toBe(false)
+    // 再次执行(runAll 或单语句)重新打开结果区。
+    await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+    await waitForCards(wrapper, 1)
+    expect(wrapper.find('[data-test="results-pane"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('分隔条拖拽调整结果区高度并持久化,双击恢复 50/50,重挂载读取持久化高度', async () => {
     ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(
       [{ sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'one', type: 'UInt8' }], rows: [['1']] }],
     )
     const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
     await typeSql(wrapper, 'SELECT 1')
-    // SqlEditor 自身不处理该组合键,事件从 CM contentDOM 冒泡到外层容器。
-    cmInput(wrapper).contentDOM.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }),
-    )
-    await vi.waitFor(() => {
-      expect(wrapper.findAll('[data-test="ch-stmt-card"]')).toHaveLength(1)
-    })
-    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1' })
+    await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+    await waitForCards(wrapper, 1)
+    const pane = () => wrapper.find('[data-test="results-pane"]').element as HTMLElement
+    // 默认 320px。
+    expect(pane().style.height).toBe('320px')
+    const splitter = wrapper.find('[data-test="console-splitter"]')
+    // 向上拖 100px → 高度 +100,松开写 localStorage。
+    await splitter.trigger('mousedown')
+    window.dispatchEvent(new MouseEvent('mousemove', { clientY: -100 }))
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+    expect(pane().style.height).toBe('420px')
+    expect(localStorage.getItem(RESULTS_HEIGHT_KEY)).toBe('420')
+    // 拖过头 → 被窗口高 80% 钳制(jsdom innerHeight 768 → 上限 614)。
+    await splitter.trigger('mousedown')
+    window.dispatchEvent(new MouseEvent('mousemove', { clientY: -9999 }))
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+    expect(pane().style.height).toBe('614px')
+    // 双击恢复 50/50(容器无布局高 → 回退窗口高一半 384)。
+    await splitter.trigger('dblclick')
+    await nextTick()
+    expect(pane().style.height).toBe('384px')
+    expect(localStorage.getItem(RESULTS_HEIGHT_KEY)).toBe('384')
+    wrapper.unmount()
+    // 重挂载:从 localStorage 读取持久化高度。
+    const wrapper2 = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper2, 'SELECT 1')
+    await wrapper2.find('[data-test="btn-ch-run"]').trigger('click')
+    await waitForCards(wrapper2, 1)
+    expect((wrapper2.find('[data-test="results-pane"]').element as HTMLElement).style.height).toBe('384px')
+    wrapper2.unmount()
   })
+
+  // --- 语句状态标记 ------------------------------------------------------------
+
+  it('发起时语句标记置 running,完成后按结果映射 ok/fail 与耗时/错误 detail', async () => {
+    let resolveExec: (value: CHStatementResult[]) => void = () => {}
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<CHStatementResult[]>((resolve) => { resolveExec = resolve }),
+    )
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1; SELECT bad')
+    await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+    await nextTick()
+    const editorComp = wrapper.findComponent(SqlEditor)
+    expect(editorComp.props('statementGutter')).toBe(true)
+    expect(editorComp.props('highlightCursorStatement')).toBe(true)
+    // from = 段起始 offset:第二段文本起始于 'SELECT 1; ' 之后(offset 10)。
+    expect(editorComp.props('statementMarks')).toEqual([
+      { from: 0, status: 'running' },
+      { from: 10, status: 'running' },
+    ])
+    resolveExec(twoStatements())
+    await waitForCards(wrapper, 2)
+    expect(editorComp.props('statementMarks')).toEqual([
+      { from: 0, status: 'ok', detail: '12 ms' },
+      { from: 10, status: 'fail', detail: 'Syntax error (multi-statements not allowed)' },
+    ])
+    wrapper.unmount()
+  })
+
+  it('编辑器内容变化后按语句文本重新匹配 marks,匹配不到的丢弃', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(twoStatements())
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1; SELECT bad')
+    await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+    await waitForCards(wrapper, 2)
+    // 改写第一条语句文本 → 其标记被丢弃;第二条文本未变 → 标记保留并重定位
+    // ('SELECT 42;' 比 'SELECT 1;' 长 1 字符,第二段 from 随之变为 11)。
+    await typeSql(wrapper, 'SELECT 42; SELECT bad')
+    await nextTick()
+    expect(wrapper.findComponent(SqlEditor).props('statementMarks')).toEqual([
+      { from: 11, status: 'fail', detail: 'Syntax error (multi-statements not allowed)' },
+    ])
+    wrapper.unmount()
+  })
+
+  // --- 空态与状态栏 ------------------------------------------------------------
+
+  it('结果区打开但无结果时显示快捷键引导空态卡', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    await typeSql(wrapper, 'SELECT 1')
+    await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="results-pane"]').exists()).toBe(true)
+    })
+    const empty = wrapper.find('[data-test="results-empty"]')
+    expect(empty.exists()).toBe(true)
+    expect(empty.text()).toContain('⌘Enter 执行当前语句')
+    expect(empty.text()).toContain('⌘Shift+Enter 运行全部')
+    wrapper.unmount()
+  })
+
+  it('状态栏显示光标行列、语句条数与最近耗时', async () => {
+    ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(twoStatements())
+    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+    const bar = () => wrapper.find('[data-test="console-statusbar"]')
+    expect(bar().text()).toContain('行 1 : 列 1')
+    expect(bar().text()).toContain('语句 0 条')
+    await typeSql(wrapper, 'SELECT 1; SELECT bad')
+    expect(bar().text()).toContain('语句 2 条')
+    wrapper.findComponent(SqlEditor).vm.$emit('cursor', { line: 3, col: 5 })
+    await nextTick()
+    expect(bar().text()).toContain('行 3 : 列 5')
+    await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+    await waitForCards(wrapper, 2)
+    // 最近耗时 = 最近一次运行各语句耗时之和(12 + 3)。
+    expect(bar().text()).toContain('最近耗时 15 ms')
+    wrapper.unmount()
+  })
+
+  // --- 补全 --------------------------------------------------------------------
 
   it('loads CH tables on mount and passes them to SqlEditor for completion', async () => {
     ;(api.listCHTables as ReturnType<typeof vi.fn>).mockResolvedValue([
@@ -297,37 +522,7 @@ describe('CHSqlConsole', () => {
     wrapper2.unmount()
   })
 
-  it('runs only the selected text when the editor has a selection', async () => {
-    ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(
-      [{ sql: 'SELECT 2', duration_ms: 2, columns: [{ name: 'two', type: 'UInt8' }], rows: [['2']] }],
-    )
-    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
-    await typeSql(wrapper, 'SELECT 1; SELECT 2')
-    // 选中第二段 'SELECT 2'(10..18),运行按钮应只执行选中文本。
-    cmInput(wrapper).dispatch({ selection: { anchor: 10, head: 18 } })
-    await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
-    await vi.waitFor(() => {
-      expect(wrapper.findAll('[data-test="ch-stmt-card"]')).toHaveLength(1)
-    })
-    expect(api.chExecute).toHaveBeenCalledTimes(1)
-    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 2' })
-  })
-
-  it('runs only the selection on Cmd+Enter as well', async () => {
-    ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue(
-      [{ sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'one', type: 'UInt8' }], rows: [['1']] }],
-    )
-    const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
-    await typeSql(wrapper, 'SELECT 1; SELECT 2')
-    cmInput(wrapper).dispatch({ selection: { anchor: 0, head: 8 } })
-    cmInput(wrapper).contentDOM.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }),
-    )
-    await vi.waitFor(() => {
-      expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1' })
-    })
-    expect(api.chExecute).toHaveBeenCalledTimes(1)
-  })
+  // --- ⌘S 保存全链路 -----------------------------------------------------------
 
   it('opens the save-name prompt on Cmd/Ctrl+S when no file is open, and cancel writes nothing', async () => {
     const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
@@ -480,6 +675,14 @@ describe('CHSqlConsole', () => {
     wrapper.unmount()
   })
 
+  // 假文件列表(镜像后端 QueryFileInfo 形状,后端返回裸数组)。
+  function queryFiles(): { name: string; connection_id: string; size_bytes: number; mod_time_ms: number }[] {
+    return [
+      { name: '每日报表.sql', connection_id: 'ch1', size_bytes: 42, mod_time_ms: 1725840000000 },
+      { name: '重试扫描.sql', connection_id: 'ch2', size_bytes: 13, mod_time_ms: 1725840100000 },
+    ]
+  }
+
   // --- tab 标题跟随当前打开的 SQL 文件 ----------------------------------------
   // 控制台把 tabs store 中自己的 tab 重命名为当前关联文件名;未关联时保持
   // 默认标题「SQL 控制台」。
@@ -538,9 +741,9 @@ describe('CHSqlConsole', () => {
   })
 
   // --- 查询结果行内编辑(仅单表 SELECT 结果可编辑) ---------------------------
-  // 双击单元格 → 行内输入 → 回车 → 确认弹窗(展示 ALTER 语句与匹配行数)→
-  // 确认执行后重新执行该条语句刷新结果。composable/parser 用真实实现,
-  // 只 mock wailsjs 绑定(CHPreviewCellUpdate / CHUpdateCell)。
+  // 编辑 UI 由 SqlResultCard 渲染:双击/提交/取消经卡片事件进入组件状态机,
+  // 预览→确认→执行链路不变(确认弹窗仍由本组件渲染)。判定逻辑
+  // (parseCHSingleTableSelect)与 composable 用真实实现,只 mock wailsjs 绑定。
   describe('结果编辑', () => {
     // 单表 SELECT 结果:4 列,首行含 NULL(note)以便覆盖 NULL 原值构造。
     const singleTableSelect = (sql = "SELECT * FROM events WHERE id = 'a' LIMIT 10"): CHStatementResult => ({
@@ -561,42 +764,50 @@ describe('CHSqlConsole', () => {
       const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
       await typeSql(wrapper, results.map((r) => r.sql).join('; '))
       await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
-      await vi.waitFor(() => {
-        expect(wrapper.findAll('[data-test="ch-stmt-card"]')).toHaveLength(results.length)
-      })
+      await waitForCards(wrapper, results.length)
       return wrapper
     }
 
-    // 第 card 张结果卡片第 row 行第 col 列的数据单元格。
-    function cellTd(wrapper: VueWrapper, card: number, row: number, col: number) {
-      return wrapper
-        .findAll('[data-test="ch-stmt-card"]')[card]
-        .findAll('[data-test="ch-stmt-row"]')[row]
-        .findAll('td')[col]
+    // 双击卡片单元格进入编辑。
+    async function startEdit(wrapper: VueWrapper, cardIndex: number, row: number, col: number): Promise<void> {
+      resultCards(wrapper)[cardIndex].vm.$emit('cell-dblclick', row, col)
+      await nextTick()
     }
 
-    // 双击单元格并在行内输入框中输入文本(不提交)。
-    async function startEdit(wrapper: VueWrapper, text: string): Promise<void> {
-      await cellTd(wrapper, 0, 0, 0).trigger('dblclick')
-      const editor = wrapper.find('[data-test="ch-cell-editor"]')
-      ;(editor.element as HTMLInputElement).value = text
-      await editor.trigger('input')
-    }
-
-    // 行内回车提交,等待确认弹窗出现。
-    async function submitAndOpenConfirm(wrapper: VueWrapper): Promise<void> {
-      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.enter')
+    // 双击 + 提交,等待确认弹窗出现。
+    async function editAndSubmit(wrapper: VueWrapper, value: string): Promise<void> {
+      await startEdit(wrapper, 0, 0, 0)
+      resultCards(wrapper)[0].vm.$emit('edit-commit', value)
       await vi.waitFor(() => {
         expect(bodyEl('confirm-dialog')).not.toBeNull()
       })
     }
 
-    it('单表 SELECT 结果双击出现行内编辑框,回车后确认弹窗展示 ALTER 语句与匹配行数', async () => {
+    it('insertTarget 由 parseCHSingleTableSelect 判定后传给卡片,复杂查询为 null', async () => {
       const wrapper = await mountWithResults([singleTableSelect()])
-      await startEdit(wrapper, 'b')
-      await submitAndOpenConfirm(wrapper)
-      expect(bodyEl('confirm-dialog-message')?.textContent).toContain('ALTER TABLE events UPDATE')
-      expect(bodyEl('confirm-dialog-message')?.textContent).toContain('匹配 1 行')
+      expect(resultCards(wrapper)[0].props('insertTarget')).toEqual({ database: '', table: 'events' })
+      wrapper.unmount()
+      const join: CHStatementResult = {
+        sql: 'SELECT a.id FROM events a JOIN users b ON a.uid = b.id',
+        duration_ms: 1,
+        columns: [{ name: 'id', type: 'String' }],
+        rows: [['x']],
+      }
+      const wrapper2 = await mountWithResults([join])
+      expect(resultCards(wrapper2)[0].props('insertTarget')).toBeNull()
+      wrapper2.unmount()
+    })
+
+    it('cell-dblclick 进入编辑(editing 含原值草稿),edit-commit 发起预览', async () => {
+      const wrapper = await mountWithResults([singleTableSelect()])
+      const card = resultCards(wrapper)[0]
+      card.vm.$emit('cell-dblclick', 0, 1)
+      await nextTick()
+      expect(card.props('editing')).toEqual({ row: 0, col: 1, draft: 'alice' })
+      card.vm.$emit('edit-commit', 'carol')
+      await vi.waitFor(() => {
+        expect(cellApp.CHPreviewCellUpdate).toHaveBeenCalledTimes(1)
+      })
       // database 未限定 → 原样传空串;表名来自解析结果。
       expect(cellApp.CHPreviewCellUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ connection_id: 'ch1', database: '', table: 'events' }),
@@ -604,48 +815,11 @@ describe('CHSqlConsole', () => {
       wrapper.unmount()
     })
 
-    it('确认后重新执行该条语句并替换其结果,其他语句结果不受影响', async () => {
-      const first = singleTableSelect()
-      const second: CHStatementResult = {
-        sql: 'SELECT 42',
-        duration_ms: 1,
-        columns: [{ name: 'answer', type: 'UInt8' }],
-        rows: [['42']],
-      }
-      const exec = api.chExecute as ReturnType<typeof vi.fn>
-      exec.mockResolvedValueOnce([first, second])
-      // 确认成功后的刷新:仅重跑第一条语句,返回更新后的行。
-      exec.mockResolvedValueOnce([{ ...first, rows: [['b', 'alice', '30', null]] }])
-      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
-      await typeSql(wrapper, `${first.sql}; ${second.sql}`)
-      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
-      await vi.waitFor(() => {
-        expect(wrapper.findAll('[data-test="ch-stmt-card"]')).toHaveLength(2)
-      })
-      await startEdit(wrapper, 'b')
-      await submitAndOpenConfirm(wrapper)
-      ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
-      // 刷新入参是该条语句的原文(而非整段脚本)。
-      await vi.waitFor(() => {
-        expect(exec).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: first.sql })
-      })
-      // 第一条结果被替换为刷新后的行;第二条结果保持原样。
-      await vi.waitFor(() => {
-        expect(cellTd(wrapper, 0, 0, 0).text()).toBe('b')
-      })
-      expect(cellTd(wrapper, 1, 0, 0).text()).toBe('42')
-      expect(cellApp.CHUpdateCell).toHaveBeenCalledTimes(1)
-      wrapper.unmount()
-    })
-
     it('预览入参:set 为编辑列与列类型,where 为整行列原值(NULL→null)', async () => {
       const wrapper = await mountWithResults([singleTableSelect("SELECT * FROM analytics.events WHERE id = 'a' LIMIT 10")])
       // 编辑第 2 列(name),其中 where 需含整行 4 列原值。
-      await cellTd(wrapper, 0, 0, 1).trigger('dblclick')
-      const editor = wrapper.find('[data-test="ch-cell-editor"]')
-      ;(editor.element as HTMLInputElement).value = 'carol'
-      await editor.trigger('input')
-      await editor.trigger('keydown.enter')
+      await startEdit(wrapper, 0, 0, 1)
+      resultCards(wrapper)[0].vm.$emit('edit-commit', 'carol')
       await vi.waitFor(() => {
         expect(cellApp.CHPreviewCellUpdate).toHaveBeenCalledTimes(1)
       })
@@ -666,15 +840,45 @@ describe('CHSqlConsole', () => {
 
     it('空输入提交按 NULL 写入', async () => {
       const wrapper = await mountWithResults([singleTableSelect()])
-      await startEdit(wrapper, '')
-      await submitAndOpenConfirm(wrapper)
+      await editAndSubmit(wrapper, '')
       expect(cellApp.CHPreviewCellUpdate).toHaveBeenCalledWith(
         expect.objectContaining({ set: { column: 'id', type: 'String', value: null } }),
       )
       wrapper.unmount()
     })
 
-    it('JOIN / GROUP BY 查询结果只读:双击无编辑框', async () => {
+    it('确认后重新执行该条语句并替换其结果,其他语句结果不受影响', async () => {
+      const first = singleTableSelect()
+      const second: CHStatementResult = {
+        sql: 'SELECT 42',
+        duration_ms: 1,
+        columns: [{ name: 'answer', type: 'UInt8' }],
+        rows: [['42']],
+      }
+      const exec = api.chExecute as ReturnType<typeof vi.fn>
+      exec.mockResolvedValueOnce([first, second])
+      // 确认成功后的刷新:仅重跑第一条语句,返回更新后的行。
+      exec.mockResolvedValueOnce([{ ...first, rows: [['b', 'alice', '30', null]] }])
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, `${first.sql}; ${second.sql}`)
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await waitForCards(wrapper, 2)
+      await editAndSubmit(wrapper, 'b')
+      ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
+      // 刷新入参是该条语句的原文(而非整段脚本)。
+      await vi.waitFor(() => {
+        expect(exec).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: first.sql })
+      })
+      // 第一条结果被替换为刷新后的行;第二条结果保持原样。
+      await vi.waitFor(() => {
+        expect(resultCards(wrapper)[0].props('rows')).toEqual([['b', 'alice', '30', null]])
+      })
+      expect(resultCards(wrapper)[1].props('rows')).toEqual([['42']])
+      expect(cellApp.CHUpdateCell).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    })
+
+    it('JOIN / GROUP BY 结果只读:cell-dblclick 不进入编辑也不发起预览', async () => {
       const join: CHStatementResult = {
         sql: 'SELECT a.id FROM events a JOIN users b ON a.uid = b.id',
         duration_ms: 1,
@@ -691,40 +895,39 @@ describe('CHSqlConsole', () => {
         rows: [['ok', '2']],
       }
       const wrapper = await mountWithResults([join, group])
-      for (const card of [0, 1]) {
-        const td = cellTd(wrapper, card, 0, 0)
-        await td.trigger('dblclick')
-        expect(td.find('[data-test="ch-cell-editor"]').exists()).toBe(false)
-        expect(td.attributes('title')).toContain('仅单表查询结果可编辑')
+      for (const i of [0, 1]) {
+        const card = resultCards(wrapper)[i]
+        card.vm.$emit('cell-dblclick', 0, 0)
+        await nextTick()
+        expect(card.props('editing')).toBeNull()
       }
       expect(cellApp.CHPreviewCellUpdate).not.toHaveBeenCalled()
       wrapper.unmount()
     })
 
-    it('Esc / blur 取消编辑不发起预览', async () => {
+    it('edit-cancel 取消编辑,不发起预览', async () => {
       const wrapper = await mountWithResults([singleTableSelect()])
-      await cellTd(wrapper, 0, 0, 0).trigger('dblclick')
-      await wrapper.find('[data-test="ch-cell-editor"]').trigger('keydown.esc')
-      expect(wrapper.find('[data-test="ch-cell-editor"]').exists()).toBe(false)
-      // blur 同样取消:再次进入编辑后失焦,编辑框消失。
-      await cellTd(wrapper, 0, 0, 0).trigger('dblclick')
-      await wrapper.find('[data-test="ch-cell-editor"]').trigger('blur')
-      expect(wrapper.find('[data-test="ch-cell-editor"]').exists()).toBe(false)
+      const card = resultCards(wrapper)[0]
+      card.vm.$emit('cell-dblclick', 0, 0)
+      await nextTick()
+      expect(card.props('editing')).not.toBeNull()
+      card.vm.$emit('edit-cancel')
+      await nextTick()
+      expect(card.props('editing')).toBeNull()
       expect(cellApp.CHPreviewCellUpdate).not.toHaveBeenCalled()
       wrapper.unmount()
     })
 
     it('取消确认弹窗不执行更新', async () => {
       const wrapper = await mountWithResults([singleTableSelect()])
-      await startEdit(wrapper, 'b')
-      await submitAndOpenConfirm(wrapper)
+      await editAndSubmit(wrapper, 'b')
       ;(bodyEl('confirm-dialog-cancel') as HTMLElement).click()
       await vi.waitFor(() => {
         expect(bodyEl('confirm-dialog')).toBeNull()
       })
       expect(cellApp.CHUpdateCell).not.toHaveBeenCalled()
       // 结果保持原值。
-      expect(cellTd(wrapper, 0, 0, 0).text()).toBe('a')
+      expect(resultCards(wrapper)[0].props('rows')).toEqual([['a', 'alice', '30', null]])
       wrapper.unmount()
     })
 
@@ -733,13 +936,13 @@ describe('CHSqlConsole', () => {
         throw new Error('模拟更新失败')
       })
       const wrapper = await mountWithResults([singleTableSelect()])
-      await startEdit(wrapper, 'b')
-      await submitAndOpenConfirm(wrapper)
+      const execCalls = (api.chExecute as ReturnType<typeof vi.fn>).mock.calls.length
+      await editAndSubmit(wrapper, 'b')
       ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
       await vi.waitFor(() => {
         expect(wrapper.find('[data-test="ch-sql-error"]').text()).toContain('模拟更新失败')
       })
-      expect(api.chExecute).toHaveBeenCalledTimes(1)
+      expect((api.chExecute as ReturnType<typeof vi.fn>).mock.calls.length).toBe(execCalls)
       wrapper.unmount()
     })
   })

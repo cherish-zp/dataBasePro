@@ -5,11 +5,11 @@ import type { Message } from '@/api/types'
 import { OffsetEarliest } from '@/api/types'
 import { parseSelect, matchesWhere } from '@/utils/sql'
 import { formatTime, displayValue } from '@/utils/format'
-import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, exportCsv, exportJsonl, saveFile } from '@/utils/export'
-import ExportDropdown from '@/components/common/ExportDropdown.vue'
+import { splitSqlStatements } from '@/utils/sqlSplit'
 import PromptDialog from '@/components/common/PromptDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import SqlEditor from '@/components/common/SqlEditor.vue'
+import SqlResultCard from '@/components/common/SqlResultCard.vue'
 import type { SqlTableSchema } from '@/components/common/SqlEditor.vue'
 import { useQueryFiles } from '@/composables/queryFiles'
 import { useSqlHistoryStore } from '@/store/sqlhistory'
@@ -25,8 +25,72 @@ const props = defineProps<{
 // 有 topic 时预填模板;无 topic 的 tab(顶栏「新建查询」)以空编辑器打开。
 const sql = ref(props.topic ? `SELECT * FROM ${props.topic} LIMIT 100` : '')
 const running = ref(false)
+// 解析类错误(可读性提示)走 sql-error;整次请求级错误走结果卡 error,
+// 与 CH/MySQL 控制台保持一致的卡片视觉。
 const error = ref<string | null>(null)
+const runError = ref<string | null>(null)
 const results = ref<Message[]>([])
+const editor = ref<InstanceType<typeof SqlEditor> | null>(null)
+
+// --- IDE 式结果区:开合 + 可拖拽高度 -----------------------------------------
+// 结果区在「执行发起」时打开,× 可关闭;高度与其他控制台共用同一 localStorage
+// key,默认 320,拖拽范围 [160, 窗口 80%],双击分隔条恢复 50/50。
+const resultsOpen = ref(false)
+const RESULTS_HEIGHT_KEY = 'dbclient-sql-results-height'
+const RESULTS_HEIGHT_DEFAULT = 320
+const RESULTS_HEIGHT_MIN = 160
+
+function clampResultsHeight(h: number): number {
+  const max = Math.round(window.innerHeight * 0.8)
+  return Math.min(max, Math.max(RESULTS_HEIGHT_MIN, Math.round(h)))
+}
+
+function loadResultsHeight(): number {
+  const raw = localStorage.getItem(RESULTS_HEIGHT_KEY)
+  const n = raw == null ? NaN : Number(raw)
+  return Number.isFinite(n) ? clampResultsHeight(n) : RESULTS_HEIGHT_DEFAULT
+}
+
+const resultsHeight = ref(loadResultsHeight())
+
+watch(resultsHeight, (h) => {
+  localStorage.setItem(RESULTS_HEIGHT_KEY, String(h))
+})
+
+let dragStartY = 0
+let dragStartHeight = 0
+
+function onSplitterPointerdown(e: PointerEvent): void {
+  e.preventDefault()
+  dragStartY = e.clientY
+  dragStartHeight = resultsHeight.value
+  window.addEventListener('pointermove', onSplitterPointermove)
+  window.addEventListener('pointerup', onSplitterPointerup)
+}
+
+// 结果区贴底:向上拖(clientY 变小)→ 变高。
+function onSplitterPointermove(e: PointerEvent): void {
+  resultsHeight.value = clampResultsHeight(dragStartHeight + (dragStartY - e.clientY))
+}
+
+function onSplitterPointerup(): void {
+  window.removeEventListener('pointermove', onSplitterPointermove)
+  window.removeEventListener('pointerup', onSplitterPointerup)
+}
+
+function onSplitterDblclick(): void {
+  resultsHeight.value = clampResultsHeight(Math.round(window.innerHeight / 2))
+}
+
+// --- 状态栏:行:列 · 语句 N 条 · 最近耗时 ------------------------------------
+const cursorPos = ref<{ line: number; col: number }>({ line: 1, col: 1 })
+const lastDurationMs = ref<number | null>(null)
+
+function onCursor(pos: { line: number; col: number }): void {
+  cursorPos.value = pos
+}
+
+const stmtCount = computed(() => splitSqlStatements(sql.value).length)
 
 // --- CodeMirror 补全来源:当前连接的 topic 列表映射为 {name: topic} ----------
 // 仅作补全提示,拉取失败静默降级为空(不阻塞控制台主流程)。
@@ -75,15 +139,63 @@ watch(
     // 无 topic 的 tab 回退为空串(而不是产生 "FROM " 的坏模板)。
     sql.value = draftByTopic[draftKey(props.connectionId, t)] ?? (t ? `SELECT * FROM ${t} LIMIT 100` : '')
     results.value = []
+    error.value = null
+    runError.value = null
+    markEntries.value = []
   },
 )
 
 const sqlHistory = useSqlHistoryStore()
 
-async function run(): Promise<void> {
+// --- 语句状态标记 -------------------------------------------------------------
+// Kafka 的 run 是整次请求:发起时把被执行 SQL 对应的语句标记为 running,
+// 结束后改为 ok(耗时)或 fail(错误)。标记按「语句文本(trim 后相等)」
+// 记忆,编辑后在新文档里重匹配,文本对不上(被编辑过)则消失。
+interface MarkEntry {
+  text: string
+  status: 'ok' | 'fail' | 'running'
+  detail?: string
+}
+const markEntries = ref<MarkEntry[]>([])
+
+// 在当前文档里定位被执行 SQL 所属的语句(取其文本作为重匹配键):
+// 先按 trim 相等(整段/单语句运行),再按包含关系(选区运行落在某条语句内),
+// 最后兜底首条语句。
+function locateStatementText(doc: string, executed: string): string | null {
+  const stmts = splitSqlStatements(doc)
+  if (stmts.length === 0) return null
+  const t = executed.trim()
+  if (!t) return stmts[0].text.trim()
+  const exact = stmts.find((s) => s.text.trim() === t)
+  if (exact) return exact.text.trim()
+  const containing = stmts.find((s) => s.text.includes(t))
+  return (containing ?? stmts[0]).text.trim()
+}
+
+const statementMarks = computed<{ from: number; status: 'ok' | 'fail' | 'running'; detail?: string }[]>(() => {
+  if (markEntries.value.length === 0) return []
+  const stmts = splitSqlStatements(sql.value)
+  const out: { from: number; status: 'ok' | 'fail' | 'running'; detail?: string }[] = []
+  for (const m of markEntries.value) {
+    const hit = stmts.find((s) => s.text.trim() === m.text)
+    if (hit) out.push({ from: hit.from, status: m.status, detail: m.detail })
+  }
+  return out
+})
+
+// run 执行一段 SQL:默认「选区非空执行选中,否则整个查询」;传入 script 时
+// (运行全部/语句槽 ▶)以传入内容为准。编辑器有选区时 getSelection() 返回
+// 非空文本,否则空串。
+async function run(script?: string): Promise<void> {
+  if (running.value) return
+  const selection = editor.value?.getSelection() ?? ''
+  const executed = script ?? (selection.trim() !== '' ? selection : sql.value)
   error.value = null
+  runError.value = null
   results.value = []
-  const parsed = parseSelect(sql.value)
+  markEntries.value = []
+  resultsOpen.value = true
+  const parsed = parseSelect(executed)
   if (parsed.error) {
     error.value = parsed.error
     return
@@ -94,11 +206,14 @@ async function run(): Promise<void> {
     error.value = 'SQL 中未找到表名,请写 SELECT ... FROM <topic>'
     return
   }
+  const markText = locateStatementText(sql.value, executed)
+  markEntries.value = markText ? [{ text: markText, status: 'running' }] : []
+  lastStatement.value = executed
   // Record at submission: the query was accepted for execution, regardless of
   // whether the broker later returns rows or errors (simple console behavior).
-  const submitted = sql.value
-  sqlHistory.record(submitted)
+  sqlHistory.record(executed)
   running.value = true
+  const startedAt = performance.now()
   try {
     const fetched = await getApi().consumeMessages({
       connection_id: props.connectionId,
@@ -111,25 +226,44 @@ async function run(): Promise<void> {
     if (parsed.limit != null) out = out.slice(0, parsed.limit)
     results.value = out
     // A successful run validates the query: no longer a pending draft for the
-    // current topic. Remember what was run so the topic-switch watch skips
-    // re-saving it (which would otherwise resurrect the just-run SQL).
-    const key = draftKey(props.connectionId, props.topic)
-    lastRunByTopic[key] = submitted
-    delete draftByTopic[key]
+    // current topic. Only the whole-query runs (executed == editor content)
+    // clear the draft — a selection run leaves the rest of the editor pending.
+    if (executed.trim() === sql.value.trim()) {
+      const key = draftKey(props.connectionId, props.topic)
+      lastRunByTopic[key] = sql.value
+      delete draftByTopic[key]
+    }
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e)
+    runError.value = e instanceof Error ? e.message : String(e)
   } finally {
+    const ms = Math.round(performance.now() - startedAt)
+    lastDurationMs.value = ms
+    markEntries.value = markEntries.value.map((m) =>
+      m.status === 'running'
+        ? { ...m, status: runError.value ? 'fail' : 'ok', detail: runError.value ?? `${ms} ms` }
+        : m,
+    )
     running.value = false
   }
 }
 
-// onEditorKeydown runs the query on ⌘Enter/Ctrl+Enter and saves on ⌘S/Ctrl+S.
-// The IME guard leaves keys during composition (e.g. committing a Chinese
-// candidate) untouched, so the IME keeps the key; a plain Enter stays a
-// newline in the editor.
+// 工具栏按钮 / ⌘Shift+Enter:运行全部,无视选区。
+function runAll(): void {
+  void run(sql.value)
+}
+
+// 语句槽 ▶:执行被点中的那条语句(单语句文档下等价于 run())。
+function onRunStatement(text: string): void {
+  void run(text)
+}
+
+// onEditorKeydown runs the query on ⌘Enter/Ctrl+Enter(选中优先)、⌘Shift+Enter
+// 运行全部,并保存 on ⌘S/Ctrl+S。The IME guard leaves keys during composition
+// (e.g. committing a Chinese candidate) untouched, so the IME keeps the key; a
+// plain Enter stays a newline in the editor.
 function onEditorKeydown(e: KeyboardEvent): void {
   if (e.isComposing || e.keyCode === 229) return
-  // 与「执行」按钮的 :disabled="running" 守卫一致：运行中连按快捷键不重复触发。
+  // 与「运行全部」按钮的 :disabled="running" 守卫一致：运行中连按快捷键不重复触发。
   if (running.value) return
   if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
     e.preventDefault()
@@ -138,7 +272,11 @@ function onEditorKeydown(e: KeyboardEvent): void {
   }
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
     e.preventDefault()
-    void run()
+    if (e.shiftKey) {
+      runAll()
+    } else {
+      void run()
+    }
   }
 }
 
@@ -240,16 +378,6 @@ defineExpose({
   currentFile: (): string | null => currentFile.value,
 })
 
-// exportAs downloads the current result rows in the picked format. The
-// dropdown component owns its open state and outside-click closing.
-function exportAs(format: 'csv' | 'jsonl'): void {
-  if (format === 'csv') {
-    void saveFile('query-results', exportCsv(results.value, MESSAGE_EXPORT_COLUMNS), CSV_MIME)
-  } else {
-    void saveFile('query-results', exportJsonl(results.value), JSONL_MIME)
-  }
-}
-
 // History/favorites dropdown: refills the editor and re-executes the picked
 // query; favorites are named, savable and removable inline.
 const historyOpen = ref(false)
@@ -259,12 +387,13 @@ const favName = ref('')
 
 // applyQuery fills the editor with the picked query and executes it right
 // away (回填触发执行), closing the menu. Like the ⌘Enter guard, it must not
-// start a second fetch while a query is in flight (BL-006).
+// start a second fetch while a query is in flight (BL-006). Explicitly pass
+// the picked query so a stale editor selection cannot hijack the run.
 function applyQuery(q: string): void {
   if (running.value) return
   historyOpen.value = false
   sql.value = q
-  void run()
+  void run(q)
 }
 
 function openFavForm(): void {
@@ -298,131 +427,175 @@ function onDocClick(e: MouseEvent): void {
 }
 
 onMounted(() => document.addEventListener('click', onDocClick))
-onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick)
+  onSplitterPointerup()
+})
+
+// --- 结果卡喂参 ---------------------------------------------------------------
+// 结果经共享 SqlResultCard 展示:消息列映射为字符串单元(保持既有展示语义),
+// 行号/导出由卡片自带;Kafka 消息无 INSERT 语义,insertTarget 恒为 null。
+// 列名与列序与 MESSAGE_EXPORT_COLUMNS 的导出标签保持一致(Partition/Offset/
+// Timestamp/Key/Value)。
+const lastStatement = ref('')
+
+const resultColumns = computed(() => [
+  { name: 'Partition' },
+  { name: 'Offset' },
+  { name: 'Timestamp' },
+  { name: 'Key' },
+  { name: 'Value' },
+])
+
+const resultRows = computed<(string | null)[][]>(() =>
+  results.value.map((m) => [
+    String(m.partition),
+    String(m.offset),
+    formatTime(m.timestamp),
+    displayValue(m.key),
+    displayValue(m.value),
+  ]),
+)
 </script>
 
 <template>
   <div class="sql-console" data-test="sql-console">
-    <div class="sql-toolbar" data-test="sql-toolbar">
-      <label class="sql-field grow" data-test="sql-field">
-        <span class="label">SQL</span>
-        <div class="cm-host" @keydown="onEditorKeydown">
-          <SqlEditor
-            v-model="sql"
-            :tables="tables"
-            :placeholder="topic ? undefined : '输入 SQL,表名写在 FROM 子句'"
-            height="220px"
-            data-test="input-sql"
-          />
-        </div>
-      </label>
-      <div ref="historyRoot" class="history-menu" data-test="history-menu">
-        <button class="btn ghost" type="button" data-test="history-toggle" @click="historyOpen = !historyOpen">
-          历史/收藏 ▾
+    <div class="editor-area" data-test="editor-area">
+      <div class="sql-toolbar" data-test="sql-toolbar">
+        <button class="btn primary" type="button" data-test="btn-run" :disabled="running" @click="runAll">
+          {{ running ? '执行中…' : '运行全部' }}
         </button>
-        <div v-if="historyOpen" class="history-pop" data-test="history-pop">
-          <div class="pop-section">
-            <div class="pop-title">历史</div>
-            <button
-              v-for="q in sqlHistory.history"
-              :key="q"
-              class="pop-item"
-              type="button"
-              data-test="history-item"
-              :title="q"
-              @click="applyQuery(q)"
-            >
-              {{ q }}
-            </button>
-            <div v-if="!sqlHistory.history.length" class="pop-empty" data-test="history-empty">暂无历史</div>
-          </div>
-          <div class="pop-section">
-            <div class="pop-title-row">
-              <span class="pop-title">收藏</span>
-              <button class="fav-save" type="button" data-test="fav-save" :disabled="!sql.trim()" @click="openFavForm">
-                保存当前查询
-              </button>
-            </div>
-            <div v-if="favFormOpen" class="fav-form">
-              <input
-                v-model="favName"
-                class="fav-name"
-                data-test="fav-name-input"
-                placeholder="收藏名称"
-                @keydown.enter.prevent="confirmSave"
-              />
+        <span class="toolbar-hint">⌘Enter 执行当前语句 · ⌘Shift+Enter 运行全部</span>
+        <div ref="historyRoot" class="history-menu" data-test="history-menu">
+          <button class="btn ghost" type="button" data-test="history-toggle" @click="historyOpen = !historyOpen">
+            历史/收藏 ▾
+          </button>
+          <div v-if="historyOpen" class="history-pop" data-test="history-pop">
+            <div class="pop-section">
+              <div class="pop-title">历史</div>
               <button
-                class="btn primary fav-confirm"
-                type="button"
-                data-test="fav-confirm"
-                :disabled="!favName.trim()"
-                @click="confirmSave"
-              >
-                确认
-              </button>
-            </div>
-            <div v-for="f in sqlHistory.favorites" :key="f.name" class="fav-row">
-              <button
+                v-for="q in sqlHistory.history"
+                :key="q"
                 class="pop-item"
                 type="button"
-                data-test="fav-item"
-                :title="f.sql"
-                @click="applyQuery(f.sql)"
+                data-test="history-item"
+                :title="q"
+                @click="applyQuery(q)"
               >
-                {{ f.name }}
+                {{ q }}
               </button>
-              <button
-                class="fav-remove"
-                type="button"
-                data-test="fav-remove"
-                title="删除收藏"
-                @click="sqlHistory.removeFavorite(f.name)"
-              >
-                ✕
-              </button>
+              <div v-if="!sqlHistory.history.length" class="pop-empty" data-test="history-empty">暂无历史</div>
             </div>
-            <div v-if="!sqlHistory.favorites.length" class="pop-empty" data-test="fav-empty">暂无收藏</div>
+            <div class="pop-section">
+              <div class="pop-title-row">
+                <span class="pop-title">收藏</span>
+                <button class="fav-save" type="button" data-test="fav-save" :disabled="!sql.trim()" @click="openFavForm">
+                  保存当前查询
+                </button>
+              </div>
+              <div v-if="favFormOpen" class="fav-form">
+                <input
+                  v-model="favName"
+                  class="fav-name"
+                  data-test="fav-name-input"
+                  placeholder="收藏名称"
+                  @keydown.enter.prevent="confirmSave"
+                />
+                <button
+                  class="btn primary fav-confirm"
+                  type="button"
+                  data-test="fav-confirm"
+                  :disabled="!favName.trim()"
+                  @click="confirmSave"
+                >
+                  确认
+                </button>
+              </div>
+              <div v-for="f in sqlHistory.favorites" :key="f.name" class="fav-row">
+                <button
+                  class="pop-item"
+                  type="button"
+                  data-test="fav-item"
+                  :title="f.sql"
+                  @click="applyQuery(f.sql)"
+                >
+                  {{ f.name }}
+                </button>
+                <button
+                  class="fav-remove"
+                  type="button"
+                  data-test="fav-remove"
+                  title="删除收藏"
+                  @click="sqlHistory.removeFavorite(f.name)"
+                >
+                  ✕
+                </button>
+              </div>
+              <div v-if="!sqlHistory.favorites.length" class="pop-empty" data-test="fav-empty">暂无收藏</div>
+            </div>
           </div>
         </div>
       </div>
-      <button class="btn primary" type="button" data-test="btn-run" :disabled="running" @click="run">
-        {{ running ? '执行中…' : '执行' }}
-      </button>
+
+      <div class="editor-host" @keydown="onEditorKeydown">
+        <SqlEditor
+          ref="editor"
+          v-model="sql"
+          :tables="tables"
+          :placeholder="topic ? undefined : '输入 SQL,表名写在 FROM 子句'"
+          height="100%"
+          :statement-gutter="true"
+          :statement-marks="statementMarks"
+          :highlight-cursor-statement="true"
+          data-test="input-sql"
+          @run-statement="onRunStatement"
+          @cursor="onCursor"
+        />
+      </div>
+
+      <div class="hint">支持：<code>SELECT * FROM &lt;topic&gt;</code>，<code>WHERE key='x' / value LIKE '%x%'</code>，<code>LIMIT n</code>。</div>
+
+      <div v-if="error" class="msg err" data-test="sql-error">{{ error }}</div>
+
+      <div class="statusbar" data-test="console-statusbar">
+        <span data-test="statusbar-cursor">{{ cursorPos.line }}:{{ cursorPos.col }}</span>
+        <span data-test="statusbar-statements">语句 {{ stmtCount }} 条</span>
+        <span data-test="statusbar-duration">最近耗时 {{ lastDurationMs === null ? '—' : lastDurationMs + ' ms' }}</span>
+      </div>
     </div>
 
-    <div class="hint">支持：<code>SELECT * FROM &lt;topic&gt;</code>，<code>WHERE key='x' / value LIKE '%x%'</code>，<code>LIMIT n</code>。</div>
-
-    <div v-if="error" class="msg err" data-test="sql-error">{{ error }}</div>
-
-    <div class="results-panel" data-test="sql-results">
-      <div class="results-header">
-        <span>查询结果（{{ results.length }} 条）</span>
-        <ExportDropdown :disabled="results.length === 0" @export="exportAs" />
+    <template v-if="resultsOpen">
+      <div
+        class="splitter"
+        data-test="console-splitter"
+        title="拖拽调整结果区高度,双击恢复对分"
+        @pointerdown="onSplitterPointerdown"
+        @dblclick="onSplitterDblclick"
+      ></div>
+      <div class="results-panel" data-test="sql-results" :style="{ height: resultsHeight + 'px' }">
+        <div class="results-header">
+          <span>查询结果</span>
+          <button class="results-close" type="button" data-test="results-close" title="关闭结果区" @click="resultsOpen = false">
+            ×
+          </button>
+        </div>
+        <SqlResultCard
+          v-if="runError || results.length"
+          class="result-host"
+          :statement="lastStatement"
+          :duration-ms="lastDurationMs"
+          :columns="resultColumns"
+          :rows="resultRows"
+          :insert-target="null"
+          export-name="query-results"
+          :error="runError"
+        />
+        <div v-else class="empty-card" data-test="results-empty">
+          <div class="empty-title">暂无结果</div>
+          <div class="empty-hint">⌘Enter 执行 · ⌘Shift+Enter 运行全部</div>
+        </div>
       </div>
-      <div v-if="results.length" class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Partition</th>
-              <th>Offset</th>
-              <th>Timestamp</th>
-              <th>Key</th>
-              <th>Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="m in results" :key="`${m.partition}:${m.offset}`" data-test="sql-row">
-              <td>{{ m.partition }}</td>
-              <td class="mono">{{ m.offset }}</td>
-              <td class="mono">{{ formatTime(m.timestamp) }}</td>
-              <td class="mono truncate">{{ displayValue(m.key) }}</td>
-              <td class="truncate">{{ displayValue(m.value) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-else class="empty" data-test="sql-empty">暂无结果</div>
-    </div>
+    </template>
 
     <!-- 查询文件相关弹窗:名称输入(保存/另存为)、覆盖确认、删除确认由
          composable 的状态驱动;载入确认是本组件的本地状态。 -->
@@ -471,26 +644,85 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
   color: var(--text);
   background: var(--bg-elevated);
 }
-.sql-toolbar {
+.editor-area {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  padding: 14px 16px;
+  flex-direction: column;
+}
+.sql-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.72);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
 }
-.sql-field { display: flex; flex-direction: column; gap: 5px; }
-.sql-field.grow { flex: 1; min-width: 0; }
-.label { font-size: 11px; font-weight: 600; color: var(--text-secondary); letter-spacing: 0.02em; }
-.cm-host { width: 100%; }
+.toolbar-hint { font-size: 12px; color: var(--text-tertiary); }
+.editor-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.editor-host :deep(.sql-editor) { flex: 1; min-width: 0; }
+.history-menu { margin-left: auto; position: relative; }
 .hint { font-size: 12px; color: var(--text-tertiary); padding: 7px 16px 0; }
 .hint code { background: var(--bg-subtle); padding: 1px 5px; border-radius: 5px; font-family: var(--mono); }
 .msg { font-size: 13px; border-radius: 9px; padding: 8px 12px; margin: 8px 16px 0; }
 .msg.err { background: var(--danger-soft); color: var(--danger); }
-.results-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 16px 16px; }
-.results-header { display: flex; align-items: center; gap: 12px; justify-content: space-between; font-size: 13px; font-weight: 600; padding: 6px 0 10px; }
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-tertiary);
+  background: var(--bg-elevated);
+}
+.splitter {
+  flex: none;
+  height: 7px;
+  cursor: row-resize;
+  border-top: 1px solid var(--border);
+  touch-action: none;
+  transition: background 0.1s ease;
+}
+.splitter:hover { background: var(--accent-soft); }
+.results-panel {
+  flex: none;
+  min-height: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 0 16px 14px;
+}
+.results-header { display: flex; align-items: center; gap: 12px; justify-content: space-between; font-size: 13px; font-weight: 600; padding: 4px 0 8px; }
+.results-close {
+  border: none; background: transparent; cursor: pointer; color: var(--text-tertiary);
+  font-size: 16px; line-height: 1; padding: 3px 8px; border-radius: var(--radius-sm);
+  transition: background 0.1s ease, color 0.1s ease;
+}
+.results-close:hover { background: var(--bg-hover); color: var(--text); }
+.result-host { flex: 1; min-height: 0; overflow: auto; }
+.empty-card {
+  flex: 1;
+  min-height: 0;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+}
+.empty-title { font-size: 13px; }
+.empty-hint { font-size: 12px; font-family: var(--mono); }
 .history-menu { position: relative; }
 .history-pop {
   position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; width: 380px; max-width: 70vw;
@@ -533,13 +765,6 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 .fav-remove:hover { background: var(--danger-soft); color: var(--danger); }
 .btn.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }
 .btn.ghost:hover:not(:disabled) { background: var(--bg-hover); }
-.table-wrap { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
-.table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.table th { position: sticky; top: 0; background: var(--bg-subtle); text-align: left; padding: 8px 12px; color: var(--text-secondary); font-weight: 600; border-bottom: 1px solid var(--border); z-index: 1; }
-.table td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
-.mono { font-family: var(--mono); }
-.truncate { max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.empty { text-align: center; color: var(--text-tertiary); padding: 24px; }
 .btn { border-radius: 9px; padding: 9px 20px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid transparent; transition: background 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.primary { background: var(--accent); color: #fff; box-shadow: 0 1px 2px rgba(0, 113, 227, 0.3); }
