@@ -221,6 +221,24 @@ describe('tabs store', () => {
     expect(other.id).toBe('ch:conn-1:logs:users')
   })
 
+  it('renameTab updates the title of the open tab by id', () => {
+    const store = useTabsStore()
+    const tab = store.openSql('conn-1', 'orders')
+    store.renameTab(tab.id, 'a.sql')
+    expect(store.openTabs[0].title).toBe('a.sql')
+    // 其他 tab 不受影响。
+    const other = store.openSql('conn-1', 'users')
+    store.renameTab(tab.id, 'b.sql')
+    expect(store.openTabs.find((t) => t.id === other.id)?.title).toBe('SQL · users')
+  })
+
+  it('renameTab is a no-op for an unknown tab id', () => {
+    const store = useTabsStore()
+    const tab = store.openSql('conn-1', 'orders')
+    store.renameTab('nope', 'a.sql')
+    expect(store.openTabs[0].title).toBe('SQL · orders')
+  })
+
   it('opens a clickhouse SQL console per connection and focuses it on reopen', () => {
     const store = useTabsStore()
     const tab = store.openCHSql('conn-1')

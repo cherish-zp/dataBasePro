@@ -4,6 +4,7 @@ import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { AuditEntry, Connection } from '@/api/types'
 import { APP_VERSION } from '@/version'
+import { DEFAULT_QUERY_DIR, QUERY_DIR_KEY } from '@/utils/queryDir'
 import SettingsPanel from './SettingsPanel.vue'
 
 const KEY = 'dbclient-theme'
@@ -308,5 +309,41 @@ describe('SettingsPanel', () => {
     expect(texts[1]).toContain('6379')
     expect(texts[2]).toContain('clickhouse-go')
     expect(texts[2]).toContain('9000')
+  })
+
+  // --- 通用 tab:查询文件目录 ---------------------------------------------------
+
+  it('shows the query dir section with the default dir when localStorage is empty', () => {
+    const wrapper = mountPanel()
+    expect(wrapper.find('[data-test="query-dir-section"]').exists()).toBe(true)
+    const input = wrapper.find('[data-test="input-query-dir"]')
+    expect(input.exists()).toBe(true)
+    expect((input.element as HTMLInputElement).value).toBe(DEFAULT_QUERY_DIR)
+    // 说明文字与恢复默认按钮齐备。
+    expect(wrapper.find('[data-test="query-dir-section"]').text()).toContain('查询文件目录')
+    expect(wrapper.find('[data-test="query-dir-section"]').text()).toContain('SQL 控制台的保存查询将存放为 .sql 文件')
+    expect(wrapper.find('[data-test="btn-query-dir-reset"]').exists()).toBe(true)
+  })
+
+  it('persists query dir input changes to localStorage immediately', async () => {
+    const wrapper = mountPanel()
+    await wrapper.find('[data-test="input-query-dir"]').setValue('/tmp/my-queries')
+    expect(localStorage.getItem(QUERY_DIR_KEY)).toBe('/tmp/my-queries')
+  })
+
+  it('removes the localStorage key when the query dir input is cleared', async () => {
+    localStorage.setItem(QUERY_DIR_KEY, '/tmp/my-queries')
+    const wrapper = mountPanel()
+    expect((wrapper.find('[data-test="input-query-dir"]').element as HTMLInputElement).value).toBe('/tmp/my-queries')
+    await wrapper.find('[data-test="input-query-dir"]').setValue('')
+    expect(localStorage.getItem(QUERY_DIR_KEY)).toBeNull()
+  })
+
+  it('resets the query dir to the default via the reset button', async () => {
+    localStorage.setItem(QUERY_DIR_KEY, '/tmp/my-queries')
+    const wrapper = mountPanel()
+    await wrapper.find('[data-test="btn-query-dir-reset"]').trigger('click')
+    expect((wrapper.find('[data-test="input-query-dir"]').element as HTMLInputElement).value).toBe(DEFAULT_QUERY_DIR)
+    expect(localStorage.getItem(QUERY_DIR_KEY)).toBe(DEFAULT_QUERY_DIR)
   })
 })

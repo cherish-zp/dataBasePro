@@ -54,7 +54,8 @@ export const useTabsStore = defineStore('tabs', () => {
     const tab: Tab = {
       id,
       kind: 'sql',
-      title: `SQL · ${topic}`,
+      // topic 为空表示「不针对某个 Topic」的通用 SQL 查询(顶栏/文件面板入口)。
+      title: topic ? `SQL · ${topic}` : 'SQL 查询',
       connectionId,
       topic,
       partitions,
@@ -227,6 +228,15 @@ export const useTabsStore = defineStore('tabs', () => {
     if (openTabs.value.some((t) => t.id === id)) activeTabId.value = id
   }
 
+  // renameTab updates the title of an open tab by id. SQL consoles use it to
+  // retitle their tab to the currently opened query file; a no-op when the id
+  // is not open.
+  function renameTab(id: string, title: string): void {
+    const tab = openTabs.value.find((t) => t.id === id)
+    if (!tab) return
+    tab.title = title
+  }
+
   return {
     openTabs,
     activeTabId,
@@ -243,5 +253,6 @@ export const useTabsStore = defineStore('tabs', () => {
     closeAll,
     move,
     setActive,
+    renameTab,
   }
 })

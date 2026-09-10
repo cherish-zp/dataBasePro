@@ -157,7 +157,14 @@ function getValue(): string {
   return view?.state.doc.toString() ?? props.modelValue
 }
 
-defineExpose({ focus, getValue })
+// 主光标选中的文本;无选区(光标)返回空串。供控制台「选中运行」读取选区。
+function getSelection(): string {
+  if (!view) return ''
+  const range = view.state.selection.main
+  return range.empty ? '' : view.state.sliceDoc(range.from, range.to)
+}
+
+defineExpose({ focus, getValue, getSelection })
 </script>
 
 <template>

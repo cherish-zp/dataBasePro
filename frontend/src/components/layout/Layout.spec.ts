@@ -1,17 +1,36 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Connection } from '@/api/types'
+import * as App from '../../../wailsjs/go/backend/App'
 import Layout from './Layout.vue'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
 import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
+import CHSqlConsole from '@/components/kafka/CHSqlConsole.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import { useConnectionsStore } from '@/store/connections'
 import { APP_VERSION } from '@/version'
 import { useTabsStore } from '@/store/tabs'
+import { useToastStore } from '@/store/toast'
+
+// SQL文件面板/composable 走 wailsjs 四方法;mock 之(其余方法走真实模块),
+// 由用例按需 mockResolvedValue 驱动文件列表与读取。
+const fileAppMocks = vi.hoisted(() => ({
+  ListQueryFiles: vi.fn(),
+  ReadQueryFile: vi.fn(),
+  WriteQueryFile: vi.fn(),
+  DeleteQueryFile: vi.fn(),
+}))
+vi.mock('../../../wailsjs/go/backend/App', async () => {
+  const actual = await vi.importActual<typeof import('../../../wailsjs/go/backend/App')>(
+    '../../../wailsjs/go/backend/App',
+  )
+  return { ...actual, ...fileAppMocks }
+})
+const fileApp = App as unknown as typeof fileAppMocks
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
   return {
@@ -90,6 +109,16 @@ const conn = (id: string): Connection => ({
   id, name: `conn-${id}`, type: 'kafka',
   config: { bootstrap_servers: ['h:1'] }, created_at: 1, updated_at: 1,
 })
+const chConn = (id: string): Connection => ({
+  ...conn(id), type: 'clickhouse', config: {} as Connection['config'],
+})
+const redisConn = (id: string): Connection => ({
+  ...conn(id), type: 'redis', config: {} as Connection['config'],
+})
+
+const queryFileRow = (name: string, connectionId: string) => ({
+  name, connection_id: connectionId, size_bytes: 1, mod_time_ms: 1_700_000_000_000,
+})
 
 function mountLayout(connections: Connection[] = [], overrides: Partial<Api> = {}) {
   setActivePinia(createPinia())
@@ -109,6 +138,14 @@ describe('Layout', () => {
     // Teleported overlays (palette, context menu) and window listeners from a
     // previous test must not survive into the next one.
     document.body.innerHTML = ''
+    // 查询文件四方法恢复默认空实现,避免用例间串扰。
+    fileAppMocks.ListQueryFiles.mockReset().mockResolvedValue([])
+    fileAppMocks.ReadQueryFile.mockReset()
+    fileAppMocks.WriteQueryFile.mockReset().mockResolvedValue(undefined)
+    fileAppMocks.DeleteQueryFile.mockReset().mockResolvedValue(undefined)
+    // 右栏展开态/宽度也会跨用例泄漏(挂载时提前刷新导致拿到空列表)。
+    localStorage.removeItem('dbclient-files-open')
+    localStorage.removeItem('dbclient-files-width')
   })
 
   it('shows the welcome view when no tab is open', () => {
@@ -213,19 +250,8 @@ describe('Layout', () => {
     expect(wrapper.find('[data-test="producer-panel"]').exists()).toBe(false)
   })
 
-  it('opens the sql console as a full tab from the message browser toolbar', async () => {
-    const { wrapper } = mountLayout([conn('a')])
-    emitTree(wrapper, 'open-topic', 'a', 'orders', [0, 1])
-    await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="message-browser"]').exists()).toBe(true)
-    })
-    await wrapper.findComponent(MessageBrowser).vm.$emit('open-sql')
-    await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="sql-console"]').exists()).toBe(true)
-    })
-    const tabs = wrapper.findAll('[data-test="tab"]')
-    expect(tabs.some((t) => t.text().includes('SQL'))).toBe(true)
-  })
+  // 旧「消息浏览工具栏打开 SQL 控制台」入口已删除:与顶栏新建查询完全重复,
+  // topic tab → SQL · orders 的行为由「新建查询」用例覆盖。
 
   it('opens the global lag overview as a full tab from the tree entry', async () => {
     const { wrapper } = mountLayout([conn('a')])
@@ -660,5 +686,195 @@ describe('Layout', () => {
     await vi.waitFor(() => {
       expect(api.checkUpdate).toHaveBeenCalledWith({ current_version: APP_VERSION })
     })
+  })
+
+  // --- 新建查询(SQL文件全局化) ---------------------------------------------
+
+  it('keeps 新建查询 disabled without an active tab or on a redis tab', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    const btn = wrapper.find('[data-test="btn-new-query"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.attributes('disabled')).toBeDefined()
+    expect(btn.attributes('title')).toBe('请先打开 Kafka/ClickHouse 连接的标签页')
+    // redis-keys tab 同样不能新建 Kafka/CH 查询。
+    const tabs = useTabsStore()
+    tabs.openRedisKeys('a', 0)
+    await nextTick()
+    expect(wrapper.find('[data-test="btn-new-query"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('opens a sql console tab carrying the topic from 新建查询 on an active topic tab', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-topic', 'a', 'orders', [0, 1])
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="message-browser"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="btn-new-query"]').trigger('click')
+    const tabs = useTabsStore()
+    const sqlTab = tabs.openTabs.find((t) => t.kind === 'sql')
+    expect(sqlTab).toBeTruthy()
+    expect(sqlTab?.topic).toBe('orders')
+    expect(sqlTab?.title).toBe('SQL · orders')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="sql-console"]').exists()).toBe(true)
+    })
+  })
+
+  it('opens a ch sql console tab from 新建查询 on an active ch-table tab', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    emitTree(wrapper, 'open-ch-table', 'a', 'db1', 'metrics')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="ch-table-browser"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="btn-new-query"]').trigger('click')
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.some((t) => t.kind === 'ch-sql' && t.title === 'SQL 控制台')).toBe(true)
+  })
+
+  it('titles a topic-less sql tab as SQL 查询', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    const tabs = useTabsStore()
+    tabs.openSql('a', '')
+    await nextTick()
+    expect(wrapper.find('[data-test="tab-title"]').text()).toBe('SQL 查询')
+  })
+
+  // --- SQL文件右栏 ------------------------------------------------------------
+
+  it('toggles the sql files sidebar from the top bar and persists the state', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    expect(wrapper.find('[data-test="files-sidebar"]').exists()).toBe(false)
+    await wrapper.find('[data-test="btn-sql-files"]').trigger('click')
+    expect(wrapper.find('[data-test="files-sidebar"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="files-panel"]').exists()).toBe(true)
+    expect(localStorage.getItem('dbclient-files-open')).toBe('1')
+    await wrapper.find('[data-test="btn-sql-files"]').trigger('click')
+    expect(wrapper.find('[data-test="files-sidebar"]').exists()).toBe(false)
+    expect(localStorage.getItem('dbclient-files-open')).toBe('0')
+    localStorage.removeItem('dbclient-files-open')
+  })
+
+  it('restores the open sql files sidebar and its width across remounts', async () => {
+    localStorage.setItem('dbclient-files-open', '1')
+    localStorage.setItem('dbclient-files-width', '400')
+    const first = mountLayout([conn('a')])
+    expect(first.wrapper.find('[data-test="files-sidebar"]').exists()).toBe(true)
+    expect(first.wrapper.find('[data-test="files-sidebar"]').attributes('style')).toContain('400px')
+    first.wrapper.unmount()
+    const second = mountLayout([conn('a')])
+    expect(second.wrapper.find('[data-test="files-sidebar"]').exists()).toBe(true)
+    localStorage.removeItem('dbclient-files-open')
+    localStorage.removeItem('dbclient-files-width')
+  })
+
+  it('resizes the sql files sidebar by dragging left and persists the width', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    await wrapper.find('[data-test="btn-sql-files"]').trigger('click')
+    const resizer = wrapper.find('[data-test="files-resizer"]')
+    await resizer.trigger('mousedown', { clientX: 500 })
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 400 }))
+    window.dispatchEvent(new MouseEvent('mouseup'))
+    await nextTick()
+    expect(wrapper.find('[data-test="files-sidebar"]').attributes('style')).toContain('360px')
+    expect(localStorage.getItem('dbclient-files-width')).toBe('360')
+    localStorage.removeItem('dbclient-files-width')
+    localStorage.removeItem('dbclient-files-open')
+  })
+
+  it('renders the toast overlay while the toast store holds a message', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    expect(wrapper.find('[data-test="toast"]').exists()).toBe(false)
+    const toast = useToastStore()
+    toast.show('已保存到 SQL文件:a.sql')
+    await nextTick()
+    expect(wrapper.find('[data-test="toast"]').text()).toBe('已保存到 SQL文件:a.sql')
+  })
+
+  // --- 点击文件条目按归属自动打开 SQL 控制台 ----------------------------------
+
+  // 打开过 CodeMirror 控制台的用例必须在结尾卸载并排空回调,否则旧编辑器的
+  // 挂起 measure 会干扰下一个用例的渲染(条目渲染不出来)。
+  async function drainPendingEdits(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+
+  async function openPanelAndClickFile(wrapper: ReturnType<typeof mount>, index: number): Promise<void> {
+    await wrapper.find('[data-test="btn-sql-files"]').trigger('click')
+    await flushPromises()
+    await wrapper.find(`[data-test="files-item-${index}"]`).trigger('click')
+    await flushPromises()
+    await nextTick()
+  }
+
+  it('点击 Kafka 归属文件自动打开 SQL 控制台并载入内容', async () => {
+    const { wrapper } = mountLayout([conn('k1')])
+    fileAppMocks.ListQueryFiles.mockResolvedValue([queryFileRow('a.sql', 'k1')])
+    fileAppMocks.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'k1' })
+
+    await openPanelAndClickFile(wrapper, 0)
+
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['sql'])
+    expect(tabs.openTabs[0].connectionId).toBe('k1')
+    expect(fileAppMocks.ReadQueryFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'a.sql' }))
+    expect(wrapper.find('[data-test="sql-console"]').exists()).toBe(true)
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('点击 ClickHouse 归属文件自动打开 CK SQL 控制台并载入内容', async () => {
+    const { wrapper } = mountLayout([chConn('c1')])
+    fileAppMocks.ListQueryFiles.mockResolvedValue([queryFileRow('ch.sql', 'c1')])
+    fileAppMocks.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'c1' })
+
+    await openPanelAndClickFile(wrapper, 0)
+
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['ch-sql'])
+    expect(tabs.openTabs[0].connectionId).toBe('c1')
+    // CHSqlConsole 携带 tab id,控制台据此把 tab 标题改为当前文件名。
+    expect(wrapper.findComponent(CHSqlConsole).props('tabId')).toBe(tabs.openTabs[0].id)
+    expect(fileAppMocks.ReadQueryFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'ch.sql' }))
+    expect(wrapper.find('[data-test="ch-sql-console"]').exists()).toBe(true)
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('归属连接不存在 → toast 提示且不开控制台', async () => {
+    const { wrapper } = mountLayout([conn('k1')])
+    fileAppMocks.ListQueryFiles.mockResolvedValue([queryFileRow('lost.sql', 'ghost')])
+
+    await openPanelAndClickFile(wrapper, 0)
+
+    const tabs = useTabsStore()
+    expect(tabs.openTabs).toHaveLength(0)
+    expect(wrapper.find('[data-test="toast"]').text()).toContain('未找到文件关联的数据源')
+  })
+
+  it('Redis 归属文件 → toast 提示暂不支持且不开控制台', async () => {
+    const { wrapper } = mountLayout([redisConn('r1')])
+    fileAppMocks.ListQueryFiles.mockResolvedValue([queryFileRow('r.sql', 'r1')])
+
+    await openPanelAndClickFile(wrapper, 0)
+
+    const tabs = useTabsStore()
+    expect(tabs.openTabs).toHaveLength(0)
+    expect(wrapper.find('[data-test="toast"]').text()).toContain('暂不支持')
+  })
+
+  it('归属连接与当前激活 SQL 控制台一致 → 直接载入,不重复开台', async () => {
+    const { wrapper } = mountLayout([chConn('c1')])
+    useTabsStore().openCHSql('c1')
+    await nextTick()
+    fileAppMocks.ListQueryFiles.mockResolvedValue([queryFileRow('ch.sql', 'c1')])
+    fileAppMocks.ReadQueryFile.mockResolvedValue({ content: 'SELECT 42', connection_id: 'c1' })
+
+    await openPanelAndClickFile(wrapper, 0)
+
+    const tabs = useTabsStore()
+    expect(tabs.openTabs).toHaveLength(1)
+    expect(fileAppMocks.ReadQueryFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'ch.sql' }))
+    wrapper.unmount()
+    await drainPendingEdits()
   })
 })

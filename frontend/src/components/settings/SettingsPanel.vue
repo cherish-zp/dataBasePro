@@ -3,6 +3,7 @@ import { ref, onMounted, watch } from 'vue'
 import { getApi } from '@/api/client'
 import type { AuditEntry, DriverInfo } from '@/api/types'
 import { formatTime } from '@/utils/format'
+import { DEFAULT_QUERY_DIR, getQueryDir, setQueryDir } from '@/utils/queryDir'
 import { APP_VERSION } from '@/version'
 
 const props = defineProps<{ show: boolean }>()
@@ -20,6 +21,14 @@ const activeTab = ref<SettingsTab>('generic')
 
 const THEME_KEY = 'dbclient-theme'
 const theme = ref<'dark' | 'light'>(localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light')
+
+// 查询文件目录:初始读 localStorage(空值回退默认),输入变更即持久化。
+const queryDir = ref(getQueryDir())
+watch(queryDir, (dir) => setQueryDir(dir))
+
+function resetQueryDir(): void {
+  queryDir.value = DEFAULT_QUERY_DIR
+}
 
 const AUDIT_LIMIT = 200
 const audit = ref<AuditEntry[]>([])
@@ -143,6 +152,21 @@ function close(): void {
                 <option value="light">浅色</option>
               </select>
             </div>
+            <div class="field query-dir-section" data-test="query-dir-section">
+              <label class="label" for="input-query-dir">查询文件目录</label>
+              <div class="query-dir-row">
+                <input
+                  id="input-query-dir"
+                  v-model="queryDir"
+                  class="input"
+                  type="text"
+                  data-test="input-query-dir"
+                  placeholder="~/.db-client/queries"
+                />
+                <button class="query-dir-reset" type="button" data-test="btn-query-dir-reset" @click="resetQueryDir">恢复默认</button>
+              </div>
+              <p class="query-dir-hint">SQL 控制台的保存查询将存放为 .sql 文件</p>
+            </div>
           </div>
 
           <div v-else-if="activeTab === 'audit'" class="tab-pane audit-section" data-test="audit-section">
@@ -254,6 +278,13 @@ function close(): void {
 .input { background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text); border-radius: 7px; padding: 8px 10px; font-size: 13px; width: 100%; box-sizing: border-box; transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease; }
 .input:focus { outline: none; border-color: var(--accent); background: var(--bg-elevated); box-shadow: 0 0 0 3px var(--accent-soft); }
 .mono { font-family: var(--mono); }
+
+/* 查询文件目录 */
+.query-dir-row { display: flex; gap: 8px; }
+.query-dir-row .input { flex: 1; }
+.query-dir-reset, .audit-refresh { background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text-secondary); font-size: 12px; border-radius: 6px; padding: 3px 10px; cursor: pointer; transition: border-color 0.15s ease, color 0.15s ease; }
+.query-dir-reset:hover, .audit-refresh:hover { border-color: var(--accent); color: var(--text); }
+.query-dir-hint { margin: 4px 0 0; font-size: 12px; color: var(--text-tertiary); }
 
 .audit-section { padding-bottom: 12px; }
 .audit-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }

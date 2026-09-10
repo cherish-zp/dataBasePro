@@ -5,9 +5,12 @@ import { EditorView } from '@codemirror/view'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
-import type { Message, SavedQuery } from '@/api/types'
+import type { Message } from '@/api/types'
 import { useSqlHistoryStore } from '@/store/sqlhistory'
+import { useTabsStore } from '@/store/tabs'
+import { parseSelect } from '@/utils/sql'
 import { CSV_MIME, JSONL_MIME, MESSAGE_EXPORT_COLUMNS, exportCsv, exportJsonl, saveFile } from '@/utils/export'
+import { useQueryFiles } from '@/composables/queryFiles'
 import SqlEditor from '@/components/common/SqlEditor.vue'
 import SqlConsole from './SqlConsole.vue'
 
@@ -16,6 +19,28 @@ import SqlConsole from './SqlConsole.vue'
 vi.mock('@/utils/export', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/utils/export')>()
   return { ...actual, downloadFile: vi.fn(), saveFile: vi.fn(async () => {}) }
+})
+
+// parseSelect 以可透传的 spy 替换:仅「无表名守卫」用例需要桩掉解析结果
+// (模拟 FROM 可省略的解析),其余用例经透传走真实实现。
+vi.mock('@/utils/sql', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/utils/sql')>()
+  return { ...actual, parseSelect: vi.fn((input: string) => actual.parseSelect(input)) }
+})
+
+// vi.mock 会被提升到文件顶部,因此 mocks 必须用 vi.hoisted 创建,
+// 否则工厂执行时 queryFileMocks 尚未初始化(TDZ)。
+const queryFileMocks = vi.hoisted(() => ({
+  ListQueryFiles: vi.fn(),
+  ReadQueryFile: vi.fn(),
+  WriteQueryFile: vi.fn(),
+  DeleteQueryFile: vi.fn(),
+}))
+vi.mock('../../../wailsjs/go/backend/App', async () => {
+  const actual = await vi.importActual<typeof import('../../../wailsjs/go/backend/App')>(
+    '../../../wailsjs/go/backend/App',
+  )
+  return { ...actual, ...queryFileMocks }
 })
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
@@ -59,15 +84,15 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
         chTruncateTable: vi.fn(async () => {}),
         chExecute: vi.fn(async () => []),
         listDrivers: vi.fn(async () => []),
-        redisHashSetField: vi.fn(async () => {}),
-        redisHashDeleteField: vi.fn(async () => {}),
-        redisListSetIndex: vi.fn(async () => {}),
-        redisListPush: vi.fn(async () => {}),
-        redisListDeleteIndex: vi.fn(async () => {}),
-        redisSetAdd: vi.fn(async () => {}),
-        redisSetRemove: vi.fn(async () => {}),
-        redisZSetAdd: vi.fn(async () => {}),
-        redisZSetRemove: vi.fn(async () => {}),
+    redisHashSetField: vi.fn(async () => {}),
+    redisHashDeleteField: vi.fn(async () => {}),
+    redisListSetIndex: vi.fn(async () => {}),
+    redisListPush: vi.fn(async () => {}),
+    redisListDeleteIndex: vi.fn(async () => {}),
+    redisSetAdd: vi.fn(async () => {}),
+    redisSetRemove: vi.fn(async () => {}),
+    redisZSetAdd: vi.fn(async () => {}),
+    redisZSetRemove: vi.fn(async () => {}),
     testRedisConnection: vi.fn(async () => {}),
     listRedisDBs: vi.fn(async () => []),
     redisScan: vi.fn(async () => ({ cursor: 0, keys: [] })),
@@ -95,17 +120,6 @@ const msg = (key: string, value: string, offset = 0): Message => ({
   partition: 0, offset, timestamp: 1700000000000, key, value, headers: [],
 })
 
-// 查询库条目样例(镜像 model.SavedQuery)。
-const saved = (id: string, name: string, content: string): SavedQuery => ({
-  id,
-  name,
-  console_type: 'kafka-sql',
-  connection_id: 'c',
-  content,
-  created_at: 1700000000000,
-  updated_at: 1700000100000,
-})
-
 // --- CodeMirror 驱动(参照 SqlEditor.spec.ts 的 findFromDOM 做法) ---------------
 
 // CM6 会在宿主容器内创建自己的 .cm-editor 元素,借 findFromDOM 拿到 view。
@@ -129,7 +143,7 @@ function editorSql(wrapper: VueWrapper): string {
   return vm.getValue()
 }
 
-// ⌘Enter/IME 用例从 CM 的 contentDOM 触发(冒泡到控制台的 keydown 监听,与真实路径一致)。
+// ⌘Enter/⌘S/IME 用例从 CM 的 contentDOM 触发(冒泡到控制台的 keydown 监听,与真实路径一致)。
 function cmContent(wrapper: VueWrapper): DOMWrapper<Element> {
   return wrapper.find('[data-test="sql-editor-content"] .cm-content')
 }
@@ -147,20 +161,24 @@ async function confirmPrompt(value: string): Promise<void> {
   await flushPromises()
 }
 
-function mountConsole(overrides: Partial<Api> = {}) {
+function mountConsole(overrides: Partial<Api> = {}, mountProps: { topic?: string } = {}) {
   setActivePinia(createPinia())
   const api = fakeApi(overrides)
   setApi(api)
   const wrapper = mount(SqlConsole, {
-    props: { tabId: 'tab1', connectionId: 'c', topic: 'orders', partitions: [0, 1] },
+    props: { tabId: 'tab1', connectionId: 'c', topic: mountProps.topic ?? 'orders', partitions: [0, 1] },
   })
   return { wrapper, api }
 }
 
 describe('SqlConsole', () => {
   // The console persists query history to localStorage; start every test from
-  // a clean slate so dropdown contents are deterministic.
-  beforeEach(() => localStorage.clear())
+  // a clean slate so dropdown contents are deterministic. clearAllMocks wipes
+  // call counts but keeps implementations set inside the mock factories.
+  beforeEach(() => {
+    localStorage.clear()
+    vi.clearAllMocks()
+  })
 
   it('renders the console as a full page', () => {
     const { wrapper } = mountConsole()
@@ -171,6 +189,12 @@ describe('SqlConsole', () => {
   it('omits the engine selector because the engine is fixed to the source', () => {
     const { wrapper } = mountConsole()
     expect(wrapper.find('[data-test="select-engine"]').exists()).toBe(false)
+  })
+
+  it('omits the in-console file panel because saved queries moved to the global right panel', () => {
+    const { wrapper } = mountConsole()
+    expect(wrapper.find('[data-test="sql-file-panel"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-sql-file-area"]').exists()).toBe(false)
   })
 
   it('uses the CodeMirror editor inside the toolbar next to the run button', () => {
@@ -579,162 +603,341 @@ describe('SqlConsole', () => {
     expect(api.consumeMessages).toHaveBeenCalledTimes(2)
   })
 
-  // --- 查询库(保存的查询,按连接隔离) ----------------------------------------
+  // --- 查询文件(全局右栏契约) ------------------------------------------------
+  // 保存/载入/删除由共享 composable 驱动(不 mock 本体),文件列表展示在全局
+  // 右栏(Layout 层),本组件经 defineExpose 暴露能力、并承载确认弹窗与脏检查。
+  // 后端走 App.ListQueryFiles/ReadQueryFile/WriteQueryFile/DeleteQueryFile
+  // (vi.mock 替换 wailsjs 模块);目录来自 getQueryDir()。
+  const fileDir = '~/.db-client/queries'
 
-  describe('查询库', () => {
-    // PromptDialog Teleport 到 body;每个用例后清掉残留,避免串扰后续断言。
+  // 组件暴露给全局右栏的查询文件能力。
+  interface ExposedQueryFileApi {
+    requestSave(): void
+    requestSaveAs(): void
+    loadQueryFile(name: string): void
+    askRemoveCurrentFile(): void
+    currentFile(): string | null
+  }
+  function exposedApi(wrapper: VueWrapper): ExposedQueryFileApi {
+    return wrapper.vm as unknown as ExposedQueryFileApi
+  }
+
+  // 把模块内的四方法替换为可控 mock(vi.mock 提升到顶部,此处仅重配置实现)。
+  // ListQueryFiles 返回裸数组、条目名带 .sql 后缀(与后端绑定一致);
+  // ReadQueryFile 按名返回文件内容,供「载入回填」断言。
+  function mockFileBackend(
+    files: Array<{ name: string; connection_id: string; content?: string }>,
+    opts: { failList?: boolean } = {},
+  ): void {
+    queryFileMocks.ListQueryFiles.mockImplementation(async () => {
+      if (opts.failList) {
+        throw new Error('查询目录不可用')
+      }
+      return files.map((f) => ({
+        name: f.name,
+        connection_id: f.connection_id,
+        size_bytes: 10,
+        mod_time_ms: 1700000000000,
+      }))
+    })
+    queryFileMocks.ReadQueryFile.mockImplementation(async (req: { name: string }) => {
+      const f = files.find((x) => x.name === req.name)
+      return { content: f?.content ?? '', connection_id: f?.connection_id ?? '' }
+    })
+  }
+
+  const file = (name: string, connection_id: string, content = '') => ({ name, connection_id, content })
+
+  describe('查询文件(全局右栏契约)', () => {
+    beforeEach(() => {
+      // composable 的文件列表是模块级共享状态,测试间清空避免串扰
+      // (探针实例只用于重置/填充共享列表,不 mock 本体)。
+      useQueryFiles({ connectionId: () => 'c' }).files.value = []
+    })
+
     afterEach(() => {
       document.body.innerHTML = ''
     })
 
-    it('默认折叠,点击切换按钮打开面板并拉取当前连接的查询列表', async () => {
-      const { wrapper, api } = mountConsole({
-        listSavedQueries: vi.fn(async () => [saved('q1', '近一小时错误', 'SELECT * FROM errors')]),
-      })
-      expect(wrapper.find('[data-test="query-lib"]').exists()).toBe(false)
-      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
-      await flushPromises()
-      expect(api.listSavedQueries).toHaveBeenCalledWith({ console_type: 'kafka-sql', connection_id: 'c' })
-      const panel = wrapper.find('[data-test="query-lib"]')
-      expect(panel.exists()).toBe(true)
-      expect(panel.text()).toContain('查询库')
-      expect(panel.text()).toContain('保存的查询按连接隔离')
-      const items = wrapper.findAll('[data-test^="query-item-"]')
-      expect(items).toHaveLength(1)
-      expect(items[0].text()).toContain('近一小时错误')
-      expect(items[0].text()).toContain(new Date(1700000100000).toLocaleString())
-      // 再次点击 → 折叠。
-      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
-      expect(wrapper.find('[data-test="query-lib"]').exists()).toBe(false)
-    })
-
-    it('新 SQL → 保存 → 弹名称输入 → 确认 → saveSavedQuery payload 正确并刷新列表', async () => {
-      let calls = 0
-      const { wrapper, api } = mountConsole({
-        listSavedQueries: vi.fn(async () => (calls++ > 0 ? [saved('q1', '我的查询', 'SELECT * FROM orders LIMIT 10')] : [])),
-        saveSavedQuery: vi.fn(async (q: { name: string; content: string }) => saved('q1', q.name, q.content)),
-      })
-      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
-      await flushPromises()
+    it('Cmd+S 未关联文件 → 弹「保存查询」名称输入,取消则不写入', async () => {
+      mockFileBackend([])
+      const { wrapper } = mountConsole()
       await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
-      await wrapper.find('[data-test="btn-query-save"]').trigger('click')
-      // 弹出名称输入对话框。
+      await cmContent(wrapper).trigger('keydown', { key: 's', metaKey: true })
       expect(promptEl('prompt-dialog')).not.toBeNull()
-      await confirmPrompt('我的查询')
-      expect(api.saveSavedQuery).toHaveBeenCalledWith({
-        name: '我的查询',
-        console_type: 'kafka-sql',
-        connection_id: 'c',
-        content: 'SELECT * FROM orders LIMIT 10',
-      })
-      // 保存后刷新列表 → 第 2 次 listSavedQueries,新条目出现且被标记为已载入。
-      expect(api.listSavedQueries).toHaveBeenCalledTimes(2)
-      expect(wrapper.findAll('[data-test^="query-item-"]')).toHaveLength(1)
-      expect(wrapper.find('[data-test="btn-query-delete"]').attributes('disabled')).toBeUndefined()
-    })
-
-    it('已载入条目 → 保存直接 updateSavedQuery(带 id)并刷新列表', async () => {
-      const { wrapper, api } = mountConsole({
-        listSavedQueries: vi.fn(async () => [saved('q1', '近一小时错误', 'SELECT * FROM errors')]),
-      })
-      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+      expect(promptEl('prompt-title')?.textContent).toBe('保存查询')
+      expect(queryFileMocks.WriteQueryFile).not.toHaveBeenCalled()
+      ;(promptEl('prompt-cancel') as HTMLElement).click()
       await flushPromises()
-      await wrapper.findAll('[data-test^="query-item-"]')[0].trigger('click')
-      await setSql(wrapper, 'SELECT * FROM errors LIMIT 5')
-      await wrapper.find('[data-test="btn-query-save"]').trigger('click')
-      await flushPromises()
-      expect(api.updateSavedQuery).toHaveBeenCalledWith({
-        id: 'q1',
-        name: '近一小时错误',
-        content: 'SELECT * FROM errors LIMIT 5',
-      })
-      expect(api.saveSavedQuery).not.toHaveBeenCalled()
-      // 直接更新不弹名称输入。
       expect(promptEl('prompt-dialog')).toBeNull()
-      expect(api.listSavedQueries).toHaveBeenCalledTimes(2)
+      expect(queryFileMocks.WriteQueryFile).not.toHaveBeenCalled()
     })
 
-    it('另存为强制弹出名称输入并新建条目', async () => {
-      const { wrapper, api } = mountConsole({
-        listSavedQueries: vi.fn(async () => [saved('q1', '近一小时错误', 'SELECT * FROM errors')]),
-        saveSavedQuery: vi.fn(async (q: { name: string; content: string }) => saved('q2', q.name, q.content)),
-      })
-      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+    it('IME 组合中的 Cmd+S 不触发保存', async () => {
+      const { wrapper } = mountConsole()
+      await cmContent(wrapper).trigger('keydown', { key: 's', metaKey: true, isComposing: true })
+      expect(promptEl('prompt-dialog')).toBeNull()
+      expect(queryFileMocks.WriteQueryFile).not.toHaveBeenCalled()
+    })
+
+    it('Ctrl+S 已关联文件 → 直接覆盖写同名文件,不弹任何输入', async () => {
+      mockFileBackend([file('近一小时错误.sql', 'c', 'SELECT * FROM errors LIMIT 10')])
+      const { wrapper } = mountConsole()
+      const vm = exposedApi(wrapper)
+      // 未关联文件时空编辑器不脏 → 经右栏入口免确认载入。
+      await setSql(wrapper, '')
+      vm.loadQueryFile('近一小时错误.sql')
       await flushPromises()
-      await wrapper.findAll('[data-test^="query-item-"]')[0].trigger('click')
+      expect(vm.currentFile()).toBe('近一小时错误.sql')
       await setSql(wrapper, 'SELECT * FROM errors LIMIT 5')
-      await wrapper.find('[data-test="btn-query-save-as"]').trigger('click')
-      expect(promptEl('prompt-dialog')).not.toBeNull()
-      await confirmPrompt('精简版')
-      expect(api.saveSavedQuery).toHaveBeenCalledWith({
-        name: '精简版',
-        console_type: 'kafka-sql',
-        connection_id: 'c',
-        content: 'SELECT * FROM errors LIMIT 5',
-      })
-      expect(api.updateSavedQuery).not.toHaveBeenCalled()
-      expect(api.listSavedQueries).toHaveBeenCalledTimes(2)
+      await cmContent(wrapper).trigger('keydown', { key: 's', ctrlKey: true })
+      await flushPromises()
+      expect(queryFileMocks.WriteQueryFile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: '近一小时错误.sql', content: 'SELECT * FROM errors LIMIT 5' }),
+      )
+      expect(promptEl('prompt-dialog')).toBeNull()
     })
 
-    it('单击条目把 SQL 载入编辑器并记住该条目', async () => {
-      const { wrapper, api } = mountConsole({
-        listSavedQueries: vi.fn(async () => [
-          saved('q1', '近一小时错误', 'SELECT * FROM errors'),
-          saved('q2', '订单采样', 'SELECT * FROM orders LIMIT 50'),
-        ]),
-      })
-      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+    it('requestSave 命中重名 → 覆盖确认弹窗,确认后才写入', async () => {
+      mockFileBackend([file('已存在.sql', 'c', '旧内容')])
+      // 重名判断基于 composable 的共享列表,先用探针拉取刷新。
+      await useQueryFiles({ connectionId: () => 'c' }).refreshFiles()
+      const { wrapper } = mountConsole()
+      await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
+      exposedApi(wrapper).requestSave()
+      await nextTick()
+      expect(promptEl('prompt-dialog')).not.toBeNull()
+      await confirmPrompt('已存在')
+      // 重名 → 覆盖确认弹窗,此时尚未写入。
+      expect(queryFileMocks.WriteQueryFile).not.toHaveBeenCalled()
+      const dialog = promptEl('confirm-dialog')
+      expect(dialog).not.toBeNull()
+      expect(dialog?.textContent).toContain('文件已存在')
+      ;(promptEl('confirm-dialog-ok') as HTMLElement).click()
       await flushPromises()
-      // 未载入任何条目 → 删除不可用。
-      expect(wrapper.find('[data-test="btn-query-delete"]').attributes('disabled')).toBeDefined()
-      await wrapper.findAll('[data-test^="query-item-"]')[1].trigger('click')
+      expect(queryFileMocks.WriteQueryFile).toHaveBeenCalledWith({
+        dir: fileDir,
+        name: '已存在.sql',
+        content: 'SELECT * FROM orders LIMIT 10',
+        connection_id: 'c',
+      })
+      expect(exposedApi(wrapper).currentFile()).toBe('已存在.sql')
+    })
+
+    it('requestSave 输入新名 → 直接写入并记录为当前文件', async () => {
+      mockFileBackend([])
+      const { wrapper } = mountConsole()
+      await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
+      exposedApi(wrapper).requestSave()
+      await nextTick()
+      await confirmPrompt('新查询')
+      expect(queryFileMocks.WriteQueryFile).toHaveBeenCalledWith({
+        dir: fileDir,
+        name: '新查询.sql',
+        content: 'SELECT * FROM orders LIMIT 10',
+        connection_id: 'c',
+      })
+      expect(promptEl('confirm-dialog')).toBeNull()
+      expect(exposedApi(wrapper).currentFile()).toBe('新查询.sql')
+    })
+
+    it('requestSaveAs → 弹「另存查询」名称输入,取消不写入', async () => {
+      mockFileBackend([])
+      const { wrapper } = mountConsole()
+      exposedApi(wrapper).requestSaveAs()
+      await nextTick()
+      expect(promptEl('prompt-title')?.textContent).toBe('另存查询')
+      ;(promptEl('prompt-cancel') as HTMLElement).click()
+      await flushPromises()
+      expect(queryFileMocks.WriteQueryFile).not.toHaveBeenCalled()
+    })
+
+    it('loadQueryFile 编辑器无未保存内容 → 直接读取回填并记住当前文件', async () => {
+      mockFileBackend([file('订单采样.sql', 'c', 'SELECT * FROM orders LIMIT 50')])
+      const { wrapper, api } = mountConsole()
+      const vm = exposedApi(wrapper)
+      expect(vm.currentFile()).toBeNull()
+      await setSql(wrapper, '')
+      vm.loadQueryFile('订单采样.sql')
+      await flushPromises()
       expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 50')
-      expect(wrapper.find('[data-test="btn-query-delete"]').attributes('disabled')).toBeUndefined()
-      // 单击条目只载入不执行。
+      expect(vm.currentFile()).toBe('订单采样.sql')
+      expect(promptEl('confirm-dialog')).toBeNull()
+      // 载入只回填不执行。
       expect(api.consumeMessages).not.toHaveBeenCalled()
     })
 
-    it('删除已载入条目 → deleteSavedQuery + 列表刷新 + 清空已载入状态', async () => {
-      const { wrapper, api } = mountConsole({
-        listSavedQueries: vi.fn(async () => [saved('q1', '近一小时错误', 'SELECT * FROM errors')]),
-      })
-      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+    it('loadQueryFile 有未保存内容 → 先弹确认,确认后才读取回填', async () => {
+      mockFileBackend([
+        file('近一小时错误.sql', 'c', 'SELECT * FROM errors LIMIT 10'),
+        file('订单采样.sql', 'c', 'SELECT * FROM orders LIMIT 50'),
+      ])
+      const { wrapper } = mountConsole()
+      const vm = exposedApi(wrapper)
+      await setSql(wrapper, '')
+      vm.loadQueryFile('近一小时错误.sql')
       await flushPromises()
-      await wrapper.findAll('[data-test^="query-item-"]')[0].trigger('click')
-      await wrapper.find('[data-test="btn-query-delete"]').trigger('click')
+      expect(editorSql(wrapper)).toBe('SELECT * FROM errors LIMIT 10')
+      // 编辑产生未保存改动 → 再载入其他文件先弹确认,不立即读文件。
+      await setSql(wrapper, 'SELECT * FROM errors LIMIT 999')
+      vm.loadQueryFile('订单采样.sql')
+      await nextTick()
+      const dialog = promptEl('confirm-dialog')
+      expect(dialog).not.toBeNull()
+      expect(dialog?.textContent).toContain('当前 SQL 未保存')
+      expect(queryFileMocks.ReadQueryFile).toHaveBeenCalledTimes(1)
+      ;(promptEl('confirm-dialog-ok') as HTMLElement).click()
       await flushPromises()
-      expect(api.deleteSavedQuery).toHaveBeenCalledWith({ id: 'q1' })
-      expect(api.listSavedQueries).toHaveBeenCalledTimes(2)
-      expect(wrapper.find('[data-test="btn-query-delete"]').attributes('disabled')).toBeDefined()
+      expect(queryFileMocks.ReadQueryFile).toHaveBeenCalledTimes(2)
+      expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 50')
     })
 
-    it('listSavedQueries 失败 → 错误显示在面板内', async () => {
-      const { wrapper } = mountConsole({
-        listSavedQueries: vi.fn(async () => {
-          throw new Error('查询库不可用')
-        }),
-      })
-      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+    it('覆盖保存后基线同步:再载入其他文件不再弹未保存确认', async () => {
+      mockFileBackend([
+        file('近一小时错误.sql', 'c', 'SELECT * FROM errors LIMIT 10'),
+        file('订单采样.sql', 'c', 'SELECT * FROM orders LIMIT 50'),
+      ])
+      const { wrapper } = mountConsole()
+      const vm = exposedApi(wrapper)
+      await setSql(wrapper, '')
+      vm.loadQueryFile('近一小时错误.sql')
       await flushPromises()
-      expect(wrapper.find('[data-test="query-lib-error"]').text()).toContain('查询库不可用')
+      await setSql(wrapper, 'SELECT * FROM errors LIMIT 20')
+      // ⌘S 覆盖保存 → 编辑器内容成为已保存基线。
+      await cmContent(wrapper).trigger('keydown', { key: 's', metaKey: true })
+      await flushPromises()
+      expect(queryFileMocks.WriteQueryFile).toHaveBeenCalledTimes(1)
+      // 基线已同步 → 载入另一文件不弹确认、直接读取。
+      vm.loadQueryFile('订单采样.sql')
+      await nextTick()
+      expect(promptEl('confirm-dialog')).toBeNull()
+      expect(queryFileMocks.ReadQueryFile).toHaveBeenCalledTimes(2)
+      await flushPromises()
+      expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 50')
     })
 
-    it('切换连接保持编辑器 SQL,仅刷新列表并清空已载入状态', async () => {
-      const { wrapper, api } = mountConsole({
-        listSavedQueries: vi.fn(async () => [saved('q1', '近一小时错误', 'SELECT * FROM errors')]),
+    it('askRemoveCurrentFile → 删除确认 → DeleteQueryFile 并清空编辑器', async () => {
+      mockFileBackend([file('近一小时错误.sql', 'c', 'SELECT * FROM errors LIMIT 10')])
+      const { wrapper } = mountConsole()
+      const vm = exposedApi(wrapper)
+      await setSql(wrapper, '')
+      vm.loadQueryFile('近一小时错误.sql')
+      await flushPromises()
+      vm.askRemoveCurrentFile()
+      await nextTick()
+      expect(promptEl('confirm-dialog')).not.toBeNull()
+      ;(promptEl('confirm-dialog-ok') as HTMLElement).click()
+      await flushPromises()
+      expect(queryFileMocks.DeleteQueryFile).toHaveBeenCalledWith({ dir: fileDir, name: '近一小时错误.sql' })
+      expect(editorSql(wrapper)).toBe('')
+      expect(vm.currentFile()).toBeNull()
+    })
+  })
+
+  // --- tab 标题跟随当前打开的 SQL 文件 ----------------------------------------
+  // 控制台把 tabs store 中自己的 tab 重命名为当前关联文件名;未关联时保持
+  // 默认标题(有 topic 为「SQL · <topic>」,否则「SQL 查询」)。
+  describe('tab 标题跟随当前 SQL 文件', () => {
+    function mountWithTitleTab() {
+      setActivePinia(createPinia())
+      setApi(fakeApi())
+      // 预置 id 为 'tab1' 的 tab(mountConsole 默认 tabId),标题为默认值。
+      const tabsStore = useTabsStore()
+      tabsStore.openTabs.push({
+        id: 'tab1', kind: 'sql', title: 'SQL · orders', connectionId: 'c', topic: 'orders', partitions: [0, 1],
       })
-      await wrapper.find('[data-test="btn-query-lib-toggle"]').trigger('click')
+      const wrapper = mount(SqlConsole, {
+        props: { tabId: 'tab1', connectionId: 'c', topic: 'orders', partitions: [0, 1] },
+      })
+      return { wrapper, tabsStore }
+    }
+
+    afterEach(() => {
+      document.body.innerHTML = ''
+    })
+
+    it('载入文件后 tab 标题变为文件名', async () => {
+      mockFileBackend([file('某文件.sql', 'c', 'SELECT * FROM orders LIMIT 50')])
+      const { wrapper, tabsStore } = mountWithTitleTab()
+      expect(tabsStore.openTabs[0].title).toBe('SQL · orders')
+      // 有 topic 的控制台带模板,先清空避免载入确认。
+      await setSql(wrapper, '')
+      exposedApi(wrapper).loadQueryFile('某文件.sql')
       await flushPromises()
-      await wrapper.findAll('[data-test^="query-item-"]')[0].trigger('click')
-      expect(editorSql(wrapper)).toBe('SELECT * FROM errors')
-      await wrapper.setProps({ connectionId: 'other' })
+      expect(tabsStore.openTabs[0].title).toBe('某文件.sql')
+      wrapper.unmount()
+    })
+
+    it('删除当前文件后回退默认标题', async () => {
+      mockFileBackend([file('某文件.sql', 'c', 'SELECT * FROM orders LIMIT 50')])
+      const { wrapper, tabsStore } = mountWithTitleTab()
+      await setSql(wrapper, '')
+      exposedApi(wrapper).loadQueryFile('某文件.sql')
       await flushPromises()
-      // SQL 内容保持不动。
-      expect(editorSql(wrapper)).toBe('SELECT * FROM errors')
-      // 列表按新连接刷新。
-      expect(api.listSavedQueries).toHaveBeenLastCalledWith({ console_type: 'kafka-sql', connection_id: 'other' })
-      // 已载入状态清空 → 旧连接条目不能再被 update/删除。
-      expect(wrapper.find('[data-test="btn-query-delete"]').attributes('disabled')).toBeDefined()
+      exposedApi(wrapper).askRemoveCurrentFile()
+      await nextTick()
+      expect(promptEl('confirm-dialog')).not.toBeNull()
+      ;(promptEl('confirm-dialog-ok') as HTMLElement).click()
+      await flushPromises()
+      expect(exposedApi(wrapper).currentFile()).toBeNull()
+      expect(tabsStore.openTabs[0].title).toBe('SQL · orders')
+      wrapper.unmount()
+    })
+
+    it('保存为新文件后 tab 标题变为新文件名', async () => {
+      mockFileBackend([])
+      const { wrapper, tabsStore } = mountWithTitleTab()
+      await setSql(wrapper, 'SELECT * FROM orders LIMIT 10')
+      exposedApi(wrapper).requestSave()
+      await nextTick()
+      await confirmPrompt('新查询')
+      await flushPromises()
+      expect(tabsStore.openTabs[0].title).toBe('新查询.sql')
+      wrapper.unmount()
+    })
+
+    it('无 topic 的 tab 未关联文件时默认标题为「SQL 查询」', async () => {
+      setActivePinia(createPinia())
+      setApi(fakeApi())
+      const tabsStore = useTabsStore()
+      tabsStore.openTabs.push({ id: 'tab2', kind: 'sql', title: 'SQL 查询', connectionId: 'c', partitions: [] })
+      const wrapper = mount(SqlConsole, {
+        props: { tabId: 'tab2', connectionId: 'c', topic: '', partitions: [] },
+      })
+      mockFileBackend([file('某文件.sql', 'c', 'SELECT 1')])
+      exposedApi(wrapper).loadQueryFile('某文件.sql')
+      await flushPromises()
+      expect(tabsStore.openTabs[0].title).toBe('某文件.sql')
+      wrapper.unmount()
+    })
+  })
+
+  // --- 无 topic 的 tab(顶栏「新建查询」打开) ---------------------------------
+  describe('无 topic', () => {
+    it('以空编辑器打开并给出 FROM 子句 placeholder', () => {
+      const { wrapper } = mountConsole({}, { topic: '' })
+      expect(editorSql(wrapper)).toBe('')
+      expect(wrapper.findComponent(SqlEditor).props('placeholder')).toBe('输入 SQL,表名写在 FROM 子句')
+    })
+
+    it('切回有 topic 的 tab → 回填模板且 placeholder 消失', async () => {
+      const { wrapper } = mountConsole({}, { topic: '' })
+      await wrapper.setProps({ topic: 'orders' })
+      expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 100')
+      expect(wrapper.findComponent(SqlEditor).props('placeholder')).toBeUndefined()
+    })
+
+    it('SQL 无表名且无 topic → 提示写 FROM 子句,不执行也不记历史', async () => {
+      const { wrapper, api } = mountConsole({}, { topic: '' })
+      // 当前 parseSelect 不接受无 FROM 的查询;此处桩掉解析结果,
+      // 专测控制台对「解析成功但无表名」的守卫(解析演进为可省略 FROM 后同样可达)。
+      vi.mocked(parseSelect).mockImplementationOnce(() => ({ topic: null, where: [], limit: null, error: null }))
+      await setSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-run"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-test="sql-error"]').text()).toContain('SQL 中未找到表名')
+      expect(api.consumeMessages).not.toHaveBeenCalled()
+      expect(useSqlHistoryStore().history).toEqual([])
     })
   })
 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useTabsStore, type Tab } from '@/store/tabs'
 import type { Connection } from '@/api/types'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
@@ -16,6 +16,8 @@ import CHSqlConsole from '@/components/kafka/CHSqlConsole.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import UpdateDialog from './UpdateDialog.vue'
 import StatusBar from '@/components/layout/StatusBar.vue'
+import QueryFilesPanel, { type SqlConsoleApi } from './QueryFilesPanel.vue'
+import { useToastStore } from '@/store/toast'
 import HomeView from '@/views/HomeView.vue'
 
 const props = defineProps<{ connections: Connection[] }>()
@@ -46,6 +48,9 @@ const dragFrom = ref<number | null>(null)
 const showProducer = ref(false)
 const showSettings = ref(false)
 const showUpdate = ref(false)
+
+// toast:全局轻提示浮层,在 Layout 底部居中渲染;自动消失由 store 负责。
+const toast = useToastStore()
 
 // paletteRef drives the command palette from the global shortcut handler: ⌘K
 // toggles it through the exposed toggle(), keeping a single keydown owner.
@@ -79,8 +84,115 @@ function endResize(): void {
   window.removeEventListener('mouseup', endResize)
 }
 
+// --- SQL文件右栏 --------------------------------------------------------------
+// 与左侧连接栏同款拖拽交互,方向相反:向左拖变宽。宽度与展开状态持久化到
+// localStorage,默认收起;每次展开(含启动即展开)让面板 refresh() 拉一次列表。
+const FILES_WIDTH_KEY = 'dbclient-files-width'
+const FILES_OPEN_KEY = 'dbclient-files-open'
+const MIN_FILES_WIDTH = 180
+const MAX_FILES_WIDTH = 560
+const DEFAULT_FILES_WIDTH = 260
+
+function readStoredFilesWidth(): number {
+  const v = Number(localStorage.getItem(FILES_WIDTH_KEY))
+  if (!Number.isFinite(v) || v <= 0) return DEFAULT_FILES_WIDTH
+  return Math.min(MAX_FILES_WIDTH, Math.max(MIN_FILES_WIDTH, v))
+}
+
+const filesOpen = ref(localStorage.getItem(FILES_OPEN_KEY) === '1')
+const filesWidth = ref(readStoredFilesWidth())
+const filesResizing = ref(false)
+const filesPanelRef = ref<InstanceType<typeof QueryFilesPanel> | null>(null)
+let filesDragStartX = 0
+let filesDragStartWidth = 0
+
+function toggleFilesPanel(): void {
+  filesOpen.value = !filesOpen.value
+  localStorage.setItem(FILES_OPEN_KEY, filesOpen.value ? '1' : '0')
+  if (filesOpen.value) {
+    // 等面板挂载完成再刷新,首次展开也能立即拿到文件列表。
+    void nextTick(() => filesPanelRef.value?.refresh())
+  }
+}
+
+// SQL文件面板点击条目:按文件归属的数据源自动打开/切换对应 SQL 控制台并载入。
+// 归属连接已删除或不支持 SQL 控制台(如 Redis)时,toast 提示且不动 tab。
+async function openQueryFileFromPanel(name: string, connectionId: string): Promise<void> {
+  const conn = props.connections.find((c) => c.id === connectionId)
+  if (!conn) {
+    toast.show('未找到文件关联的数据源,无法打开 SQL 控制台')
+    return
+  }
+  const target: 'sql' | 'ch-sql' | null = conn.type === 'kafka' ? 'sql' : conn.type === 'clickhouse' ? 'ch-sql' : null
+  if (!target) {
+    toast.show('该数据源类型暂不支持 SQL 控制台')
+    return
+  }
+  const act = active.value
+  if (act && act.kind === target && act.connectionId === connectionId) {
+    activeConsoleApi.value?.loadQueryFile(name)
+    return
+  }
+  if (target === 'ch-sql') {
+    tabs.openCHSql(connectionId)
+  } else {
+    // Kafka 不带 topic:通用「SQL 查询」tab,表名写在 SQL 的 FROM 子句里。
+    tabs.openSql(connectionId, '', [])
+  }
+  // 等 tab 切换后控制台组件挂载完成,再取它暴露的 API 载入文件。
+  await nextTick()
+  activeConsoleApi.value?.loadQueryFile(name)
+}
+
+function startFilesResize(e: MouseEvent): void {
+  filesResizing.value = true
+  filesDragStartX = e.clientX
+  filesDragStartWidth = filesWidth.value
+  window.addEventListener('mousemove', onFilesResize)
+  window.addEventListener('mouseup', endFilesResize)
+}
+
+function onFilesResize(e: MouseEvent): void {
+  const width = filesDragStartWidth - (e.clientX - filesDragStartX)
+  filesWidth.value = Math.min(MAX_FILES_WIDTH, Math.max(MIN_FILES_WIDTH, width))
+}
+
+function endFilesResize(): void {
+  filesResizing.value = false
+  localStorage.setItem(FILES_WIDTH_KEY, String(filesWidth.value))
+  window.removeEventListener('mousemove', onFilesResize)
+  window.removeEventListener('mouseup', endFilesResize)
+}
+
 const active = computed<Tab | null>(() => tabs.openTabs.find((t) => t.id === tabs.activeTabId) ?? null)
 const activeTopic = computed<Tab | null>(() => (active.value?.kind === 'topic' ? active.value : null))
+
+// SQL文件面板面向「激活的 SQL 控制台」操作:按激活 tab 类型取对应控制台的
+// 模板 ref;其余 tab(含无激活 tab)一律没有可操作的控制台。
+const sqlConsoleRef = ref<SqlConsoleApi | null>(null)
+const chSqlConsoleRef = ref<SqlConsoleApi | null>(null)
+
+const activeConsoleApi = computed<SqlConsoleApi | null>(() => {
+  const a = active.value
+  if (!a) return null
+  if (a.kind === 'sql') return sqlConsoleRef.value
+  if (a.kind === 'ch-sql') return chSqlConsoleRef.value
+  return null
+})
+
+// 顶栏「新建查询」:Kafka 系 tab 打开 SQL 控制台(topic tab 预选 topic),
+// ClickHouse 系 tab 打开 CH SQL 控制台;redis 或无激活 tab 时禁用。
+const canNewQuery = computed(() => active.value !== null && active.value.kind !== 'redis-keys')
+
+function openNewQuery(): void {
+  const a = active.value
+  if (!a) return
+  if (a.kind === 'ch-table' || a.kind === 'ch-sql') {
+    tabs.openCHSql(a.connectionId)
+    return
+  }
+  tabs.openSql(a.connectionId, a.topic ?? '', a.partitions ?? [])
+}
 
 function openTopic(connectionId: string, topic: string, partitions: number[]): void {
   tabs.openTopic(connectionId, topic, partitions)
@@ -106,11 +218,6 @@ function openCHTable(connectionId: string, database: string, table: string): voi
   tabs.openCHTable(connectionId, database, table)
 }
 
-// 表浏览器内「在 SQL 控制台打开」:打开该连接的 CH SQL 控制台 tab。
-function openCHSql(connectionId: string): void {
-  tabs.openCHSql(connectionId)
-}
-
 function openLag(connectionId: string): void {
   tabs.openLag(connectionId)
 }
@@ -132,12 +239,6 @@ function editConnection(conn: Connection): void {
 
 function openProducerPanel(): void {
   showProducer.value = true
-}
-
-function openSqlTab(): void {
-  if (activeTopic.value) {
-    tabs.openSql(activeTopic.value.connectionId, activeTopic.value.topic ?? '', activeTopic.value.partitions ?? [])
-  }
 }
 
 // refreshActive bumps the unified refresh counter for the active tab. sql
@@ -206,6 +307,8 @@ function onGlobalKeydown(e: KeyboardEvent): void {
 onMounted(() => {
   document.addEventListener('click', onDocClick)
   window.addEventListener('keydown', onGlobalKeydown)
+  // 启动即展开时(上次会话遗留状态),让面板立即拉一次文件列表。
+  if (filesOpen.value) filesPanelRef.value?.refresh()
 })
 
 onBeforeUnmount(() => {
@@ -274,7 +377,7 @@ function onTabDragEnd(): void {
 </script>
 
 <template>
-  <div class="layout" :class="{ resizing }" data-test="layout">
+  <div class="layout" :class="{ resizing, 'files-resizing': filesResizing }" data-test="layout">
     <header class="topbar" data-test="topbar">
       <div class="brand" data-test="brand">🪐 dataBasePro</div>
       <div class="spacer"></div>
@@ -299,7 +402,30 @@ function onTabDragEnd(): void {
           <path d="M3 10.5v1.8c0 .7.5 1.2 1.2 1.2h7.6c.7 0 1.2-.5 1.2-1.2v-1.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
         </svg>
       </button>
+      <button
+        class="btn ghost"
+        type="button"
+        data-test="btn-new-query"
+        :disabled="!canNewQuery"
+        :title="canNewQuery ? '新建查询' : '请先打开 Kafka/ClickHouse 连接的标签页'"
+        @click="openNewQuery"
+      >
+        新建查询
+      </button>
       <button class="btn ghost" type="button" data-test="btn-settings" @click="showSettings = true">设置</button>
+      <button
+        class="btn ghost icon-btn"
+        type="button"
+        data-test="btn-sql-files"
+        title="SQL文件"
+        @click="toggleFilesPanel"
+      >
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+          <path d="M4 1.5h5.2l3.3 3.3v9.7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-12a1 1 0 0 1 1-1z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+          <path d="M9.2 1.5v3.3h3.3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+          <path d="M5 8h5.4M5 10.5h4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+        </svg>
+      </button>
     </header>
 
     <div class="body">
@@ -355,7 +481,6 @@ function onTabDragEnd(): void {
               :topic="active.topic ?? ''"
               :partitions="active.partitions ?? []"
               :refresh-request="refreshRequest"
-              @open-sql="openSqlTab"
               @open-producer="openProducerPanel"
             />
           </template>
@@ -369,6 +494,7 @@ function onTabDragEnd(): void {
           </template>
           <template v-else-if="active.kind === 'sql'">
             <SqlConsole
+              ref="sqlConsoleRef"
               :tab-id="active.id"
               :connection-id="active.connectionId"
               :topic="active.topic ?? ''"
@@ -398,17 +524,41 @@ function onTabDragEnd(): void {
               :connection-id="active.connectionId"
               :database="active.database ?? ''"
               :table="active.table ?? ''"
-              @open-ch-sql="openCHSql(active.connectionId)"
             />
           </template>
           <template v-else-if="active.kind === 'ch-sql'">
-            <CHSqlConsole :key="active.id" :connection-id="active.connectionId" />
+            <CHSqlConsole
+              ref="chSqlConsoleRef"
+              :key="active.id"
+              :tab-id="active.id"
+              :connection-id="active.connectionId"
+            />
           </template>
         </div>
       </main>
+
+      <div
+        v-if="filesOpen"
+        class="files-resizer"
+        data-test="files-resizer"
+        title="拖动调整 SQL文件栏宽度"
+        @mousedown.prevent="startFilesResize"
+      ></div>
+
+      <aside
+        v-if="filesOpen"
+        class="files-sidebar"
+        :style="{ width: `${filesWidth}px` }"
+        data-test="files-sidebar"
+      >
+        <QueryFilesPanel ref="filesPanelRef" :console-api="activeConsoleApi" @open="openQueryFileFromPanel" />
+      </aside>
     </div>
 
     <StatusBar />
+
+    <!-- 全局轻提示浮层:由 toast store 驱动,底部居中,自动消失在 store 内定时。 -->
+    <div v-if="toast.message" class="toast" data-test="toast">{{ toast.message }}</div>
 
     <ProducerPanel
       v-if="activeTopic"
@@ -524,10 +674,48 @@ function onTabDragEnd(): void {
 .layout.resizing .sidebar-resizer {
   background: var(--accent-soft);
 }
-.layout.resizing {
+.layout.resizing,
+.layout.files-resizing {
   cursor: col-resize;
   user-select: none;
   -webkit-user-select: none;
+}
+.files-resizer {
+  width: 5px;
+  flex: none;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s ease;
+  position: relative;
+  z-index: 5;
+}
+.files-resizer:hover,
+.layout.files-resizing .files-resizer {
+  background: var(--accent-soft);
+}
+.files-sidebar {
+  border-left: 1px solid var(--border);
+  overflow: auto;
+  background: var(--sidebar-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  flex: none;
+}
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 46px;
+  transform: translateX(-50%);
+  z-index: 1500;
+  max-width: 70vw;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
 }
 .workspace { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .tabbar { display: flex; align-items: flex-end; gap: 4px; padding: 8px 12px 0; }

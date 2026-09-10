@@ -9,6 +9,7 @@ import SqlEditor from './SqlEditor.vue'
 interface Exposed {
   focus: () => void
   getValue: () => string
+  getSelection: () => string
 }
 
 // CM6 会在宿主容器内创建自己的 .cm-editor 元素,借 findFromDOM 拿到 view。
@@ -89,6 +90,19 @@ describe('SqlEditor', () => {
     expect(content.style.height).toBe('180px')
     await wrapper.setProps({ height: '300px' })
     expect(content.style.height).toBe('300px')
+  })
+
+  it('getSelection:无选区返回空串,有选区(含反向)返回选中文本', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: 'SELECT 1; SELECT 2' } })
+    const vm = wrapper.vm as unknown as Exposed
+    // 初始只有光标没有选区 → 空串。
+    expect(vm.getSelection()).toBe('')
+    // 正向选中 'SELECT 1'(0..8)。
+    cmView(wrapper).dispatch({ selection: { anchor: 0, head: 8 } })
+    expect(vm.getSelection()).toBe('SELECT 1')
+    // 反向选中 'SELECT 2'(head 10 → anchor 18)。
+    cmView(wrapper).dispatch({ selection: { anchor: 18, head: 10 } })
+    expect(vm.getSelection()).toBe('SELECT 2')
   })
 
   it('暴露 focus(),且挂载时不主动抢占焦点', async () => {
