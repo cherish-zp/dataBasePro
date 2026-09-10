@@ -105,6 +105,8 @@ func (s *Service) ConnectConnection(ctx context.Context, id string) error {
 		ds, err = s.buildRedisClient(c)
 	case model.ConnectionTypeClickHouse:
 		ds, err = s.buildCHClient(c)
+	case model.ConnectionTypeMySQL, model.ConnectionTypeTiDB:
+		ds, err = s.buildMysqlClient(c)
 	default:
 		ds, err = s.buildClient(ctx, c)
 	}
@@ -147,6 +149,23 @@ func (s *Service) buildCHClient(c *model.Connection) (*CHClient, error) {
 		return nil, fmt.Errorf("decode clickhouse config: %w", err)
 	}
 	return NewCHClient(cfg)
+}
+
+// buildMysqlClient creates the MySQL/TiDB client for the connection (it pings
+// as part of construction). TiDB speaks the MySQL protocol, so both types share
+// the builder; the client keeps the real type for GetType.
+func (s *Service) buildMysqlClient(c *model.Connection) (*MysqlClient, error) {
+	if c.Type != model.ConnectionTypeMySQL && c.Type != model.ConnectionTypeTiDB {
+		return nil, fmt.Errorf("connection %q is not a MySQL/TiDB source (type %q)", c.ID, c.Type)
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	cfg, err := c.MysqlConfig()
+	if err != nil {
+		return nil, fmt.Errorf("decode mysql config: %w", err)
+	}
+	return NewMysqlClientOfType(cfg, c.Type)
 }
 
 // redis returns the pooled Redis client for the connection, auto-connecting
@@ -424,6 +443,44 @@ func (s *Service) CHExecute(ctx context.Context, id, sqlText string) ([]model.CH
 		return nil, err
 	}
 	return ch.Execute(ctx, sqlText)
+}
+
+// MysqlTestConnection verifies connectivity to the given config without
+// persisting or pooling anything (the client pings during construction).
+func (s *Service) MysqlTestConnection(ctx context.Context, cfg model.MysqlConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	client, err := NewMysqlClient(cfg)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.Connect(ctx)
+}
+
+// mysql returns the pooled MySQL/TiDB client for the connection,
+// auto-connecting when the tree has not connected it yet.
+func (s *Service) mysql(ctx context.Context, id string) (MysqlDataSource, error) {
+	if ds, err := s.pool.Get(id); err == nil {
+		m, ok := ds.(MysqlDataSource)
+		if !ok {
+			return nil, fmt.Errorf("connection %q is not a MySQL source", id)
+		}
+		return m, nil
+	}
+	if err := s.ConnectConnection(ctx, id); err != nil {
+		return nil, err
+	}
+	ds, err := s.pool.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	m, ok := ds.(MysqlDataSource)
+	if !ok {
+		return nil, fmt.Errorf("connection %q is not a MySQL source", id)
+	}
+	return m, nil
 }
 
 // CloseConnection removes a connection from the pool and closes it.

@@ -22,10 +22,15 @@ const (
 // ConnectionTypeRedis identifies a Redis data source (集群/单机自动探测)。
 const ConnectionTypeRedis ConnectionType = "redis"
 
+// ConnectionTypeTiDB identifies a TiDB data source. TiDB speaks the MySQL
+// wire protocol, so it shares the MysqlConfig shape and the MySQL client
+// implementation; the stored type keeps its own value so the UI can label it.
+const ConnectionTypeTiDB ConnectionType = "tidb"
+
 // Valid reports whether the type is currently supported.
 func (t ConnectionType) Valid() bool {
 	switch t {
-	case ConnectionTypeKafka, ConnectionTypeMySQL, ConnectionTypeES, ConnectionTypeRedis, ConnectionTypeClickHouse:
+	case ConnectionTypeKafka, ConnectionTypeMySQL, ConnectionTypeES, ConnectionTypeRedis, ConnectionTypeClickHouse, ConnectionTypeTiDB:
 		return true
 	}
 	return false
@@ -224,6 +229,15 @@ func (c Connection) Validate() error {
 			return fmt.Errorf("invalid clickhouse config: %w", err)
 		}
 		return cfg.Validate()
+	case ConnectionTypeMySQL, ConnectionTypeTiDB:
+		if len(c.Config) == 0 {
+			return errors.New("mysql config must not be empty")
+		}
+		var cfg MysqlConfig
+		if err := json.Unmarshal(c.Config, &cfg); err != nil {
+			return fmt.Errorf("invalid mysql config: %w", err)
+		}
+		return cfg.Validate()
 	}
 	return nil
 }
@@ -252,6 +266,16 @@ func (c Connection) RedisConfig() (RedisConfig, error) {
 // (clickhouse connections only).
 func (c Connection) ClickHouseConfig() (ClickHouseConfig, error) {
 	var cfg ClickHouseConfig
+	if err := json.Unmarshal(c.Config, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// MysqlConfig decodes the connection's config as a MysqlConfig (mysql and
+// tidb connections — TiDB speaks the MySQL protocol).
+func (c Connection) MysqlConfig() (MysqlConfig, error) {
+	var cfg MysqlConfig
 	if err := json.Unmarshal(c.Config, &cfg); err != nil {
 		return cfg, err
 	}

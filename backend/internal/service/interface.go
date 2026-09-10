@@ -94,3 +94,23 @@ type ClickHouseDataSource interface {
 	TruncateTable(ctx context.Context, database, table string, onCluster bool) error
 	Execute(ctx context.Context, sqlText string) ([]model.CHStatementResult, error)
 }
+
+// MysqlDataSource extends DataSource with the MySQL browser operations:
+// database/table listing, paged rows, truncate, a SQL console and parameterized
+// cell edits. TiDB speaks the MySQL protocol, so one implementation serves
+// both the mysql and tidb connection types (GetType reports the real one).
+type MysqlDataSource interface {
+	DataSource
+	Databases(ctx context.Context) ([]string, error)
+	// Tables lists the database's base tables (views are always excluded).
+	Tables(ctx context.Context, database string) ([]model.MysqlTableInfo, error)
+	PageRows(ctx context.Context, database, table, where, orderBy string, asc bool, limit, offset int) (model.MysqlPageRowsResult, error)
+	TruncateTable(ctx context.Context, database, table string) error
+	Execute(ctx context.Context, sqlText string) ([]model.MysqlStatementResult, error)
+	// PreviewCellUpdate renders the display text of the UPDATE and counts the
+	// rows matched by the same WHERE conditions (read-only, nothing executes).
+	PreviewCellUpdate(ctx context.Context, database, table string, set model.MysqlCellValue, where []model.MysqlCellValue) (model.MysqlCellUpdatePreview, error)
+	// UpdateCell executes the parameterized cell update; WHERE conditions may
+	// only reference primary key columns.
+	UpdateCell(ctx context.Context, database, table string, set model.MysqlCellValue, where []model.MysqlCellValue) error
+}

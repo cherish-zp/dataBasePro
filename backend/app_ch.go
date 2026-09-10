@@ -42,6 +42,20 @@ var builtinDrivers = []DriverInfo{
 		DefaultPort: 9000,
 		Description: "ClickHouse 库表浏览、分页查询与 SQL 控制台(原生 TCP 协议)",
 	},
+	{
+		Name:        "MySQL",
+		Library:     "go-sql-driver/mysql",
+		Version:     "v1.10.1",
+		DefaultPort: 3306,
+		Description: "MySQL 库表浏览、分页查询与 SQL 控制台(原生 TCP 协议)",
+	},
+	{
+		Name:        "TiDB",
+		Library:     "go-sql-driver/mysql",
+		Version:     "v1.10.1",
+		DefaultPort: 4000,
+		Description: "TiDB 库表浏览、分页查询与 SQL 控制台(兼容 MySQL 协议)",
+	},
 }
 
 // CHTablesRequest carries the table-listing parameters.
