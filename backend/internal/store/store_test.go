@@ -131,6 +131,93 @@ func TestStoreClickHouseCreateAndGet(t *testing.T) {
 	}
 }
 
+// MySQL/TiDB 与 ClickHouse 同样必须按类型编解码:config 不得被默认的
+// kafka 分支重写,密码加密落盘、回读解密,host/port/tls_mode 保真。
+// 回归背景:缺分支时 config 被写成 {"bootstrap_servers":null},连接
+// 保存成功但打开报「mysql host 不能为空」。
+func TestStoreMysqlCreateAndGet(t *testing.T) {
+	s := newTestStore(t)
+	c := &model.Connection{
+		ID:   "my1",
+		Name: "mysql-dev",
+		Type: model.ConnectionTypeMySQL,
+		Config: model.MustConfigJSON(model.MysqlConfig{
+			Host:     "10.0.0.8",
+			Port:     3307,
+			Username: "app",
+			Password: "mysql-secret",
+			Database: "orders",
+			TLSMode:  model.MysqlTLSSkipVerify,
+		}),
+	}
+	if err := s.CreateConnection(c); err != nil {
+		t.Fatalf("CreateConnection failed: %v", err)
+	}
+	// 原始落盘 JSON:不得含明文密码,且必须带加密前缀。
+	var raw string
+	if err := s.db.QueryRow(`SELECT config_json FROM connections WHERE id = ?`, "my1").Scan(&raw); err != nil {
+		t.Fatalf("query raw config failed: %v", err)
+	}
+	if strings.Contains(raw, "mysql-secret") {
+		t.Fatal("plaintext mysql password must not appear in stored config_json")
+	}
+	if !strings.Contains(raw, "enc:v1:") {
+		t.Fatal("stored mysql config_json must contain an encrypted password field")
+	}
+	if strings.Contains(raw, "bootstrap_servers") {
+		t.Fatal("mysql config must not be rewritten into the kafka shape")
+	}
+	// 回读:类型相关字段全部保真,密码解密还原。
+	got, err := s.GetConnection("my1")
+	if err != nil {
+		t.Fatalf("GetConnection failed: %v", err)
+	}
+	gotCfg, err := got.MysqlConfig()
+	if err != nil {
+		t.Fatalf("decode mysql config: %v", err)
+	}
+	if gotCfg.Host != "10.0.0.8" || gotCfg.Port != 3307 || gotCfg.TLSMode != model.MysqlTLSSkipVerify {
+		t.Fatalf("mysql config fields not round-tripped: %+v", gotCfg)
+	}
+	if gotCfg.Username != "app" || gotCfg.Database != "orders" {
+		t.Fatalf("unexpected decoded config: %+v", gotCfg)
+	}
+	if gotCfg.Password != "mysql-secret" {
+		t.Fatalf("mysql password not round-tripped: %q", gotCfg.Password)
+	}
+}
+
+// TiDB 与 MySQL 共用 MysqlConfig 编解码,同样不得落 kafka 分支。
+func TestStoreTiDBCreateAndGet(t *testing.T) {
+	s := newTestStore(t)
+	c := &model.Connection{
+		ID:   "tb1",
+		Name: "tidb-dev",
+		Type: model.ConnectionTypeTiDB,
+		Config: model.MustConfigJSON(model.MysqlConfig{
+			Host:     "tidb.internal",
+			Port:     4000,
+			Username: "root",
+			Password: "tidb-secret",
+			TLSMode:  model.MysqlTLSVerifyFull,
+		}),
+	}
+	if err := s.CreateConnection(c); err != nil {
+		t.Fatalf("CreateConnection failed: %v", err)
+	}
+	got, err := s.GetConnection("tb1")
+	if err != nil {
+		t.Fatalf("GetConnection failed: %v", err)
+	}
+	gotCfg, err := got.MysqlConfig()
+	if err != nil {
+		t.Fatalf("decode tidb config: %v", err)
+	}
+	if gotCfg.Host != "tidb.internal" || gotCfg.Port != 4000 || gotCfg.Password != "tidb-secret" {
+		t.Fatalf("tidb config not round-tripped: %+v", gotCfg)
+	}
+}
+
 func TestStoreUpdate(t *testing.T) {
 	s := newTestStore(t)
 	c := sampleConnection("c1")
