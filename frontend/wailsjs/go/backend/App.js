@@ -146,6 +146,14 @@ export function ListDrivers() {
   return window['go']['backend']['App']['ListDrivers']();
 }
 
+export function ListMysqlDatabases(arg1) {
+  return window['go']['backend']['App']['ListMysqlDatabases'](arg1);
+}
+
+export function ListMysqlTables(arg1) {
+  return window['go']['backend']['App']['ListMysqlTables'](arg1);
+}
+
 export function ListQueryFiles(arg1) {
   return window['go']['backend']['App']['ListQueryFiles'](arg1);
 }
@@ -160,6 +168,26 @@ export function ListSavedQueries(arg1) {
 
 export function ListTopics(arg1) {
   return window['go']['backend']['App']['ListTopics'](arg1);
+}
+
+export function MysqlExecute(arg1) {
+  return window['go']['backend']['App']['MysqlExecute'](arg1);
+}
+
+export function MysqlPageRows(arg1) {
+  return window['go']['backend']['App']['MysqlPageRows'](arg1);
+}
+
+export function MysqlPreviewCellUpdate(arg1) {
+  return window['go']['backend']['App']['MysqlPreviewCellUpdate'](arg1);
+}
+
+export function MysqlTruncateTable(arg1) {
+  return window['go']['backend']['App']['MysqlTruncateTable'](arg1);
+}
+
+export function MysqlUpdateCell(arg1) {
+  return window['go']['backend']['App']['MysqlUpdateCell'](arg1);
 }
 
 export function OpenURL(arg1) {
@@ -272,6 +300,10 @@ export function TestCHConnection(arg1) {
 
 export function TestConnection(arg1) {
   return window['go']['backend']['App']['TestConnection'](arg1);
+}
+
+export function TestMysqlConnection(arg1) {
+  return window['go']['backend']['App']['TestMysqlConnection'](arg1);
 }
 
 export function TestRedisConnection(arg1) {

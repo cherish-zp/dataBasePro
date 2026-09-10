@@ -76,6 +76,10 @@ export function ListConsumerGroups(arg1:string):Promise<Array<model.ConsumerGrou
 
 export function ListDrivers():Promise<Array<backend.DriverInfo>>;
 
+export function ListMysqlDatabases(arg1:string):Promise<Array<string>>;
+
+export function ListMysqlTables(arg1:backend.MysqlTablesRequest):Promise<Array<model.MysqlTableInfo>>;
+
 export function ListQueryFiles(arg1:backend.QueryFileListRequest):Promise<Array<store.QueryFileInfo>>;
 
 export function ListRedisDBs(arg1:string):Promise<Array<model.RedisDBInfo>>;
@@ -83,6 +87,16 @@ export function ListRedisDBs(arg1:string):Promise<Array<model.RedisDBInfo>>;
 export function ListSavedQueries(arg1:backend.ListSavedQueriesRequest):Promise<Array<model.SavedQuery>>;
 
 export function ListTopics(arg1:string):Promise<Array<model.Topic>>;
+
+export function MysqlExecute(arg1:backend.MysqlExecuteRequest):Promise<Array<model.MysqlStatementResult>>;
+
+export function MysqlPageRows(arg1:backend.MysqlPageRowsRequest):Promise<model.MysqlPageRowsResult>;
+
+export function MysqlPreviewCellUpdate(arg1:model.MysqlCellUpdateRequest):Promise<model.MysqlCellUpdatePreview>;
+
+export function MysqlTruncateTable(arg1:backend.MysqlTruncateTableRequest):Promise<void>;
+
+export function MysqlUpdateCell(arg1:model.MysqlCellUpdateRequest):Promise<void>;
 
 export function OpenURL(arg1:string):Promise<void>;
 
@@ -139,6 +153,8 @@ export function SaveTextFile(arg1:backend.SaveTextFileRequest):Promise<string>;
 export function TestCHConnection(arg1:model.ClickHouseConfig):Promise<void>;
 
 export function TestConnection(arg1:model.KafkaConfig):Promise<void>;
+
+export function TestMysqlConnection(arg1:model.MysqlConfig):Promise<void>;
 
 export function TestRedisConnection(arg1:model.RedisConfig):Promise<void>;
 

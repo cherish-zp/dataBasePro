@@ -340,6 +340,76 @@ export namespace backend {
 	        this.connection_id = source["connection_id"];
 	    }
 	}
+	export class MysqlExecuteRequest {
+	    connection_id: string;
+	    sql: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlExecuteRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.sql = source["sql"];
+	    }
+	}
+	export class MysqlPageRowsRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    where?: string;
+	    order_by?: string;
+	    asc: boolean;
+	    limit: number;
+	    offset: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlPageRowsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.where = source["where"];
+	        this.order_by = source["order_by"];
+	        this.asc = source["asc"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class MysqlTablesRequest {
+	    connection_id: string;
+	    database: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlTablesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	    }
+	}
+	export class MysqlTruncateTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlTruncateTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	    }
+	}
 	export class ProduceRequest {
 	    connection_id: string;
 	    topic: string;
@@ -1376,6 +1446,207 @@ export namespace model {
 		    }
 		    return a;
 		}
+	}
+	export class MysqlCellUpdatePreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlCellUpdatePreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class MysqlCellValue {
+	    column: string;
+	    value?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlCellValue(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.column = source["column"];
+	        this.value = source["value"];
+	    }
+	}
+	export class MysqlCellUpdateRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    set: MysqlCellValue;
+	    where: MysqlCellValue[];
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlCellUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.set = this.convertValues(source["set"], MysqlCellValue);
+	        this.where = this.convertValues(source["where"], MysqlCellValue);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class MysqlColumn {
+	    name: string;
+	    type: string;
+	    comment?: string;
+	    is_in_primary_key: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlColumn(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.comment = source["comment"];
+	        this.is_in_primary_key = source["is_in_primary_key"];
+	    }
+	}
+	export class MysqlConfig {
+	    host: string;
+	    port: number;
+	    username: string;
+	    password?: string;
+	    database: string;
+	    tls_mode?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.database = source["database"];
+	        this.tls_mode = source["tls_mode"];
+	    }
+	}
+	export class MysqlPageRowsResult {
+	    columns: MysqlColumn[];
+	    rows: string[][];
+	    total_rows: number;
+	    primary_key: string[];
+	    engine: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlPageRowsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = this.convertValues(source["columns"], MysqlColumn);
+	        this.rows = source["rows"];
+	        this.total_rows = source["total_rows"];
+	        this.primary_key = source["primary_key"];
+	        this.engine = source["engine"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MysqlStatementResult {
+	    sql: string;
+	    duration_ms: number;
+	    error?: string;
+	    columns?: MysqlColumn[];
+	    rows?: string[][];
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlStatementResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sql = source["sql"];
+	        this.duration_ms = source["duration_ms"];
+	        this.error = source["error"];
+	        this.columns = this.convertValues(source["columns"], MysqlColumn);
+	        this.rows = source["rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MysqlTableInfo {
+	    name: string;
+	    engine: string;
+	    table_rows?: number;
+	    comment?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlTableInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.engine = source["engine"];
+	        this.table_rows = source["table_rows"];
+	        this.comment = source["comment"];
+	    }
 	}
 	export class Partition {
 	    id: number;
