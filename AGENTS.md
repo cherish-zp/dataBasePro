@@ -23,6 +23,12 @@
 - Vue/TS：使用 `<script setup lang="ts">`、严格 TypeScript、kebab-case 文件名、camelCase 函数名、snake_case JSON 字段（与 Go 侧保持一致）。
 - 改动保持最小化，并与现有组件/store 的写法保持一致。
 
+## SQL 控制台规范
+
+- 每个数据源的 SQL 控制台（现有 kafka-sql、ch-sql，后续 redis-sql、mysql-sql 等）必须接入「查询库」：保存的查询按 `console_type + connection_id` 隔离，存储于 SQLite `saved_queries` 表（store 层 CRUD，同名报「同名查询已存在」），控制台左侧面板提供列表/载入/保存/另存为/删除。
+- SQL 编辑器统一使用 `src/components/common/SqlEditor.vue`（CodeMirror 6，内置 SQL 高亮与补全）；补全数据源通过 `tables` prop 传入（表名→列名数组）。
+- 新增数据源的控制台接入时，复用上述组件与存储（console_type 用新值），不要另建保存机制。
+
 ## 测试规范
 
 - 后端：Go 标准库 `testing` + `kfake`（无需真实 Kafka）。测试命名 `TestXxx`；按包运行（如 `go test ./backend/internal/kafka/ -v`）。kfake 需绑定本地 TCP 端口，请在沙箱外运行。
