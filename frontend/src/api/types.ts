@@ -1,6 +1,6 @@
 // Types mirroring the Go model package (snake_case JSON fields).
 
-export type ConnectionType = 'kafka' | 'mysql' | 'es' | 'redis' | 'clickhouse'
+export type ConnectionType = 'kafka' | 'mysql' | 'tidb' | 'es' | 'redis' | 'clickhouse'
 
 export interface SASLConfig {
   enabled: boolean
@@ -35,8 +35,8 @@ export interface Connection {
   name: string
   type: ConnectionType
   // 按类型多态:kafka → KafkaConfig,redis → RedisConfigShape,
-  // clickhouse → CHConfigShape
-  config: KafkaConfig | RedisConfigShape | CHConfigShape
+  // clickhouse → CHConfigShape,mysql/tidb → MysqlConfigShape
+  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape
   created_at: number
   updated_at: number
 }
@@ -50,7 +50,7 @@ export interface UpdateConnectionRequest {
   id: string
   name: string
   type?: ConnectionType
-  config: KafkaConfig | RedisConfigShape | CHConfigShape
+  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape
 }
 
 export interface Partition {
@@ -598,6 +598,110 @@ export interface CHStatementResult {
   error?: string
   columns?: CHColumn[]
   rows?: (string | null)[][]
+}
+
+// --- MySQL / TiDB(镜像 backend/model/mysql.go) ---
+
+// mysql 与 tidb 共用同一连接配置形状;port 由前端按类型预填(3306/4000)。
+export interface MysqlConfigShape {
+  host: string
+  port: number
+  username: string
+  password: string
+  database: string
+  // disabled=明文;skip-verify=TLS 但跳过证书校验;verify-full=TLS + 校验。
+  tls_mode: 'disabled' | 'skip-verify' | 'verify-full'
+}
+
+// 列头:列名 + 列类型(如 bigint / varchar(255),SQL 结果里可能为空);
+// comment 为列注释(空 = 无描述,wire 省略);is_in_primary_key 标记该列
+// 是否属于主键(information_schema.columns.column_key = 'PRI')。
+export interface MysqlColumn {
+  name: string
+  type: string
+  comment?: string
+  is_in_primary_key: boolean
+}
+
+export interface MysqlListTablesRequest {
+  connection_id: string
+  database: string
+}
+
+// 一张表:engine 为存储引擎(如 InnoDB);table_rows 镜像
+// information_schema.tables.table_rows,引擎无法给出近似行数时为 null。
+export interface MysqlTableInfo {
+  name: string
+  engine: string
+  table_rows: number | null
+  comment?: string
+}
+
+export interface MysqlPageRowsRequest {
+  connection_id: string
+  database: string
+  table: string
+  // 用户输入的原生 WHERE 片段(不带 WHERE 关键字),空省略。
+  where?: string
+  order_by?: string
+  asc?: boolean
+  limit: number
+  offset: number
+}
+
+// rows 单元格为 string 或 null(NULL);后端把非字符串列格式化为字符串。
+// primary_key 为主键列名数组(按定义序;空数组=无主键),供表浏览器行内
+// 编辑决定 UPDATE 的 WHERE 范围;total_rows 为精确行数(COUNT(*))。
+export interface MysqlPageRowsResult {
+  columns: MysqlColumn[]
+  rows: (string | null)[][]
+  total_rows: number
+  primary_key: string[]
+  engine: string
+}
+
+export interface MysqlExecuteRequest {
+  connection_id: string
+  sql: string
+}
+
+// 多语句逐条返回:每条一条结果,失败语句带 error 文本;成功语句带列与行。
+export interface MysqlStatementResult {
+  sql: string
+  duration_ms: number
+  error?: string
+  columns?: MysqlColumn[]
+  rows?: (string | null)[][]
+}
+
+export interface MysqlTruncateTableRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+// 单元格行内编辑的定位/目标描述(镜像 model.MysqlCellValue):value 为
+// null 表示写 NULL;与 ClickHouse 不同,没有 Type 字段(执行全程参数化,
+// 预览按字符串字面量渲染)。
+export interface MysqlCellValue {
+  column: string
+  value: string | null
+}
+
+// where 只允许引用主键列(后端强制);database 为空表示连接的默认库。
+export interface MysqlCellUpdateRequest {
+  connection_id: string
+  database: string
+  table: string
+  set: MysqlCellValue
+  where: MysqlCellValue[]
+}
+
+// 预览返回:后端生成的展示语句全文 + 同 WHERE 条件的预计匹配行数
+// (>1 需前端警示);实际更新执行参数化语句,不会运行这段文本。
+export interface MysqlCellUpdatePreview {
+  statement: string
+  matched_rows: number
 }
 
 // 驱动管理页一行(镜像 model.DriverInfo):驱动为内置原生实现,

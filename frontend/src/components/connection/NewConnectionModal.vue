@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { reactive, ref, computed, watch } from 'vue'
 import { getApi } from '@/api/client'
-import { useConnectionsStore } from '@/store/connections'
-import type { Connection, CHConfigShape, KafkaConfig, RedisConfigShape, SASLConfig, TLSConfig } from '@/api/types'
+import { useConnectionsStore, type NewConnectionInput } from '@/store/connections'
+import type { Connection, CHConfigShape, KafkaConfig, MysqlConfigShape, RedisConfigShape, SASLConfig, TLSConfig } from '@/api/types'
 
 const props = defineProps<{ show: boolean; connection?: Connection | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -12,15 +12,18 @@ const store = useConnectionsStore()
 const SECURITY_PROTOCOLS = ['PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'] as const
 
 // 两段式第一段:数据库类型卡片。数据来自本地常量数组,后续可换驱动管理页数据。
-const TYPE_CARDS: { type: 'kafka' | 'redis' | 'clickhouse'; label: string; icon: string }[] = [
+type CardType = 'kafka' | 'redis' | 'clickhouse' | 'mysql' | 'tidb'
+const TYPE_CARDS: { type: CardType; label: string; icon: string }[] = [
   { type: 'kafka', label: 'Kafka', icon: '⚡' },
   { type: 'redis', label: 'Redis', icon: '🧱' },
   { type: 'clickhouse', label: 'ClickHouse', icon: '🗄️' },
+  { type: 'mysql', label: 'MySQL', icon: '🐬' },
+  { type: 'tidb', label: 'TiDB', icon: '🌿' },
 ]
 
 const form = reactive({
   name: '',
-  connType: 'kafka' as 'kafka' | 'redis' | 'clickhouse',
+  connType: 'kafka' as CardType,
   addr: '',
   redisPassword: '',
   redisDB: 0,
@@ -42,15 +45,23 @@ const form = reactive({
   chDatabase: 'default',
   chTLS: false,
   chProtocol: 'native' as 'native' | 'http',
+  // mysql/tidb 共用一套字段。
+  mysqlHost: '',
+  mysqlPort: 3306,
+  mysqlUsername: 'root',
+  mysqlPassword: '',
+  mysqlDatabase: '',
+  mysqlTlsMode: 'disabled' as MysqlConfigShape['tls_mode'],
 })
 const testing = ref(false)
 const tested = ref(false)
 const testError = ref<string | null>(null)
 const saveError = ref<string | null>(null)
-// 密码可见性:三个密码框(kafka/redis/clickhouse)各自独立切换,默认密文。
+// 密码可见性:四个密码框(kafka/redis/clickhouse/mysql)各自独立切换,默认密文。
 const showKafkaPassword = ref(false)
 const showRedisPassword = ref(false)
 const showChPassword = ref(false)
+const showMysqlPassword = ref(false)
 
 const editing = computed(() => !!props.connection)
 
@@ -63,6 +74,21 @@ const isGssapi = computed(() => isSasl.value && form.mechanism === 'GSSAPI')
 function envDefault(key: string): string {
   const v = process.env[key]
   return typeof v === 'string' ? v : ''
+}
+
+// pickType 响应类型卡片点击:切进 mysql/tidb 时按类型预填默认端口与 TLS 模式
+// (MySQL 3306/disabled,TiDB 4000/disabled)。自建 TiDB 默认不开 TLS,
+// TLS 供 TiDB Cloud 等托管服务显式选择;编辑回填(fillFrom)直接写
+// connType,不会触发这里的预填,避免覆盖已有配置。
+function pickType(t: CardType): void {
+  form.connType = t
+  if (t === 'mysql') {
+    form.mysqlPort = 3306
+    form.mysqlTlsMode = 'disabled'
+  } else if (t === 'tidb') {
+    form.mysqlPort = 4000
+    form.mysqlTlsMode = 'disabled'
+  }
 }
 
 // fillFrom 用已有连接预填表单。旧配置缺 security_protocol 时按
@@ -89,6 +115,18 @@ function fillFrom(conn: Connection): void {
     form.chTLS = !!cfg.tls
     // 旧配置缺省 protocol 时按 native 回填,与后端归一逻辑一致。
     form.chProtocol = cfg.protocol ?? 'native'
+    return
+  }
+  if (conn.type === 'mysql' || conn.type === 'tidb') {
+    const cfg = conn.config as MysqlConfigShape
+    form.connType = conn.type
+    form.mysqlHost = cfg.host
+    form.mysqlPort = cfg.port
+    form.mysqlUsername = cfg.username
+    form.mysqlPassword = cfg.password
+    form.mysqlDatabase = cfg.database
+    // 旧配置缺省 tls_mode 时按 disabled 回填。
+    form.mysqlTlsMode = cfg.tls_mode ?? 'disabled'
     return
   }
   form.connType = 'kafka'
@@ -151,7 +189,7 @@ const tls = computed<TLSConfig | undefined>(() => {
   if (!isTLS.value && !form.caCert && !form.insecureSkipVerify) return undefined
   return { enabled: isTLS.value, ca_cert: form.caCert, insecure_skip_verify: form.insecureSkipVerify }
 })
-const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape>(() => {
+const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape>(() => {
   if (form.connType === 'redis') {
     return {
       addr: form.addr,
@@ -171,6 +209,16 @@ const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape>(() => {
       protocol: form.chProtocol,
     }
   }
+  if (form.connType === 'mysql' || form.connType === 'tidb') {
+    return {
+      host: form.mysqlHost,
+      port: Number(form.mysqlPort) || 0,
+      username: form.mysqlUsername,
+      password: form.mysqlPassword,
+      database: form.mysqlDatabase,
+      tls_mode: form.mysqlTlsMode,
+    }
+  }
   return {
     bootstrap_servers: brokers.value,
     security_protocol: form.securityProtocol,
@@ -183,9 +231,12 @@ const nameInvalid = computed(() => form.name.trim() === '')
 const brokersInvalid = computed(() => form.connType === 'kafka' && brokers.value.length === 0)
 const addrInvalid = computed(() => form.connType === 'redis' && form.addr.trim() === '')
 const chHostsInvalid = computed(() => form.connType === 'clickhouse' && chHosts.value.length === 0)
-const saveInvalid = computed(() => nameInvalid.value || brokersInvalid.value || addrInvalid.value || chHostsInvalid.value)
+const isMysqlFamily = computed(() => form.connType === 'mysql' || form.connType === 'tidb')
+const mysqlHostInvalid = computed(() => isMysqlFamily.value && form.mysqlHost.trim() === '')
+const mysqlPortInvalid = computed(() => isMysqlFamily.value && (Number(form.mysqlPort) < 1 || Number(form.mysqlPort) > 65535))
+const saveInvalid = computed(() => nameInvalid.value || brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value)
 // 测试连接不需要名称,只校验目标地址。
-const targetInvalid = computed(() => brokersInvalid.value || addrInvalid.value || chHostsInvalid.value)
+const targetInvalid = computed(() => brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value)
 
 async function runTest(): Promise<void> {
   if (targetInvalid.value) return
@@ -194,11 +245,13 @@ async function runTest(): Promise<void> {
   testError.value = null
   try {
     // 按类型分派:redis 走 TestRedisConnection,clickhouse 走 TestCHConnection,
-    // kafka 走原 TestConnection。
+    // mysql/tidb 共用 TestMysqlConnection(config 形状相同),kafka 走原 TestConnection。
     if (form.connType === 'redis') {
       await getApi().testRedisConnection(config.value as RedisConfigShape)
     } else if (form.connType === 'clickhouse') {
       await getApi().testCHConnection(config.value as CHConfigShape)
+    } else if (form.connType === 'mysql' || form.connType === 'tidb') {
+      await getApi().testMysqlConnection?.(config.value as MysqlConfigShape)
     } else {
       await store.testConnection(config.value as KafkaConfig)
     }
@@ -214,12 +267,13 @@ async function save(): Promise<void> {
   saveError.value = null
   if (saveInvalid.value) return
   try {
+    // store 入参的 config 联合类型尚未纳入 MysqlConfigShape,这里收窄断言;
+    // type 始终显式携带 form.connType,避免后端对空 type 默认 kafka。
+    const input = { name: form.name.trim(), type: form.connType, config: config.value } as NewConnectionInput
     if (props.connection) {
-      // type 用 form.connType(预填自连接类型):携带显式类型避免后端
-      // resolvedType 对空 type 默认 kafka,导致 redis/clickhouse 走错分支。
-      await store.update(props.connection.id, { name: form.name.trim(), type: form.connType, config: config.value })
+      await store.update(props.connection.id, input)
     } else {
-      await store.create({ name: form.name.trim(), type: form.connType, config: config.value })
+      await store.create(input)
     }
     emit('close')
   } catch (e) {
@@ -255,7 +309,7 @@ function close(): void {
               class="type-card"
               :class="{ active: form.connType === c.type }"
               :data-test="`type-card-${c.type}`"
-              @click="form.connType = c.type"
+              @click="pickType(c.type)"
             >
               <span class="type-card-icon">{{ c.icon }}</span>
               <span class="type-card-label">{{ c.label }}</span>
@@ -345,6 +399,59 @@ function close(): void {
               <input v-model="form.chTLS" type="checkbox" data-test="input-ch-tls" />
               启用 TLS
             </label>
+          </div>
+        </template>
+        <template v-else-if="form.connType === 'mysql' || form.connType === 'tidb'">
+          <div class="field">
+            <label class="label">主机 <span class="req">*</span></label>
+            <input v-model="form.mysqlHost" data-test="input-mysql-host" class="input" placeholder="127.0.0.1" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            <span v-if="mysqlHostInvalid" class="err">主机不能为空</span>
+          </div>
+          <div class="field">
+            <label class="label">端口 <span class="req">*</span></label>
+            <input v-model.number="form.mysqlPort" data-test="input-mysql-port" class="input" type="number" min="1" max="65535" />
+            <span v-if="mysqlPortInvalid" class="err">端口需为 1-65535</span>
+            <span class="hint" data-test="mysql-port-hint">MySQL 默认 3306;TiDB 默认 4000</span>
+          </div>
+          <div class="field">
+            <label class="label">用户名</label>
+            <input v-model="form.mysqlUsername" data-test="input-mysql-username" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label class="label">密码</label>
+            <div class="password-wrap">
+              <input v-model="form.mysqlPassword" :type="showMysqlPassword ? 'text' : 'password'" data-test="input-mysql-password" class="input password-input" />
+              <button
+                type="button"
+                class="eye-btn"
+                tabindex="-1"
+                data-test="toggle-password-mysql"
+                :aria-label="showMysqlPassword ? '隐藏密码' : '显示密码'"
+                @click="showMysqlPassword = !showMysqlPassword"
+              >
+                <svg v-if="showMysqlPassword" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label">数据库</label>
+            <input v-model="form.mysqlDatabase" data-test="input-mysql-database" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label class="label">TLS</label>
+            <select v-model="form.mysqlTlsMode" class="input" data-test="input-mysql-tls-mode">
+              <option value="disabled">禁用</option>
+              <option value="skip-verify">启用（跳过证书校验）</option>
+              <option value="verify-full">启用（校验证书）</option>
+            </select>
+            <p class="hint" data-test="mysql-tls-hint">自建 MySQL/TiDB 默认禁用即可;TiDB Cloud 等托管服务需选择启用</p>
           </div>
         </template>
         <template v-else>

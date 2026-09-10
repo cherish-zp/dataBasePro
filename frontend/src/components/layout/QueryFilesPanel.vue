@@ -32,6 +32,7 @@ const connections = ref<Connection[]>([])
 const TYPE_LABELS: Record<ConnectionType, string> = {
   kafka: 'Kafka',
   mysql: 'MySQL',
+  tidb: 'TiDB',
   es: 'ES',
   redis: 'Redis',
   clickhouse: 'ClickHouse',
@@ -56,9 +57,11 @@ onMounted(() => {
   void loadConnections()
 })
 
-// 暴露给 Layout:面板展开(含首次展开)时主动刷新一次列表。
+// 暴露给 Layout:面板展开(含首次展开)时主动刷新文件列表与连接列表。
+// 连接列表也必须重拉,否则面板常开期间新建的连接解析不出归属(未知连接)。
 function refresh(): void {
   void refreshFiles()
+  void loadConnections()
 }
 defineExpose({ refresh })
 

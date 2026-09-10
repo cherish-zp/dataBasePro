@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys' | 'ch-table' | 'ch-sql'
+export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys' | 'ch-table' | 'ch-sql' | 'mysql-table' | 'mysql-sql'
 
 export interface Tab {
   id: string
@@ -189,6 +189,51 @@ export const useTabsStore = defineStore('tabs', () => {
     return tab
   }
 
+  // openMysqlTable opens a MySQL/TiDB table browser keyed by connection +
+  // database + table (dedupe rules copied from openCHTable); reopening an
+  // already open table only focuses it. Title carries db.table to disambiguate
+  // same-named tables across databases.
+  function openMysqlTable(connectionId: string, database: string, table: string): Tab {
+    const id = `mysql:${connectionId}:${database}:${table}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'mysql-table',
+      title: `表 · ${database}.${table}`,
+      connectionId,
+      database,
+      table,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  // openMysqlSql opens the MySQL/TiDB SQL console. One console per connection
+  // + database: database 为空表示「不限定库」的通用控制台,id 省略库名段。
+  function openMysqlSql(connectionId: string, database?: string): Tab {
+    const id = database ? `mysql-sql:${connectionId}:${database}` : `mysql-sql:${connectionId}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'mysql-sql',
+      title: 'SQL 控制台',
+      connectionId,
+      database,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
   function closeTab(id: string): void {
     const idx = openTabs.value.findIndex((t) => t.id === id)
     if (idx < 0) return
@@ -248,6 +293,8 @@ export const useTabsStore = defineStore('tabs', () => {
     openHealth,
     openCHTable,
     openCHSql,
+    openMysqlTable,
+    openMysqlSql,
     closeTab,
     closeOthers,
     closeAll,

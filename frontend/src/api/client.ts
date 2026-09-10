@@ -70,6 +70,16 @@ import type {
   CHExecuteRequest,
   CHStatementResult,
   DriverInfo,
+  MysqlConfigShape,
+  MysqlListTablesRequest,
+  MysqlTableInfo,
+  MysqlPageRowsRequest,
+  MysqlPageRowsResult,
+  MysqlExecuteRequest,
+  MysqlStatementResult,
+  MysqlTruncateTableRequest,
+  MysqlCellUpdateRequest,
+  MysqlCellUpdatePreview,
 } from './types'
 
 export interface Api {
@@ -140,6 +150,16 @@ export interface Api {
   chTruncateTable(req: CHTruncateTableRequest): Promise<void>
   chExecute(req: CHExecuteRequest): Promise<CHStatementResult[]>
   listDrivers(): Promise<DriverInfo[]>
+  // MySQL/TiDB 系列:后端绑定尚未由 wails generate 生成,先声明为可选成员,
+  // 避免全仓既有 fakeApi 被迫补齐;调用方用可选链(?.)访问。
+  testMysqlConnection?(cfg: MysqlConfigShape): Promise<void>
+  listMysqlDatabases?(id: string): Promise<string[]>
+  listMysqlTables?(req: MysqlListTablesRequest): Promise<MysqlTableInfo[]>
+  mysqlPageRows?(req: MysqlPageRowsRequest): Promise<MysqlPageRowsResult>
+  mysqlExecute?(req: MysqlExecuteRequest): Promise<MysqlStatementResult[]>
+  mysqlPreviewCellUpdate?(req: MysqlCellUpdateRequest): Promise<MysqlCellUpdatePreview>
+  mysqlUpdateCell?(req: MysqlCellUpdateRequest): Promise<void>
+  mysqlTruncateTable?(req: MysqlTruncateTableRequest): Promise<void>
 }
 
 // The Wails binding generator models Go `[]byte` fields as `number[]`, but
@@ -354,6 +374,32 @@ export class WailsApi implements Api {
   }
   listDrivers(): Promise<DriverInfo[]> {
     return (App as unknown as { ListDrivers: () => Promise<DriverInfo[]> }).ListDrivers() as unknown as Promise<DriverInfo[]>
+  }
+  // 以下 MySQL/TiDB API 的后端绑定尚未由 wails generate 生成,先对模块形状
+  // 断言,待主会话生成绑定后即可直接调用(接口侧为可选成员,fake 无需实现)。
+  testMysqlConnection(cfg: MysqlConfigShape): Promise<void> {
+    return (App as unknown as { TestMysqlConnection: (cfg: never) => Promise<void> }).TestMysqlConnection(cfg as unknown as never)
+  }
+  listMysqlDatabases(id: string): Promise<string[]> {
+    return (App as unknown as { ListMysqlDatabases: (id: string) => Promise<string[]> }).ListMysqlDatabases(id) as unknown as Promise<string[]>
+  }
+  listMysqlTables(req: MysqlListTablesRequest): Promise<MysqlTableInfo[]> {
+    return (App as unknown as { ListMysqlTables: (req: never) => Promise<MysqlTableInfo[]> }).ListMysqlTables(req as unknown as never)
+  }
+  mysqlPageRows(req: MysqlPageRowsRequest): Promise<MysqlPageRowsResult> {
+    return (App as unknown as { MysqlPageRows: (req: never) => Promise<MysqlPageRowsResult> }).MysqlPageRows(req as unknown as never)
+  }
+  mysqlExecute(req: MysqlExecuteRequest): Promise<MysqlStatementResult[]> {
+    return (App as unknown as { MysqlExecute: (req: never) => Promise<MysqlStatementResult[]> }).MysqlExecute(req as unknown as never)
+  }
+  mysqlPreviewCellUpdate(req: MysqlCellUpdateRequest): Promise<MysqlCellUpdatePreview> {
+    return (App as unknown as { MysqlPreviewCellUpdate: (req: never) => Promise<MysqlCellUpdatePreview> }).MysqlPreviewCellUpdate(req as unknown as never)
+  }
+  mysqlUpdateCell(req: MysqlCellUpdateRequest): Promise<void> {
+    return (App as unknown as { MysqlUpdateCell: (req: never) => Promise<void> }).MysqlUpdateCell(req as unknown as never)
+  }
+  mysqlTruncateTable(req: MysqlTruncateTableRequest): Promise<void> {
+    return (App as unknown as { MysqlTruncateTable: (req: never) => Promise<void> }).MysqlTruncateTable(req as unknown as never)
   }
 }
 

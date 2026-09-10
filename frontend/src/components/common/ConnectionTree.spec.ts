@@ -182,12 +182,12 @@ describe('ConnectionTree', () => {
   })
 
   it('shows an unsupported message for non-kafka types', async () => {
-    const wrapper = mount(ConnectionTree, { props: { connections: [conn('m', 'mysql')] } })
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('e', 'es')] } })
     await wrapper.find('[data-test="conn-name"]').trigger('click')
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="type-unsupported"]').exists()).toBe(true)
     })
-    expect(wrapper.find('[data-test="type-unsupported"]').text()).toContain('MySQL')
+    expect(wrapper.find('[data-test="type-unsupported"]').text()).toContain('ES')
   })
 
   it('filters topics with fuzzy search', async () => {
@@ -1103,6 +1103,175 @@ describe('ConnectionTree', () => {
     const rd = { ...conn('rd'), type: 'redis' as const }
     const wrapper = mount(ConnectionTree, { props: { connections: [ch, rd] } })
     expect(wrapper.findAll('[data-test="conn-type"]').map((n) => n.text())).toEqual(['ClickHouse', 'Redis'])
+  })
+
+  it('shows the TiDB label for a tidb connection', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [{ ...conn('t'), type: 'tidb' as const }] } })
+    expect(wrapper.findAll('[data-test="conn-type"]').map((n) => n.text())).toEqual(['TiDB'])
+  })
+
+  const mysqlConn = (id: string, type: 'mysql' | 'tidb' = 'mysql'): Connection => ({
+    id, name: `conn-${id}`, type,
+    config: { host: 'h.internal', port: 3306, username: 'app', password: '', database: '', tls_mode: 'disabled' },
+    created_at: 1, updated_at: 1,
+  })
+
+  it('lists mysql databases when a mysql connection expands', async () => {
+    const api2 = fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['default', 'shop']),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="mysql-db-node"]')).toHaveLength(2)
+    })
+    expect(api2.listMysqlDatabases).toHaveBeenCalledWith('my')
+    expect(api2.listTopics).not.toHaveBeenCalled()
+    expect(wrapper.findAll('[data-test="mysql-db-name"]').map((n) => n.text())).toEqual(['default', 'shop'])
+  })
+
+  it('expands a tidb connection into databases like mysql', async () => {
+    const api2 = fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['app']),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('t', 'tidb')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="mysql-db-node"]')).toHaveLength(1)
+    })
+    expect(api2.listMysqlDatabases).toHaveBeenCalledWith('t')
+    expect(api2.listTopics).not.toHaveBeenCalled()
+  })
+
+  it('lazily loads mysql tables when a database node expands', async () => {
+    const api2 = fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['shop']),
+      listMysqlTables: vi.fn(async () => [{ name: 'users', engine: 'InnoDB', table_rows: 12 }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-db-node"]').exists()).toBe(true)
+    })
+    // 展开连接只拉数据库,表在数据库节点展开时才懒加载。
+    expect(api2.listMysqlTables).not.toHaveBeenCalled()
+    await wrapper.find('[data-test="mysql-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-table-node"]').exists()).toBe(true)
+    })
+    expect(api2.listMysqlTables).toHaveBeenCalledWith({ connection_id: 'my', database: 'shop' })
+    expect(wrapper.find('[data-test="mysql-table-name"]').text()).toBe('users')
+    expect(wrapper.find('[data-test="mysql-table-engine"]').text()).toBe('InnoDB')
+    // 近似行数徽标(table_rows 非 null 时显示)。
+    expect(wrapper.find('[data-test="mysql-table-rows"]').text()).toBe(formatBytes(12))
+  })
+
+  it('emits open-mysql-table with connection, database and table on table node double click', async () => {
+    const api2 = fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['shop']),
+      listMysqlTables: vi.fn(async () => [{ name: 'users', engine: 'InnoDB', table_rows: null }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="mysql-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-table-node"]').exists()).toBe(true)
+    })
+    // table_rows 为 null(引擎无法给出近似行数)时不渲染行数徽标。
+    expect(wrapper.find('[data-test="mysql-table-rows"]').exists()).toBe(false)
+    await wrapper.find('[data-test="mysql-table-node"]').trigger('dblclick')
+    expect(wrapper.emitted('open-mysql-table')?.[0]).toEqual(['my', 'shop', 'users'])
+  })
+
+  it('fuzzy filters mysql tables inside an expanded database', async () => {
+    const api2 = fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['shop']),
+      listMysqlTables: vi.fn(async () => [
+        { name: 'user_events', engine: 'InnoDB', table_rows: 10 },
+        { name: 'order_events', engine: 'InnoDB', table_rows: 20 },
+        { name: 'dim_date', engine: 'MyISAM', table_rows: null },
+      ]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="mysql-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="mysql-table-node"]')).toHaveLength(3)
+    })
+    // 未过滤时计数徽标显示表总数,过滤后显示「可见/总数」。
+    expect(wrapper.find('[data-test="mysql-db-count"]').text()).toBe('3')
+    await wrapper.find('[data-test="mysql-table-filter"]').setValue('events')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="mysql-table-node"]')).toHaveLength(2)
+    })
+    expect(wrapper.findAll('[data-test="mysql-table-name"]').map((n) => n.text())).toEqual(['user_events', 'order_events'])
+    expect(wrapper.find('[data-test="mysql-db-count"]').text()).toBe('2/3')
+    // 过滤后的表节点仍可双击打开。
+    await wrapper.findAll('[data-test="mysql-table-node"]')[0].trigger('dblclick')
+    expect(wrapper.emitted('open-mysql-table')?.[0]).toEqual(['my', 'shop', 'user_events'])
+  })
+
+  it('marks the mysql connection as error and shows the message when listing databases fails', async () => {
+    const api2 = fakeApi({
+      listMysqlDatabases: vi.fn(async () => {
+        throw new Error('dial tcp 127.0.0.1:3306 failed')
+      }),
+    })
+    setApi(api2)
+    const store = useConnectionsStore()
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="tree-error"]').text()).toBe('dial tcp 127.0.0.1:3306 failed')
+      expect(store.statusById['my']).toBe('error')
+    })
+  })
+
+  it('shows the error when lazy loading mysql tables fails', async () => {
+    const api2 = fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['shop']),
+      listMysqlTables: vi.fn(async () => {
+        throw new Error('table load failed')
+      }),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="mysql-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="tree-error"]').text()).toBe('table load failed')
+    })
+  })
+
+  it('shows the empty hint when a mysql database has no tables', async () => {
+    const api2 = fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['shop']),
+      listMysqlTables: vi.fn(async () => []),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="mysql-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-table-empty"]').text()).toBe('（无表）')
+    })
   })
 
   it('lists clickhouse databases when a clickhouse connection expands', async () => {

@@ -169,4 +169,24 @@ describe('QueryFilesPanel', () => {
     await flushPromises()
     expect(appMocks.ListQueryFiles).toHaveBeenCalledTimes(1)
   })
+
+  it('refresh() 同时重拉连接列表:面板开着时新建的连接也能正确解析归属', async () => {
+    // 挂载时连接列表还没有 TiDB 连接 → 归属显示「未知连接」。
+    const wrapper = mountPanel()
+    await flushPromises()
+    appMocks.ListQueryFiles.mockResolvedValue([file('ti.sql', 'conn-tidb')])
+    ;(wrapper.vm as unknown as { refresh(): void }).refresh()
+    await flushPromises()
+    expect(wrapper.find('[data-test="files-meta-0"]').text()).toBe('未知连接')
+
+    // refresh() 重拉连接列表后,新建的 TiDB 连接被识别。
+    setApi({
+      listConnections: vi.fn(async () => [
+        { id: 'conn-tidb', name: 'TiDB 集群', type: 'tidb', config: {}, created_at: 0 },
+      ]),
+    } as unknown as Api)
+    ;(wrapper.vm as unknown as { refresh(): void }).refresh()
+    await flushPromises()
+    expect(wrapper.find('[data-test="files-meta-0"]').text()).toBe('TiDB · TiDB 集群')
+  })
 })

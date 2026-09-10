@@ -438,9 +438,9 @@ describe('NewConnectionModal', () => {
     expect(mountWith({ bootstrap_servers: ['h:1'] })).resolves.toBe('PLAINTEXT')
   })
 
-  it('renders the two-stage type grid with three selectable cards', async () => {
+  it('renders the two-stage type grid with five selectable cards', async () => {
     const wrapper = mountModal()
-    for (const t of ['kafka', 'redis', 'clickhouse']) {
+    for (const t of ['kafka', 'redis', 'clickhouse', 'mysql', 'tidb']) {
       expect(wrapper.find(`[data-test="type-card-${t}"]`).exists()).toBe(true)
     }
     // 默认选中 kafka,下方渲染 kafka 表单。
@@ -450,6 +450,172 @@ describe('NewConnectionModal', () => {
     expect(wrapper.find('[data-test="type-card-clickhouse"]').classes()).toContain('active')
     expect(wrapper.find('[data-test="type-card-kafka"]').classes()).not.toContain('active')
     expect(wrapper.find('[data-test="input-ch-hosts"]').exists()).toBe(true)
+  })
+
+  it('shows mysql fields with mysql defaults (port 3306 / TLS disabled) when mysql is selected', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-mysql"]').trigger('click')
+    expect(wrapper.find('[data-test="input-brokers"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-addr"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-ch-hosts"]').exists()).toBe(false)
+    for (const f of ['input-mysql-host', 'input-mysql-port', 'input-mysql-username', 'input-mysql-password', 'input-mysql-database', 'input-mysql-tls-mode']) {
+      expect(wrapper.find(`[data-test="${f}"]`).exists(), f).toBe(true)
+    }
+    expect((wrapper.find('[data-test="input-mysql-port"]').element as HTMLInputElement).value).toBe('3306')
+    expect((wrapper.find('[data-test="input-mysql-tls-mode"]').element as HTMLSelectElement).value).toBe('disabled')
+  })
+
+  it('prefills tidb defaults (port 4000 / TLS disabled) when tidb is selected', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-tidb"]').trigger('click')
+    expect((wrapper.find('[data-test="input-mysql-port"]').element as HTMLInputElement).value).toBe('4000')
+    // 自建 TiDB 默认不开 TLS;TiDB Cloud 等托管服务需用户显式选择 TLS。
+    expect((wrapper.find('[data-test="input-mysql-tls-mode"]').element as HTMLSelectElement).value).toBe('disabled')
+    // 从 TiDB 切回 MySQL 恢复 MySQL 默认值。
+    await wrapper.find('[data-test="type-card-mysql"]').trigger('click')
+    expect((wrapper.find('[data-test="input-mysql-port"]').element as HTMLInputElement).value).toBe('3306')
+    expect((wrapper.find('[data-test="input-mysql-tls-mode"]').element as HTMLSelectElement).value).toBe('disabled')
+  })
+
+  it('offers the three TLS modes in the dropdown and saves the chosen one', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-mysql"]').trigger('click')
+    const tls = wrapper.find('[data-test="input-mysql-tls-mode"]')
+    expect(tls.findAll('option').map((o) => o.element.value)).toEqual(['disabled', 'skip-verify', 'verify-full'])
+    await tls.setValue('verify-full')
+    await wrapper.find('[data-test="input-name"]').setValue('my-local')
+    await wrapper.find('[data-test="input-mysql-host"]').setValue('h.internal')
+    await wrapper.find('[data-test="input-mysql-username"]').setValue('app')
+    await wrapper.find('[data-test="input-mysql-password"]').setValue('pw')
+    await wrapper.find('[data-test="input-mysql-database"]').setValue('orders')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'my-local',
+          type: 'mysql',
+          config: { host: 'h.internal', port: 3306, username: 'app', password: 'pw', database: 'orders', tls_mode: 'verify-full' },
+        }),
+      )
+    })
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('saves a tidb connection with type tidb and tidb defaults', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-tidb"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('tidb-local')
+    await wrapper.find('[data-test="input-mysql-host"]').setValue('127.0.0.1')
+    await wrapper.find('[data-test="input-mysql-username"]').setValue('root')
+    await wrapper.find('[data-test="input-mysql-database"]').setValue('shop')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'tidb-local',
+          type: 'tidb',
+          config: { host: '127.0.0.1', port: 4000, username: 'root', password: '', database: 'shop', tls_mode: 'disabled' },
+        }),
+      )
+    })
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('save stays disabled while the mysql host is empty', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-mysql"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('my')
+    expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(true)
+    await wrapper.find('[data-test="input-mysql-host"]').setValue('h.internal')
+    expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('routes test connection to testMysqlConnection when mysql/tidb is selected', async () => {
+    const api2 = fakeApi({ testMysqlConnection: vi.fn(async () => {}) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-tidb"]').trigger('click')
+    await wrapper.find('[data-test="input-mysql-host"]').setValue('10.0.0.1')
+    await wrapper.find('[data-test="btn-test"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.testMysqlConnection).toHaveBeenCalledWith(
+        expect.objectContaining({ host: '10.0.0.1', port: 4000, tls_mode: 'disabled' }),
+      )
+    })
+    expect(api2.testConnection).not.toHaveBeenCalled()
+    expect(api2.testCHConnection).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="test-ok"]').exists()).toBe(true)
+  })
+
+  it('surfaces test errors for mysql connections', async () => {
+    const api2 = fakeApi({
+      testMysqlConnection: vi.fn(async () => {
+        throw new Error('access denied for user')
+      }),
+    })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-mysql"]').trigger('click')
+    await wrapper.find('[data-test="input-mysql-host"]').setValue('h.internal')
+    await wrapper.find('[data-test="btn-test"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="test-error"]').text()).toBe('access denied for user')
+    })
+  })
+
+  it('prefills mysql fields in edit mode and carries the connection type on update', async () => {
+    const conn: Connection = {
+      id: 'my1',
+      name: 'my-old',
+      type: 'mysql',
+      config: { host: 'h.internal', port: 3307, username: 'app', password: 'pw', database: 'orders', tls_mode: 'verify-full' },
+      created_at: 1,
+      updated_at: 1,
+    }
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: conn } })
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="input-mysql-host"]').element as HTMLInputElement).value).toBe('h.internal')
+    })
+    expect((wrapper.find('[data-test="input-mysql-port"]').element as HTMLInputElement).value).toBe('3307')
+    expect((wrapper.find('[data-test="input-mysql-username"]').element as HTMLInputElement).value).toBe('app')
+    expect((wrapper.find('[data-test="input-mysql-password"]').element as HTMLInputElement).value).toBe('pw')
+    expect((wrapper.find('[data-test="input-mysql-database"]').element as HTMLInputElement).value).toBe('orders')
+    expect((wrapper.find('[data-test="input-mysql-tls-mode"]').element as HTMLSelectElement).value).toBe('verify-full')
+    await wrapper.find('[data-test="input-name"]').setValue('my-new')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.updateConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'my1',
+          name: 'my-new',
+          type: 'mysql',
+          config: expect.objectContaining({ host: 'h.internal', port: 3307, tls_mode: 'verify-full' }),
+        }),
+      )
+    })
+  })
+
+  it('prefills tidb fields in edit mode with the tidb type', async () => {
+    const conn: Connection = {
+      id: 'ti1',
+      name: 'ti-old',
+      type: 'tidb',
+      config: { host: 'ti.internal', port: 4000, username: 'root', password: '', database: 'sales', tls_mode: 'skip-verify' },
+      created_at: 1,
+      updated_at: 1,
+    }
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: conn } })
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="input-mysql-host"]').element as HTMLInputElement).value).toBe('ti.internal')
+    })
+    expect((wrapper.find('[data-test="input-mysql-port"]').element as HTMLInputElement).value).toBe('4000')
+    expect(wrapper.find('[data-test="type-card-tidb"]').classes()).toContain('active')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.updateConnection).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'ti1', type: 'tidb' }),
+      )
+    })
   })
 
   it('password inputs toggle visibility via eye button', async () => {

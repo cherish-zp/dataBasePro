@@ -13,6 +13,8 @@ import RedisKeysView from '@/components/kafka/RedisKeysView.vue'
 import ClusterHealthPanel from '@/components/kafka/ClusterHealthPanel.vue'
 import CHTableBrowser from '@/components/kafka/CHTableBrowser.vue'
 import CHSqlConsole from '@/components/kafka/CHSqlConsole.vue'
+import MysqlTableBrowser from '@/components/kafka/MysqlTableBrowser.vue'
+import MysqlSqlConsole from '@/components/kafka/MysqlSqlConsole.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import UpdateDialog from './UpdateDialog.vue'
 import StatusBar from '@/components/layout/StatusBar.vue'
@@ -123,7 +125,14 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
     toast.show('未找到文件关联的数据源,无法打开 SQL 控制台')
     return
   }
-  const target: 'sql' | 'ch-sql' | null = conn.type === 'kafka' ? 'sql' : conn.type === 'clickhouse' ? 'ch-sql' : null
+  const target: 'sql' | 'ch-sql' | 'mysql-sql' | null =
+    conn.type === 'kafka'
+      ? 'sql'
+      : conn.type === 'clickhouse'
+        ? 'ch-sql'
+        : conn.type === 'mysql' || conn.type === 'tidb'
+          ? 'mysql-sql'
+          : null
   if (!target) {
     toast.show('该数据源类型暂不支持 SQL 控制台')
     return
@@ -135,6 +144,8 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
   }
   if (target === 'ch-sql') {
     tabs.openCHSql(connectionId)
+  } else if (target === 'mysql-sql') {
+    tabs.openMysqlSql(connectionId)
   } else {
     // Kafka 不带 topic:通用「SQL 查询」tab,表名写在 SQL 的 FROM 子句里。
     tabs.openSql(connectionId, '', [])
@@ -171,17 +182,20 @@ const activeTopic = computed<Tab | null>(() => (active.value?.kind === 'topic' ?
 // 模板 ref;其余 tab(含无激活 tab)一律没有可操作的控制台。
 const sqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const chSqlConsoleRef = ref<SqlConsoleApi | null>(null)
+const mysqlSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 
 const activeConsoleApi = computed<SqlConsoleApi | null>(() => {
   const a = active.value
   if (!a) return null
   if (a.kind === 'sql') return sqlConsoleRef.value
   if (a.kind === 'ch-sql') return chSqlConsoleRef.value
+  if (a.kind === 'mysql-sql') return mysqlSqlConsoleRef.value
   return null
 })
 
 // 顶栏「新建查询」:Kafka 系 tab 打开 SQL 控制台(topic tab 预选 topic),
-// ClickHouse 系 tab 打开 CH SQL 控制台;redis 或无激活 tab 时禁用。
+// ClickHouse 系 tab 打开 CH SQL 控制台,MySQL 系 tab 打开 MySQL SQL 控制台;
+// redis 或无激活 tab 时禁用。
 const canNewQuery = computed(() => active.value !== null && active.value.kind !== 'redis-keys')
 
 function openNewQuery(): void {
@@ -189,6 +203,11 @@ function openNewQuery(): void {
   if (!a) return
   if (a.kind === 'ch-table' || a.kind === 'ch-sql') {
     tabs.openCHSql(a.connectionId)
+    return
+  }
+  const kind = a.kind
+  if (kind === 'mysql-table' || kind === 'mysql-sql') {
+    tabs.openMysqlSql(a.connectionId, a.database ?? '')
     return
   }
   tabs.openSql(a.connectionId, a.topic ?? '', a.partitions ?? [])
@@ -218,6 +237,11 @@ function openCHTable(connectionId: string, database: string, table: string): voi
   tabs.openCHTable(connectionId, database, table)
 }
 
+// MySQL 表浏览器:双击树上的表节点打开/聚焦对应 tab。
+function openMysqlTable(connectionId: string, database: string, table: string): void {
+  tabs.openMysqlTable(connectionId, database, table)
+}
+
 function openLag(connectionId: string): void {
   tabs.openLag(connectionId)
 }
@@ -242,10 +266,17 @@ function openProducerPanel(): void {
 }
 
 // refreshActive bumps the unified refresh counter for the active tab. sql
-// consoles (Kafka and ClickHouse) own their editor state and are excluded
-// from unified refresh.
+// consoles (Kafka, ClickHouse and MySQL) own their editor state and are
+// excluded from unified refresh.
 function refreshActive(): void {
-  if (!active.value || active.value.kind === 'sql' || active.value.kind === 'ch-sql') return
+  if (!active.value) return
+  if (
+    active.value.kind === 'sql' ||
+    active.value.kind === 'ch-sql' ||
+    active.value.kind === 'mysql-sql'
+  ) {
+    return
+  }
   refreshRequest.value++
 }
 
@@ -385,7 +416,7 @@ function onTabDragEnd(): void {
         class="btn ghost"
         type="button"
         data-test="btn-refresh-active"
-        :disabled="!active || active.kind === 'sql' || active.kind === 'ch-sql'"
+        :disabled="!active || active.kind === 'sql' || active.kind === 'ch-sql' || active.kind === 'mysql-sql'"
         @click="refreshActive"
       >
         刷新
@@ -438,6 +469,7 @@ function onTabDragEnd(): void {
           @open-redis-keys="openRedisKeys"
           @open-health="openHealth"
           @open-ch-table="openCHTable"
+          @open-mysql-table="openMysqlTable"
           @delete="removeConnection"
           @edit-connection="editConnection"
           @new="emit('new')"
@@ -534,6 +566,23 @@ function onTabDragEnd(): void {
               :connection-id="active.connectionId"
             />
           </template>
+          <template v-else-if="active.kind === 'mysql-table'">
+            <MysqlTableBrowser
+              :key="active.id"
+              :connection-id="active.connectionId"
+              :database="active.database ?? ''"
+              :table="active.table ?? ''"
+            />
+          </template>
+          <template v-else-if="active.kind === 'mysql-sql'">
+            <MysqlSqlConsole
+              ref="mysqlSqlConsoleRef"
+              :key="active.id"
+              :tab-id="active.id"
+              :connection-id="active.connectionId"
+              :database="active.database ?? ''"
+            />
+          </template>
         </div>
       </main>
 
@@ -594,7 +643,7 @@ function onTabDragEnd(): void {
         </button>
         <button class="context-item" type="button" data-test="context-close-all" @click="contextCloseAll">关闭全部</button>
         <button
-          v-if="contextTab.kind !== 'sql' && contextTab.kind !== 'ch-sql'"
+          v-if="contextTab.kind !== 'sql' && contextTab.kind !== 'ch-sql' && contextTab.kind !== 'mysql-sql'"
           class="context-item"
           type="button"
           data-test="context-refresh"

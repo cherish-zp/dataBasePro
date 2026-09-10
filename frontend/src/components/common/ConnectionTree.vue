@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
-import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo, CHTableInfo } from '@/api/types'
+import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo, CHTableInfo, MysqlTableInfo } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
 import { formatCount } from '@/utils/format'
 import { formatBytes } from '@/utils/bytes'
@@ -21,6 +21,7 @@ const emit = defineEmits<{
   (e: 'open-redis-keys', connectionId: string, db: number): void
   (e: 'open-health', connectionId: string): void
   (e: 'open-ch-table', connectionId: string, database: string, table: string): void
+  (e: 'open-mysql-table', connectionId: string, database: string, table: string): void
   (e: 'delete', connectionId: string): void
   (e: 'edit-connection', conn: Connection): void
   (e: 'new'): void
@@ -28,12 +29,13 @@ const emit = defineEmits<{
 
 const connStore = useConnectionsStore()
 
-// Per data-source type metadata so the tree can grow to MySQL/ES later.
+// Per data-source type metadata so the tree can grow to ES later.
 const TYPE_META: Record<string, { label: string; icon: string }> = {
   kafka: { label: 'Kafka', icon: '⚡' },
   redis: { label: 'Redis', icon: '🧱' },
   clickhouse: { label: 'ClickHouse', icon: '🗄️' },
   mysql: { label: 'MySQL', icon: '🐬' },
+  tidb: { label: 'TiDB', icon: '🌿' },
   es: { label: 'ES', icon: '🔎' },
 }
 
@@ -116,6 +118,12 @@ const chTableLoadingByDb = ref<Record<string, boolean>>({})
 const chExpandedByDb = ref<Record<string, boolean>>({})
 // 键同 chDbKey:每个数据库节点独立的表名模糊过滤词。
 const chTableFilterByDb = ref<Record<string, string>>({})
+// --- MySQL / TiDB 二级树(与 ClickHouse 同构:库 → 表,懒加载表清单) ---
+const mysqlDBs = ref<Record<string, string[]>>({})
+const mysqlTablesByDb = ref<Record<string, MysqlTableInfo[]>>({})
+const mysqlTableLoadingByDb = ref<Record<string, boolean>>({})
+const mysqlExpandedByDb = ref<Record<string, boolean>>({})
+const mysqlTableFilterByDb = ref<Record<string, string>>({})
 const groupsByConn = ref<Record<string, ConsumerGroup[]>>({})
 const loadingByConn = ref<Record<string, boolean>>({})
 const errorByConn = ref<Record<string, string>>({})
@@ -138,8 +146,9 @@ async function toggle(conn: Connection): Promise<void> {
     return
   }
   if (
-    !topicsByConn.value[id] && !redisDBs.value[id] && !chDBs.value[id]
-    && (conn.type === 'kafka' || conn.type === 'redis' || conn.type === 'clickhouse')
+    !topicsByConn.value[id] && !redisDBs.value[id] && !chDBs.value[id] && !mysqlDBs.value[id]
+    && (conn.type === 'kafka' || conn.type === 'redis' || conn.type === 'clickhouse'
+      || conn.type === 'mysql' || conn.type === 'tidb')
   ) {
     await load(id)
   }
@@ -157,6 +166,10 @@ async function load(connId: string): Promise<void> {
     } else if (type === 'clickhouse') {
       // 后端默认已过滤系统库。
       chDBs.value[connId] = await getApi().listCHDatabases(connId)
+      connStore.setStatus(connId, 'connected')
+    } else if (type === 'mysql' || type === 'tidb') {
+      // 后端默认已过滤系统库(information_schema/performance_schema 等)。
+      mysqlDBs.value[connId] = (await getApi().listMysqlDatabases?.(connId)) ?? []
       connStore.setStatus(connId, 'connected')
     } else {
       const [topics, groups] = await Promise.all([
@@ -229,6 +242,58 @@ function chDbCountLabel(connId: string, db: string): string {
   const q = chTableFilterOf(connId, db)
   if (!q) return String(total)
   return `${filteredChTables(connId, db).length}/${total}`
+}
+
+// --- MySQL / TiDB 二级树:数据库 → 表(展开库节点时懒加载表清单) ---
+
+function mysqlDbKey(connId: string, db: string): string {
+  return `${connId}/${db}`
+}
+
+function isMysqlDbExpanded(connId: string, db: string): boolean {
+  return !!mysqlExpandedByDb.value[mysqlDbKey(connId, db)]
+}
+
+async function toggleMysqlDb(connId: string, db: string): Promise<void> {
+  const key = mysqlDbKey(connId, db)
+  mysqlExpandedByDb.value[key] = !mysqlExpandedByDb.value[key]
+  if (!mysqlExpandedByDb.value[key] || mysqlTablesByDb.value[key]) return
+  // 首次展开懒加载表清单(系统库由后端过滤)。
+  mysqlTableLoadingByDb.value[key] = true
+  try {
+    mysqlTablesByDb.value[key] = (await getApi().listMysqlTables?.({
+      connection_id: connId,
+      database: db,
+    })) ?? []
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    mysqlTableLoadingByDb.value[key] = false
+  }
+}
+
+function mysqlTableFilterOf(connId: string, db: string): string {
+  return (mysqlTableFilterByDb.value[mysqlDbKey(connId, db)] ?? '').trim()
+}
+
+// filteredMysqlTables 对表名做本地模糊过滤(fuzzyScore),按相关度排序。
+function filteredMysqlTables(connId: string, db: string): MysqlTableInfo[] {
+  const list = mysqlTablesByDb.value[mysqlDbKey(connId, db)] ?? []
+  const q = mysqlTableFilterOf(connId, db)
+  if (!q) return list
+  return list
+    .map((t) => ({ t, score: fuzzyScore(q, t.name) }))
+    .filter((x) => x.score !== Infinity)
+    .sort((a, b) => a.score - b.score)
+    .map((x) => x.t)
+}
+
+// mysqlDbCountLabel 数据库节点的表计数徽标:未过滤显示总数,过滤中显示「可见/总数」。
+function mysqlDbCountLabel(connId: string, db: string): string {
+  const total = (mysqlTablesByDb.value[mysqlDbKey(connId, db)] ?? []).length
+  const q = mysqlTableFilterOf(connId, db)
+  if (!q) return String(total)
+  return `${filteredMysqlTables(connId, db).length}/${total}`
 }
 
 // countsByConn caches per-topic message counts per connection (retained =
@@ -944,6 +1009,67 @@ function exportTopics(conn: Connection): void {
           <div v-if="(chDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="ch-db-empty">（无数据库）</div>
         </template>
       </div>
+      <div v-else-if="isExpanded(conn.id) && (conn.type === 'mysql' || conn.type === 'tidb')" class="conn-children">
+        <div v-if="loadingByConn[conn.id]" class="conn-loading" data-test="tree-loading">加载中…</div>
+        <div v-else-if="errorByConn[conn.id]" class="conn-error" data-test="tree-error">{{ errorByConn[conn.id] }}</div>
+        <template v-else>
+          <template v-for="db in mysqlDBs[conn.id] ?? []" :key="db">
+            <div class="leaf ch-db-node" data-test="mysql-db-node" :title="`数据库 ${db}`" @click="toggleMysqlDb(conn.id, db)">
+              <span class="caret" :class="{ open: isMysqlDbExpanded(conn.id, db) }" data-test="mysql-db-caret">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                  <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              <span class="leaf-name" data-test="mysql-db-name">{{ db }}</span>
+              <span
+                v-if="mysqlTablesByDb[mysqlDbKey(conn.id, db)]"
+                class="leaf-badge"
+                data-test="mysql-db-count"
+              >{{ mysqlDbCountLabel(conn.id, db) }}</span>
+            </div>
+            <template v-if="isMysqlDbExpanded(conn.id, db)">
+              <div class="ch-table-filter">
+                <input
+                  v-model="mysqlTableFilterByDb[mysqlDbKey(conn.id, db)]"
+                  class="search-input ch-filter-input"
+                  type="search"
+                  data-test="mysql-table-filter"
+                  placeholder="🔍 模糊搜索表…"
+                  autocapitalize="off"
+                  autocorrect="off"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div
+                v-if="mysqlTableLoadingByDb[mysqlDbKey(conn.id, db)]"
+                class="leaf muted"
+                data-test="mysql-tables-loading"
+              >加载中…</div>
+              <template v-else>
+                <div
+                  v-for="t in filteredMysqlTables(conn.id, db)"
+                  :key="t.name"
+                  class="leaf ch-table"
+                  data-test="mysql-table-node"
+                  :title="`${t.name}(${t.engine})`"
+                  @dblclick="emit('open-mysql-table', conn.id, db, t.name)"
+                >
+                  <span class="leaf-name" data-test="mysql-table-name">{{ t.name }}</span>
+                  <span class="leaf-badge engine" data-test="mysql-table-engine">{{ t.engine }}</span>
+                  <span v-if="t.table_rows !== null" class="leaf-badge" data-test="mysql-table-rows">{{ formatBytes(t.table_rows) }}</span>
+                </div>
+                <div
+                  v-if="filteredMysqlTables(conn.id, db).length === 0"
+                  class="leaf muted"
+                  data-test="mysql-table-empty"
+                >{{ (mysqlTablesByDb[mysqlDbKey(conn.id, db)] ?? []).length === 0 ? '（无表）' : '无匹配表' }}</div>
+              </template>
+            </template>
+          </template>
+          <div v-if="(mysqlDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="mysql-db-empty">（无数据库）</div>
+        </template>
+      </div>
       <div v-else-if="isExpanded(conn.id)" class="conn-children">
         <div class="leaf muted" data-test="type-unsupported">{{ typeMeta(conn).label }} 类型暂未支持</div>
       </div>
@@ -1022,6 +1148,7 @@ function exportTopics(conn: Connection): void {
 .conn-type-es { color: var(--ok); background: var(--ok-soft); }
 .conn-type-redis { color: var(--danger); background: var(--danger-soft); }
 .conn-type-clickhouse { color: var(--warn); background: var(--warn-soft); }
+.conn-type-tidb { color: var(--ok); background: var(--ok-soft); }
 .conn-status {
   width: 8px; height: 8px; border-radius: 50%; flex: none; margin: 0 6px;
   background: var(--text-tertiary);
@@ -1031,6 +1158,7 @@ function exportTopics(conn: Connection): void {
 .conn-status-es { background: var(--warn); }
 .conn-status-redis { background: var(--danger); }
 .conn-status-clickhouse { background: var(--warn); }
+.conn-status-tidb { background: var(--ok); }
 .conn-status-connecting { background: var(--ok); animation: conn-pulse 1.1s ease-in-out infinite; }
 .conn-status-error { background: var(--danger); }
 .conn-status-disconnected { background: var(--text-tertiary); }

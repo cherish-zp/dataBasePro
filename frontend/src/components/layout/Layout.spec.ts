@@ -10,19 +10,25 @@ import Layout from './Layout.vue'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
 import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
 import CHSqlConsole from '@/components/kafka/CHSqlConsole.vue'
+import MysqlTableBrowser from '@/components/kafka/MysqlTableBrowser.vue'
+import MysqlSqlConsole from '@/components/kafka/MysqlSqlConsole.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import { useConnectionsStore } from '@/store/connections'
 import { APP_VERSION } from '@/version'
 import { useTabsStore } from '@/store/tabs'
 import { useToastStore } from '@/store/toast'
 
-// SQL文件面板/composable 走 wailsjs 四方法;mock 之(其余方法走真实模块),
-// 由用例按需 mockResolvedValue 驱动文件列表与读取。
+// SQL文件面板/composable/MySQL 控制台走 wailsjs 绑定;mock 之(其余方法走真实
+// 模块),由用例按需 mockResolvedValue 驱动文件列表、读取与 MySQL 补全查询。
 const fileAppMocks = vi.hoisted(() => ({
   ListQueryFiles: vi.fn(),
   ReadQueryFile: vi.fn(),
   WriteQueryFile: vi.fn(),
   DeleteQueryFile: vi.fn(),
+  MysqlExecute: vi.fn(),
+  MysqlPreviewCellUpdate: vi.fn(),
+  MysqlUpdateCell: vi.fn(),
+  ListMysqlTables: vi.fn(),
 }))
 vi.mock('../../../wailsjs/go/backend/App', async () => {
   const actual = await vi.importActual<typeof import('../../../wailsjs/go/backend/App')>(
@@ -115,6 +121,12 @@ const chConn = (id: string): Connection => ({
 const redisConn = (id: string): Connection => ({
   ...conn(id), type: 'redis', config: {} as Connection['config'],
 })
+const mysqlConn = (id: string): Connection => ({
+  ...conn(id), type: 'mysql', config: {} as Connection['config'],
+})
+const tidbConn = (id: string): Connection => ({
+  ...conn(id), type: 'tidb', config: {} as Connection['config'],
+})
 
 const queryFileRow = (name: string, connectionId: string) => ({
   name, connection_id: connectionId, size_bytes: 1, mod_time_ms: 1_700_000_000_000,
@@ -143,6 +155,11 @@ describe('Layout', () => {
     fileAppMocks.ReadQueryFile.mockReset()
     fileAppMocks.WriteQueryFile.mockReset().mockResolvedValue(undefined)
     fileAppMocks.DeleteQueryFile.mockReset().mockResolvedValue(undefined)
+    // MySQL 控制台挂载期的补全查询与单元格编辑绑定恢复默认空实现。
+    fileAppMocks.MysqlExecute.mockReset().mockResolvedValue([])
+    fileAppMocks.MysqlPreviewCellUpdate.mockReset().mockResolvedValue({ statement: '', matched_rows: 0 })
+    fileAppMocks.MysqlUpdateCell.mockReset().mockResolvedValue(undefined)
+    fileAppMocks.ListMysqlTables.mockReset().mockResolvedValue([])
     // 右栏展开态/宽度也会跨用例泄漏(挂载时提前刷新导致拿到空列表)。
     localStorage.removeItem('dbclient-files-open')
     localStorage.removeItem('dbclient-files-width')
@@ -731,6 +748,58 @@ describe('Layout', () => {
     expect(tabs.openTabs.some((t) => t.kind === 'ch-sql' && t.title === 'SQL 控制台')).toBe(true)
   })
 
+  // --- MySQL 表浏览器 / SQL 控制台 ---------------------------------------------
+
+  it('opens a mysql table browser tab from the tree and renders the table browser', async () => {
+    const { wrapper } = mountLayout([mysqlConn('m1')])
+    emitTree(wrapper, 'open-mysql-table', 'm1', 'shop', 'users')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-table-browser"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="home-view"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="tab"]').text()).toContain('users')
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['mysql-table'])
+    expect(wrapper.findComponent(MysqlTableBrowser).props()).toEqual(
+      expect.objectContaining({ connectionId: 'm1', database: 'shop', table: 'users' }),
+    )
+  })
+
+  it('renders the mysql sql console for an active mysql-sql tab with refresh disabled', async () => {
+    const { wrapper } = mountLayout([mysqlConn('m1')])
+    const tabs = useTabsStore()
+    tabs.openMysqlSql('m1', 'shop')
+    await nextTick()
+    expect(wrapper.find('[data-test="mysql-sql-console"]').exists()).toBe(true)
+    const console_ = wrapper.findComponent(MysqlSqlConsole)
+    expect(console_.props('tabId')).toBe(tabs.openTabs[0].id)
+    expect(console_.props('connectionId')).toBe('m1')
+    expect(console_.props('database')).toBe('shop')
+    // SQL 控制台自持编辑器状态:刷新按钮禁用(与 Kafka/CH 控制台一致)。
+    expect(wrapper.find('[data-test="btn-refresh-active"]').attributes('disabled')).toBeDefined()
+    // 新建查询在 mysql 系 tab 激活时可用。
+    expect(wrapper.find('[data-test="btn-new-query"]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('opens a mysql sql console tab from 新建查询 on an active mysql-table tab', async () => {
+    const { wrapper } = mountLayout([mysqlConn('m1')])
+    emitTree(wrapper, 'open-mysql-table', 'm1', 'shop', 'users')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-table-browser"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="btn-new-query"]').trigger('click')
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.some((t) => t.kind === 'mysql-table')).toBe(true)
+    expect(tabs.openTabs.some((t) => t.kind === 'mysql-sql' && t.database === 'shop')).toBe(true)
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-sql-console"]').exists()).toBe(true)
+    })
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
   it('titles a topic-less sql tab as SQL 查询', async () => {
     const { wrapper } = mountLayout([conn('a')])
     const tabs = useTabsStore()
@@ -836,6 +905,38 @@ describe('Layout', () => {
     expect(wrapper.findComponent(CHSqlConsole).props('tabId')).toBe(tabs.openTabs[0].id)
     expect(fileAppMocks.ReadQueryFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'ch.sql' }))
     expect(wrapper.find('[data-test="ch-sql-console"]').exists()).toBe(true)
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('点击 MySQL 归属文件自动打开 MySQL SQL 控制台并载入内容', async () => {
+    const { wrapper } = mountLayout([mysqlConn('m1')])
+    fileAppMocks.ListQueryFiles.mockResolvedValue([queryFileRow('my.sql', 'm1')])
+    fileAppMocks.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'm1' })
+
+    await openPanelAndClickFile(wrapper, 0)
+
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['mysql-sql'])
+    expect(tabs.openTabs[0].connectionId).toBe('m1')
+    expect(fileAppMocks.ReadQueryFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'my.sql' }))
+    expect(wrapper.find('[data-test="mysql-sql-console"]').exists()).toBe(true)
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('点击 TiDB 归属文件同样自动打开 MySQL SQL 控制台并载入内容', async () => {
+    const { wrapper } = mountLayout([tidbConn('t1')])
+    fileAppMocks.ListQueryFiles.mockResolvedValue([queryFileRow('ti.sql', 't1')])
+    fileAppMocks.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 't1' })
+
+    await openPanelAndClickFile(wrapper, 0)
+
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['mysql-sql'])
+    expect(tabs.openTabs[0].connectionId).toBe('t1')
+    expect(fileAppMocks.ReadQueryFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'ti.sql' }))
+    expect(wrapper.find('[data-test="mysql-sql-console"]').exists()).toBe(true)
     wrapper.unmount()
     await drainPendingEdits()
   })

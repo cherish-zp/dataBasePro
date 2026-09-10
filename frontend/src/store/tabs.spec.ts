@@ -221,6 +221,53 @@ describe('tabs store', () => {
     expect(other.id).toBe('ch:conn-1:logs:users')
   })
 
+  it('opens a mysql table tab keyed by connection, database and table', () => {
+    const store = useTabsStore()
+    const tab = store.openMysqlTable('conn-1', 'logs', 'events')
+    expect(tab.kind).toBe('mysql-table')
+    expect(tab.id).toBe('mysql:conn-1:logs:events')
+    expect(tab.title).toBe('表 · logs.events')
+    expect(tab.connectionId).toBe('conn-1')
+    expect(tab.database).toBe('logs')
+    expect(tab.table).toBe('events')
+    expect(store.activeTabId).toBe(tab.id)
+    // 重复打开只聚焦,不新开。
+    const again = store.openMysqlTable('conn-1', 'logs', 'events')
+    expect(again.id).toBe(tab.id)
+    expect(store.openTabs).toHaveLength(1)
+    expect(store.activeTabId).toBe(tab.id)
+    // 不同表/不同库是不同 tab。
+    const otherTable = store.openMysqlTable('conn-1', 'logs', 'users')
+    expect(store.openTabs).toHaveLength(2)
+    expect(otherTable.id).toBe('mysql:conn-1:logs:users')
+    const otherDb = store.openMysqlTable('conn-1', 'shop', 'users')
+    expect(store.openTabs).toHaveLength(3)
+    expect(otherDb.id).toBe('mysql:conn-1:shop:users')
+  })
+
+  it('opens a mysql SQL console per connection+database and focuses it on reopen', () => {
+    const store = useTabsStore()
+    const tab = store.openMysqlSql('conn-1')
+    expect(tab.kind).toBe('mysql-sql')
+    expect(tab.id).toBe('mysql-sql:conn-1')
+    expect(tab.title).toBe('SQL 控制台')
+    expect(tab.connectionId).toBe('conn-1')
+    expect(tab.database).toBeUndefined()
+    expect(store.activeTabId).toBe(tab.id)
+    // 带 database 打开:按 connectionId+database 去重,id 携带库名。
+    const dbTab = store.openMysqlSql('conn-1', 'logs')
+    expect(dbTab.kind).toBe('mysql-sql')
+    expect(dbTab.id).toBe('mysql-sql:conn-1:logs')
+    expect(dbTab.database).toBe('logs')
+    expect(dbTab.title).toBe('SQL 控制台')
+    expect(store.openTabs.filter((t) => t.kind === 'mysql-sql')).toHaveLength(2)
+    store.setActive(tab.id)
+    const again = store.openMysqlSql('conn-1', 'logs')
+    expect(again.id).toBe(dbTab.id)
+    expect(store.openTabs.filter((t) => t.kind === 'mysql-sql')).toHaveLength(2)
+    expect(store.activeTabId).toBe(dbTab.id)
+  })
+
   it('renameTab updates the title of the open tab by id', () => {
     const store = useTabsStore()
     const tab = store.openSql('conn-1', 'orders')
