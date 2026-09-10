@@ -360,6 +360,78 @@ export namespace backend {
 	        this.value = source["value"];
 	    }
 	}
+	export class QueryFileContent {
+	    content: string;
+	    connection_id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryFileContent(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.content = source["content"];
+	        this.connection_id = source["connection_id"];
+	    }
+	}
+	export class QueryFileDeleteRequest {
+	    dir: string;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryFileDeleteRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dir = source["dir"];
+	        this.name = source["name"];
+	    }
+	}
+	export class QueryFileListRequest {
+	    dir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryFileListRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dir = source["dir"];
+	    }
+	}
+	export class QueryFileReadRequest {
+	    dir: string;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryFileReadRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dir = source["dir"];
+	        this.name = source["name"];
+	    }
+	}
+	export class QueryFileWriteRequest {
+	    dir: string;
+	    name: string;
+	    content: string;
+	    connection_id?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryFileWriteRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dir = source["dir"];
+	        this.name = source["name"];
+	        this.content = source["content"];
+	        this.connection_id = source["connection_id"];
+	    }
+	}
 	export class RedisDeleteKeysRequest {
 	    connection_id: string;
 	    db: number;
@@ -811,6 +883,75 @@ export namespace model {
 	        this.online = source["online"];
 	    }
 	}
+	export class CHCellUpdatePreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CHCellUpdatePreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class CHCellValue {
+	    column: string;
+	    type: string;
+	    value?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CHCellValue(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.column = source["column"];
+	        this.type = source["type"];
+	        this.value = source["value"];
+	    }
+	}
+	export class CHCellUpdateRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    set: CHCellValue;
+	    where: CHCellValue[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CHCellUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.set = this.convertValues(source["set"], CHCellValue);
+	        this.where = this.convertValues(source["where"], CHCellValue);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class CHColumn {
 	    name: string;
 	    type: string;
@@ -832,6 +973,7 @@ export namespace model {
 	    rows: string[][];
 	    engine: string;
 	    total_rows?: number;
+	    primary_key: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new CHPageRowsResult(source);
@@ -843,6 +985,7 @@ export namespace model {
 	        this.rows = source["rows"];
 	        this.engine = source["engine"];
 	        this.total_rows = source["total_rows"];
+	        this.primary_key = source["primary_key"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1581,6 +1724,29 @@ export namespace model {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace store {
+	
+	export class QueryFileInfo {
+	    name: string;
+	    connection_id: string;
+	    size_bytes: number;
+	    mod_time_ms: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new QueryFileInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.connection_id = source["connection_id"];
+	        this.size_bytes = source["size_bytes"];
+	        this.mod_time_ms = source["mod_time_ms"];
+	    }
 	}
 
 }

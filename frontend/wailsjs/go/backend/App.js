@@ -22,8 +22,16 @@ export function CHPageRows(arg1) {
   return window['go']['backend']['App']['CHPageRows'](arg1);
 }
 
+export function CHPreviewCellUpdate(arg1) {
+  return window['go']['backend']['App']['CHPreviewCellUpdate'](arg1);
+}
+
 export function CHTruncateTable(arg1) {
   return window['go']['backend']['App']['CHTruncateTable'](arg1);
+}
+
+export function CHUpdateCell(arg1) {
+  return window['go']['backend']['App']['CHUpdateCell'](arg1);
 }
 
 export function CheckUpdate(arg1) {
@@ -56,6 +64,10 @@ export function DeleteConnection(arg1) {
 
 export function DeleteConsumerGroup(arg1) {
   return window['go']['backend']['App']['DeleteConsumerGroup'](arg1);
+}
+
+export function DeleteQueryFile(arg1) {
+  return window['go']['backend']['App']['DeleteQueryFile'](arg1);
 }
 
 export function DeleteSavedQuery(arg1) {
@@ -134,6 +146,10 @@ export function ListDrivers() {
   return window['go']['backend']['App']['ListDrivers']();
 }
 
+export function ListQueryFiles(arg1) {
+  return window['go']['backend']['App']['ListQueryFiles'](arg1);
+}
+
 export function ListRedisDBs(arg1) {
   return window['go']['backend']['App']['ListRedisDBs'](arg1);
 }
@@ -160,6 +176,10 @@ export function ProduceMessage(arg1) {
 
 export function ProduceMessages(arg1) {
   return window['go']['backend']['App']['ProduceMessages'](arg1);
+}
+
+export function ReadQueryFile(arg1) {
+  return window['go']['backend']['App']['ReadQueryFile'](arg1);
 }
 
 export function RedisDeleteKeys(arg1) {
@@ -268,4 +288,8 @@ export function UpdateProgress() {
 
 export function UpdateSavedQuery(arg1) {
   return window['go']['backend']['App']['UpdateSavedQuery'](arg1);
+}
+
+export function WriteQueryFile(arg1) {
+  return window['go']['backend']['App']['WriteQueryFile'](arg1);
 }
