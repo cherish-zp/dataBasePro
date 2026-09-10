@@ -25,9 +25,11 @@
 
 ## SQL 控制台规范
 
-- 每个数据源的 SQL 控制台（现有 kafka-sql、ch-sql，后续 redis-sql、mysql-sql 等）必须接入「查询库」：保存的查询按 `console_type + connection_id` 隔离，存储于 SQLite `saved_queries` 表（store 层 CRUD，同名报「同名查询已存在」），控制台左侧面板提供列表/载入/保存/另存为/删除。
-- SQL 编辑器统一使用 `src/components/common/SqlEditor.vue`（CodeMirror 6，内置 SQL 高亮与补全）；补全数据源通过 `tables` prop 传入（表名→列名数组）。
-- 新增数据源的控制台接入时，复用上述组件与存储（console_type 用新值），不要另建保存机制。
+- 保存的查询以 `.sql` 文件形式存储（目录默认 `~/.db-client/queries`，可在「设置 → 通用 → 查询文件目录」配置）：后端仓库为 store 层 `query_files.go`（List/Read/Write/Delete，文件头注释记录所属连接 `connection_id`，`~` 由后端展开）。
+- 入口统一：顶栏「新建查询」打开 SQL 控制台 tab；顶栏「SQL文件」图标开关全局右栏（保存/另存为/删除，单击条目载入到当前激活 SQL 控制台，无控制台时按文件归属连接自动开台）；SQL 编辑器内 ⌘S/Ctrl+S 保存（未关联文件弹名称输入，已关联直接覆盖，重名需确认）。
+- SQL 控制台内部不要再建独立的查询文件面板；kafka-sql 与 ch-sql 共用同一目录与全局右栏，tab 标题跟随当前打开的文件名。
+- SQL 编辑器统一使用 `src/components/common/SqlEditor.vue`（CodeMirror 6，内置 SQL 高亮、补全与 placeholder）；补全数据源通过 `tables` prop 传入（表名→列名数组）；`getSelection` 供「选中运行」。新增数据源的控制台接入时复用该组件与查询文件体系，不要另建保存机制。
+- CH 控制台与 CH 表详情支持单元格编辑：仅单表 SELECT 结果可编辑（`parseCHSingleTableSelect` 判定），经后端 `CHPreviewCellUpdate`/`CHUpdateCell` 生成并执行 `ALTER ... UPDATE ... SETTINGS mutations_sync = 1`（转义与字面量构造在后端，前端禁止拼 SQL）。
 
 ## 测试规范
 
