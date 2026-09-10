@@ -473,7 +473,7 @@ function onTabDragEnd(): void {
         </div>
 
         <div class="workspace-body">
-          <HomeView v-if="!active" @new="emit('new')" />
+          <HomeView v-if="!active" />
           <template v-else-if="active.kind === 'topic'">
             <MessageBrowser
               :tab-id="active.id"
