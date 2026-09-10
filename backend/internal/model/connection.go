@@ -25,7 +25,7 @@ const ConnectionTypeRedis ConnectionType = "redis"
 // Valid reports whether the type is currently supported.
 func (t ConnectionType) Valid() bool {
 	switch t {
-	case ConnectionTypeKafka, ConnectionTypeMySQL, ConnectionTypeES, ConnectionTypeRedis:
+	case ConnectionTypeKafka, ConnectionTypeMySQL, ConnectionTypeES, ConnectionTypeRedis, ConnectionTypeClickHouse:
 		return true
 	}
 	return false
@@ -215,6 +215,15 @@ func (c Connection) Validate() error {
 			return fmt.Errorf("invalid redis config: %w", err)
 		}
 		return cfg.Validate()
+	case ConnectionTypeClickHouse:
+		if len(c.Config) == 0 {
+			return errors.New("clickhouse config must not be empty")
+		}
+		var cfg ClickHouseConfig
+		if err := json.Unmarshal(c.Config, &cfg); err != nil {
+			return fmt.Errorf("invalid clickhouse config: %w", err)
+		}
+		return cfg.Validate()
 	}
 	return nil
 }
@@ -233,6 +242,16 @@ func (c Connection) KafkaConfig() (KafkaConfig, error) {
 // connections only).
 func (c Connection) RedisConfig() (RedisConfig, error) {
 	var cfg RedisConfig
+	if err := json.Unmarshal(c.Config, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// ClickHouseConfig decodes the connection's config as a ClickHouseConfig
+// (clickhouse connections only).
+func (c Connection) ClickHouseConfig() (ClickHouseConfig, error) {
+	var cfg ClickHouseConfig
 	if err := json.Unmarshal(c.Config, &cfg); err != nil {
 		return cfg, err
 	}

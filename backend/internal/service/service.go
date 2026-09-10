@@ -103,6 +103,8 @@ func (s *Service) ConnectConnection(ctx context.Context, id string) error {
 	switch c.Type {
 	case model.ConnectionTypeRedis:
 		ds, err = s.buildRedisClient(c)
+	case model.ConnectionTypeClickHouse:
+		ds, err = s.buildCHClient(c)
 	default:
 		ds, err = s.buildClient(ctx, c)
 	}
@@ -129,6 +131,22 @@ func (s *Service) buildRedisClient(c *model.Connection) (*RedisClient, error) {
 		return nil, fmt.Errorf("decode redis config: %w", err)
 	}
 	return NewRedisClient(cfg)
+}
+
+// buildCHClient creates the ClickHouse client for the connection (it pings as
+// part of construction).
+func (s *Service) buildCHClient(c *model.Connection) (*CHClient, error) {
+	if c.Type != model.ConnectionTypeClickHouse {
+		return nil, fmt.Errorf("connection %q is not a ClickHouse source (type %q)", c.ID, c.Type)
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	cfg, err := c.ClickHouseConfig()
+	if err != nil {
+		return nil, fmt.Errorf("decode clickhouse config: %w", err)
+	}
+	return NewCHClient(cfg)
 }
 
 // redis returns the pooled Redis client for the connection, auto-connecting
@@ -325,6 +343,89 @@ func (s *Service) RedisServerInfo(ctx context.Context, id string) (model.RedisSe
 	return rds.ServerInfo(ctx)
 }
 
+// CHTestConnection verifies connectivity to the given config without
+// persisting or pooling anything (the client pings during construction).
+func (s *Service) CHTestConnection(ctx context.Context, cfg model.ClickHouseConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	client, err := NewCHClient(cfg)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.Connect(ctx)
+}
+
+// ch returns the pooled ClickHouse client for the connection, auto-connecting
+// when the tree has not connected it yet.
+func (s *Service) ch(ctx context.Context, id string) (ClickHouseDataSource, error) {
+	if ds, err := s.pool.Get(id); err == nil {
+		ch, ok := ds.(ClickHouseDataSource)
+		if !ok {
+			return nil, fmt.Errorf("connection %q is not a ClickHouse source", id)
+		}
+		return ch, nil
+	}
+	if err := s.ConnectConnection(ctx, id); err != nil {
+		return nil, err
+	}
+	ds, err := s.pool.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	ch, ok := ds.(ClickHouseDataSource)
+	if !ok {
+		return nil, fmt.Errorf("connection %q is not a ClickHouse source", id)
+	}
+	return ch, nil
+}
+
+// CHDatabases lists the user databases of the connection's ClickHouse server.
+func (s *Service) CHDatabases(ctx context.Context, id string) ([]string, error) {
+	ch, err := s.ch(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return ch.Databases(ctx)
+}
+
+// CHTables lists a database's tables (engine + approximate row counts).
+func (s *Service) CHTables(ctx context.Context, id, database string, showSystem bool) ([]model.CHTableInfo, error) {
+	ch, err := s.ch(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return ch.Tables(ctx, database, showSystem)
+}
+
+// CHPageRows returns one page of a table's rows with metadata.
+func (s *Service) CHPageRows(ctx context.Context, id, database, table, where, orderBy string, asc bool, limit, offset int) (model.CHPageRowsResult, error) {
+	ch, err := s.ch(ctx, id)
+	if err != nil {
+		return model.CHPageRowsResult{}, err
+	}
+	return ch.PageRows(ctx, database, table, where, orderBy, asc, limit, offset)
+}
+
+// CHTruncateTable empties a table (dangerous, audited by the caller).
+func (s *Service) CHTruncateTable(ctx context.Context, id, database, table string, onCluster bool) error {
+	ch, err := s.ch(ctx, id)
+	if err != nil {
+		return err
+	}
+	return ch.TruncateTable(ctx, database, table, onCluster)
+}
+
+// CHExecute runs a SQL script statement by statement.
+func (s *Service) CHExecute(ctx context.Context, id, sqlText string) ([]model.CHStatementResult, error) {
+	ch, err := s.ch(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return ch.Execute(ctx, sqlText)
+}
+
 // CloseConnection removes a connection from the pool and closes it.
 func (s *Service) CloseConnection(ctx context.Context, id string) error {
 	ds, err := s.pool.Remove(id)
@@ -332,6 +433,13 @@ func (s *Service) CloseConnection(ctx context.Context, id string) error {
 		return err
 	}
 	return ds.Close()
+}
+
+// PutPooledForTest registers a pre-built data source under id, bypassing any
+// real connection. Test seam only: the ClickHouse driver has no offline fake
+// server, so app/service-layer tests inject fakes through it.
+func (s *Service) PutPooledForTest(id string, ds DataSource) error {
+	return s.pool.Put(id, ds)
 }
 
 // DeleteConnection closes any pooled client and removes the definition.

@@ -83,3 +83,14 @@ type RedisDataSource interface {
 	FlushAll(ctx context.Context) error
 	ServerInfo(ctx context.Context) (model.RedisServerInfo, error)
 }
+
+// ClickHouseDataSource extends DataSource with the ClickHouse browser
+// operations: database/table listing, paged rows, truncate and a SQL console.
+type ClickHouseDataSource interface {
+	DataSource
+	Databases(ctx context.Context) ([]string, error)
+	Tables(ctx context.Context, database string, showSystem bool) ([]model.CHTableInfo, error)
+	PageRows(ctx context.Context, database, table, where, orderBy string, asc bool, limit, offset int) (model.CHPageRowsResult, error)
+	TruncateTable(ctx context.Context, database, table string, onCluster bool) error
+	Execute(ctx context.Context, sqlText string) ([]model.CHStatementResult, error)
+}

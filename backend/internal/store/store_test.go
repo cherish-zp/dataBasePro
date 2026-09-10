@@ -26,7 +26,7 @@ func sampleConnection(id string) *model.Connection {
 		ID:   id,
 		Name: "local-dev",
 		Type: model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {
+		Config: model.MustConfigJSON(model.KafkaConfig{
 			BootstrapServers: []string{"localhost:9092"},
 			SASL: &model.SASLConfig{
 				Enabled:   true,
@@ -76,6 +76,58 @@ func TestStorePasswordEncryptedAtRest(t *testing.T) {
 	}
 	if !strings.Contains(raw, "enc:v1:") {
 		t.Fatal("stored config_json must contain an encrypted password field")
+	}
+}
+
+func TestStoreClickHouseCreateAndGet(t *testing.T) {
+	s := newTestStore(t)
+	c := &model.Connection{
+		ID:   "ch1",
+		Name: "ch-dev",
+		Type: model.ConnectionTypeClickHouse,
+		Config: model.MustConfigJSON(model.ClickHouseConfig{
+			Hosts:    []string{"10.0.0.1:8123"},
+			Username: "ops",
+			Password: "ch-secret",
+			Database: "logs",
+			TLS:      true,
+			Protocol: "http",
+		}),
+	}
+	if err := s.CreateConnection(c); err != nil {
+		t.Fatalf("CreateConnection failed: %v", err)
+	}
+	// 原始落盘 JSON:不得含明文密码,且必须带加密前缀。
+	var raw string
+	if err := s.db.QueryRow(`SELECT config_json FROM connections WHERE id = ?`, "ch1").Scan(&raw); err != nil {
+		t.Fatalf("query raw config failed: %v", err)
+	}
+	if strings.Contains(raw, "ch-secret") {
+		t.Fatal("plaintext clickhouse password must not appear in stored config_json")
+	}
+	if !strings.Contains(raw, "enc:v1:") {
+		t.Fatal("stored clickhouse config_json must contain an encrypted password field")
+	}
+	// 回读:tls 必须保持 bool(true),密码解密还原。
+	got, err := s.GetConnection("ch1")
+	if err != nil {
+		t.Fatalf("GetConnection failed: %v", err)
+	}
+	gotCfg, err := got.ClickHouseConfig()
+	if err != nil {
+		t.Fatalf("decode clickhouse config: %v", err)
+	}
+	if !gotCfg.TLS {
+		t.Fatal("clickhouse tls bool must round-trip as true")
+	}
+	if gotCfg.Password != "ch-secret" {
+		t.Fatalf("clickhouse password not round-tripped: %q", gotCfg.Password)
+	}
+	if gotCfg.Protocol != "http" {
+		t.Fatalf("clickhouse protocol not round-tripped: %q", gotCfg.Protocol)
+	}
+	if gotCfg.Username != "ops" || gotCfg.Database != "logs" {
+		t.Fatalf("unexpected decoded config: %+v", gotCfg)
 	}
 }
 

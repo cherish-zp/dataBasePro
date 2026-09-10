@@ -37,6 +37,15 @@ CREATE TABLE IF NOT EXISTS audit_log (
     detail        TEXT NOT NULL DEFAULT '',
     ts            INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS saved_queries (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    console_type  TEXT NOT NULL,
+    connection_id TEXT NOT NULL,
+    content       TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+);
 `
 
 // auditDefaultLimit caps unqualified audit listings.
@@ -187,14 +196,31 @@ func (s *Store) scanConnection(row scanner) (*model.Connection, error) {
 }
 
 // marshalConfig serialises the config for the connection type, encrypting
-// the password field (kafka: SASL.Password, redis: Password) so the raw
-// stored JSON never contains plaintext secrets.
+// the password field (kafka: SASL.Password, redis: Password, clickhouse:
+// Password) so the raw stored JSON never contains plaintext secrets.
 func (s *Store) marshalConfig(typ model.ConnectionType, raw json.RawMessage) (string, error) {
 	switch typ {
 	case model.ConnectionTypeRedis:
 		var cfg model.RedisConfig
 		if err := json.Unmarshal(raw, &cfg); err != nil {
 			return "", fmt.Errorf("unmarshal redis config: %w", err)
+		}
+		if cfg.Password != "" {
+			enc, err := s.crypto.Encrypt(cfg.Password)
+			if err != nil {
+				return "", fmt.Errorf("encrypt password: %w", err)
+			}
+			cfg.Password = enc
+		}
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return "", fmt.Errorf("marshal config: %w", err)
+		}
+		return string(b), nil
+	case model.ConnectionTypeClickHouse:
+		var cfg model.ClickHouseConfig
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return "", fmt.Errorf("unmarshal clickhouse config: %w", err)
 		}
 		if cfg.Password != "" {
 			enc, err := s.crypto.Encrypt(cfg.Password)
@@ -229,13 +255,31 @@ func (s *Store) marshalConfig(typ model.ConnectionType, raw json.RawMessage) (st
 }
 
 // unmarshalConfig loads a config for the connection type, transparently
-// decrypting stored passwords (kafka: SASL.Password, redis: Password).
+// decrypting stored passwords (kafka: SASL.Password, redis: Password,
+// clickhouse: Password).
 func (s *Store) unmarshalConfig(typ string, raw string) (json.RawMessage, error) {
 	switch model.ConnectionType(typ) {
 	case model.ConnectionTypeRedis:
 		var cfg model.RedisConfig
 		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 			return nil, fmt.Errorf("unmarshal redis config: %w", err)
+		}
+		if cfg.Password != "" && strings.HasPrefix(cfg.Password, encPrefix+cryptoVersion+":") {
+			dec, err := s.crypto.Decrypt(cfg.Password)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt password: %w", err)
+			}
+			cfg.Password = dec
+		}
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(b), nil
+	case model.ConnectionTypeClickHouse:
+		var cfg model.ClickHouseConfig
+		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+			return nil, fmt.Errorf("unmarshal clickhouse config: %w", err)
 		}
 		if cfg.Password != "" && strings.HasPrefix(cfg.Password, encPrefix+cryptoVersion+":") {
 			dec, err := s.crypto.Decrypt(cfg.Password)
