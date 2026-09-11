@@ -1,0 +1,140 @@
+# 发布流水线:推 v* 标签后自动构建 macOS(Apple Silicon/Intel)与 Windows
+# 三份产物,发布到 GitHub Release,并同步附件到 Gitee Release。
+#
+# 前提(一次性配置):
+# 1. GitHub 建镜像仓库,本地 `git remote add github git@github.com:<user>/dataBasePro.git`
+#    后 `git push github main --tags`(Gitee Go 无 macOS 构建机,故用 GitHub Actions)。
+# 2. GitHub 仓库 Settings → Secrets and variables → Actions 配置 GITEE_TOKEN
+#    (Gitee 私人令牌,具备 releases 权限),产物才会同步回 Gitee Release。
+name: Release
+
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-14 # Apple Silicon;同机交叉编译 Intel 版
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+
+      - name: Build arm64
+        run: wails build --platform darwin/arm64
+
+      - name: Package arm64
+        run: |
+          cd build/bin
+          zip -qr "${{ github.workspace }}/dataBasePro-${{ github.ref_name }}-darwin-arm64.zip" dataBasePro.app
+
+      - name: Build amd64
+        run: wails build --platform darwin/amd64
+
+      - name: Package amd64
+        run: |
+          cd build/bin
+          zip -qr "${{ github.workspace }}/dataBasePro-${{ github.ref_name }}-darwin-amd64.zip" dataBasePro.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-packages
+          path: dataBasePro-*.zip
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+
+      - name: Build exe
+        run: wails build --platform windows/amd64
+
+      - name: Package exe
+        run: Compress-Archive -Path build/bin/dataBasePro.exe -DestinationPath "dataBasePro-${{ github.ref_name }}-windows-amd64.zip"
+
+      # build/windows/installer 已有 NSIS 工程;NSIS 未进 runner 时跳过,不影响 zip 产物。
+      - name: Build NSIS installer (optional)
+        continue-on-error: true
+        run: wails build --platform windows/amd64 -nsis
+
+      - name: Package installer (optional)
+        if: hashFiles('build/bin/dataBasePro-amd64-installer.exe') != ''
+        run: Copy-Item build/bin/dataBasePro-amd64-installer.exe "dataBasePro-${{ github.ref_name }}-windows-amd64-installer.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: dataBasePro-*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [ build-macos, build-windows ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+      # 同步附件到 Gitee Release:Release 已存在则复用,否则创建。
+      - name: Sync to Gitee Release
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_REPO: princess-zp/dataBasePro
+          TAG: ${{ github.ref_name }}
+        run: |
+          RID=$(curl -s "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("id",""))')
+          if [ -z "${RID}" ]; then
+            curl -s -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases?access_token=${GITEE_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"${TAG}\",\"target_commitish\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":\"自动构建产物:macOS(Apple Silicon / Intel)与 Windows 安装包。\",\"prerelease\":false}" > gitee_release.json
+            RID=$(python3 -c 'import json; print(json.load(open("gitee_release.json")).get("id",""))')
+          fi
+          if [ -z "${RID}" ]; then echo "gitee release id 获取失败"; exit 1; fi
+          for f in dist/*; do
+            echo "sync $(basename "$f")"
+            curl -s -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${RID}/attach_files" \
+              -F "access_token=${GITEE_TOKEN}" -F "file=@$f" > /dev/null
+          done
