@@ -128,7 +128,7 @@ jobs:
           GITEE_REPO: princess-zp/dataBasePro
           TAG: ${{ github.ref_name }}
         run: |
-          G() { curl -sS --connect-timeout 20 --max-time 300 "$@"; }
+          G() { curl -sS --connect-timeout 20 --max-time 1800 "$@"; }
           RID=$(G "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" | python3 -c 'import sys,json; d=json.load(sys.stdin) or {}; print(d.get("id",""))' || true)
           if [ -z "${RID}" ]; then
             G -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases?access_token=${GITEE_TOKEN}" \
