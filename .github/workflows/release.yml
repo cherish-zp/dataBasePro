@@ -119,22 +119,27 @@ jobs:
           generate_release_notes: true
 
       # 同步附件到 Gitee Release:Release 已存在则复用,否则创建。
+      # best-effort:GitHub 构建机到 gitee.com 可能慢/不通,所有 curl 带
+      # 连接与总超时,失败不阻塞发布(可重跑或本地手动同步)。
       - name: Sync to Gitee Release
+        continue-on-error: true
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITEE_REPO: princess-zp/dataBasePro
           TAG: ${{ github.ref_name }}
         run: |
-          RID=$(curl -s "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" | python3 -c 'import sys,json; d=json.load(sys.stdin) or {}; print(d.get("id",""))')
+          G() { curl -sS --connect-timeout 20 --max-time 300 "$@"; }
+          RID=$(G "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" | python3 -c 'import sys,json; d=json.load(sys.stdin) or {}; print(d.get("id",""))' || true)
           if [ -z "${RID}" ]; then
-            curl -s -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases?access_token=${GITEE_TOKEN}" \
+            G -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases?access_token=${GITEE_TOKEN}" \
               -H "Content-Type: application/json" \
-              -d "{\"tag_name\":\"${TAG}\",\"target_commitish\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":\"自动构建产物:macOS(Apple Silicon / Intel)与 Windows 安装包。\",\"prerelease\":false}" > gitee_release.json
-            RID=$(python3 -c 'import json; d=json.load(open("gitee_release.json")) or {}; print(d.get("id",""))')
+              -d "{\"tag_name\":\"${TAG}\",\"target_commitish\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":\"自动构建产物:macOS(Apple Silicon / Intel)与 Windows 安装包。\",\"prerelease\":false}" > gitee_release.json || true
+            cat gitee_release.json
+            RID=$(python3 -c 'import json; d=json.load(open("gitee_release.json")) or {}; print(d.get("id",""))' || true)
           fi
-          if [ -z "${RID}" ]; then echo "gitee release id 获取失败"; exit 1; fi
+          if [ -z "${RID}" ]; then echo "::warning::gitee release id 获取失败,Gitee 同步跳过"; exit 0; fi
           for f in dist/*; do
             echo "sync $(basename "$f")"
-            curl -s -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${RID}/attach_files" \
-              -F "access_token=${GITEE_TOKEN}" -F "file=@$f" > /dev/null
+            G -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${RID}/attach_files" \
+              -F "access_token=${GITEE_TOKEN}" -F "file=@$f" || echo "::warning::上传失败: $f"
           done
