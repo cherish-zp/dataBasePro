@@ -125,12 +125,12 @@ jobs:
           GITEE_REPO: princess-zp/dataBasePro
           TAG: ${{ github.ref_name }}
         run: |
-          RID=$(curl -s "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("id",""))')
+          RID=$(curl -s "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" | python3 -c 'import sys,json; d=json.load(sys.stdin) or {}; print(d.get("id",""))')
           if [ -z "${RID}" ]; then
             curl -s -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases?access_token=${GITEE_TOKEN}" \
               -H "Content-Type: application/json" \
               -d "{\"tag_name\":\"${TAG}\",\"target_commitish\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":\"自动构建产物:macOS(Apple Silicon / Intel)与 Windows 安装包。\",\"prerelease\":false}" > gitee_release.json
-            RID=$(python3 -c 'import json; print(json.load(open("gitee_release.json")).get("id",""))')
+            RID=$(python3 -c 'import json; d=json.load(open("gitee_release.json")) or {}; print(d.get("id",""))')
           fi
           if [ -z "${RID}" ]; then echo "gitee release id 获取失败"; exit 1; fi
           for f in dist/*; do
