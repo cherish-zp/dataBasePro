@@ -69,6 +69,8 @@ const props = withDefaults(
     statementMarks?: StatementMark[]
     /** 光标所在语句整段背景微高亮。 */
     highlightCursorStatement?: boolean
+    /** 右键执行菜单(执行选中语句 / 执行当前语句 / 运行全部),默认关闭。 */
+    enableRunMenu?: boolean
   }>(),
   {
     height: '180px',
@@ -77,6 +79,7 @@ const props = withDefaults(
     statementGutter: false,
     statementMarks: () => [],
     highlightCursorStatement: false,
+    enableRunMenu: false,
   },
 )
 
@@ -84,9 +87,16 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'run-statement', text: string): void
   (e: 'cursor', pos: CursorPos): void
+  /** 右键菜单「执行选中语句」:携带选中文本。 */
+  (e: 'run-selection', text: string): void
+  /** 右键菜单「执行当前语句」:定位由控制台按光标自行处理。 */
+  (e: 'run-current'): void
+  /** 右键菜单「运行全部」。 */
+  (e: 'run-all'): void
 }>()
 
 const host = ref<HTMLElement | null>(null)
+const rootEl = ref<HTMLElement | null>(null)
 let view: EditorView | null = null
 
 // schema / placeholder / 语句级扩展均用独立 compartment,支持运行期热替换。
@@ -294,6 +304,57 @@ const updateListener = EditorView.updateListener.of((update) => {
   }
 })
 
+// —— 右键执行菜单(enableRunMenu)——
+
+const menuEl = ref<HTMLElement | null>(null)
+const menuVisible = ref(false)
+// 菜单锚点:相对组件根元素的偏移(absolute 定位)。
+const menuPos = ref({ x: 0, y: 0 })
+const menuHasSelection = ref(false)
+// 打开菜单瞬间捕获的选中文本(emit 用,无需响应式)。
+let menuSelectionText = ''
+
+function onContentContextmenu(ev: MouseEvent): void {
+  if (!props.enableRunMenu) return
+  ev.preventDefault()
+  const sel = getSelection()
+  menuSelectionText = sel
+  menuHasSelection.value = sel.length > 0
+  const rect = rootEl.value?.getBoundingClientRect()
+  menuPos.value = { x: ev.clientX - (rect?.left ?? 0), y: ev.clientY - (rect?.top ?? 0) }
+  menuVisible.value = true
+}
+
+function closeRunMenu(): void {
+  menuVisible.value = false
+}
+
+function onRunSelection(): void {
+  closeRunMenu()
+  emit('run-selection', menuSelectionText)
+}
+
+function onRunCurrent(): void {
+  closeRunMenu()
+  emit('run-current')
+}
+
+function onRunAll(): void {
+  closeRunMenu()
+  emit('run-all')
+}
+
+// 点击菜单外关闭;菜单内部 mousedown 不关(mousedown 先于 click,提前关会吞掉菜单项点击)。
+function onDocMouseDown(ev: MouseEvent): void {
+  if (!menuVisible.value) return
+  if (menuEl.value && ev.target instanceof Node && menuEl.value.contains(ev.target)) return
+  closeRunMenu()
+}
+
+function onDocKeydown(ev: KeyboardEvent): void {
+  if (menuVisible.value && ev.key === 'Escape') closeRunMenu()
+}
+
 onMounted(() => {
   if (!host.value) return
   const extensions: Extension[] = [
@@ -320,6 +381,10 @@ onMounted(() => {
     state: EditorState.create({ doc: props.modelValue, extensions }),
     parent: host.value,
   })
+  // 右键执行菜单:拦截 contentDOM 的 contextmenu(enableRunMenu 关闭时不拦截,行为不变)。
+  view.contentDOM.addEventListener('contextmenu', onContentContextmenu)
+  document.addEventListener('mousedown', onDocMouseDown)
+  document.addEventListener('keydown', onDocKeydown)
 })
 
 // tables 变化(如异步加载完元数据)→ 热替换 sql schema。
@@ -366,7 +431,18 @@ watch(
   },
 )
 
+// 运行期关闭右键菜单 → 顺带收起已打开的菜单。
+watch(
+  () => props.enableRunMenu,
+  (on) => {
+    if (!on) closeRunMenu()
+  },
+)
+
 onBeforeUnmount(() => {
+  view?.contentDOM.removeEventListener('contextmenu', onContentContextmenu)
+  document.removeEventListener('mousedown', onDocMouseDown)
+  document.removeEventListener('keydown', onDocKeydown)
   view?.destroy()
   view = null
 })
@@ -390,14 +466,51 @@ defineExpose({ focus, getValue, getSelection })
 </script>
 
 <template>
-  <div class="sql-editor" data-test="sql-editor">
+  <div ref="rootEl" class="sql-editor" data-test="sql-editor">
     <div ref="host" class="editor-host" data-test="sql-editor-content" :style="{ height }"></div>
+    <div
+      v-if="menuVisible"
+      ref="menuEl"
+      class="run-menu"
+      data-test="editor-run-menu"
+      :style="{ left: `${menuPos.x}px`, top: `${menuPos.y}px` }"
+      @contextmenu.prevent
+    >
+      <button
+        v-if="menuHasSelection"
+        type="button"
+        class="run-menu-item"
+        data-test="menu-run-selection"
+        @click="onRunSelection"
+      >
+        执行选中语句
+      </button>
+      <button
+        type="button"
+        class="run-menu-item"
+        data-test="menu-run-current"
+        title="⌘Enter"
+        @click="onRunCurrent"
+      >
+        执行当前语句
+      </button>
+      <button
+        type="button"
+        class="run-menu-item"
+        data-test="menu-run-all"
+        title="⌘⇧Enter"
+        @click="onRunAll"
+      >
+        运行全部
+      </button>
+    </div>
   </div>
 </template>
 
 <style scoped>
-/* 边框/圆角/聚焦描边与现有 .input 风格保持一致 */
+/* 边框/圆角/聚焦描边与现有 .input 风格保持一致;relative 供右键菜单 absolute 锚定 */
 .sql-editor {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--bg-subtle);
@@ -411,6 +524,35 @@ defineExpose({ focus, getValue, getSelection })
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .editor-host :deep(.cm-editor) { height: 100%; }
+/* 右键执行菜单:自绘,主题变量跟随深浅色 */
+.run-menu {
+  position: absolute;
+  z-index: 30;
+  min-width: 148px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-md);
+}
+.run-menu-item {
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font);
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease;
+}
+.run-menu-item:hover { background: var(--bg-hover); }
+.run-menu-item:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
 </style>
 
 <style>

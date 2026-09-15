@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { splitSqlStatements } from './sqlSplit'
+import { commentAbove, splitSqlStatements } from './sqlSplit'
 
 // from/to 断言辅助:直接对整个结果做快照式比对,保证 offset 语义稳定。
 describe('splitSqlStatements', () => {
@@ -127,5 +127,52 @@ describe('splitSqlStatements', () => {
       [6, 9, 'A3;'],
     ])
     expect(segs.every((s) => s.startLine === 1)).toBe(true)
+  })
+})
+
+// —— commentAbove:语句前置注释标签提取 ——
+describe('commentAbove', () => {
+  it('紧邻注释:返回去掉注释前缀后的文本', () => {
+    const sql = '-- 查询用户\nSELECT 1'
+    expect(commentAbove(sql, sql.indexOf('SELECT'))).toBe('查询用户')
+  })
+
+  it('隔空行注释:跳过空白行向上找最近的非空行', () => {
+    const sql = '-- 查询用户\n\n \t\nSELECT 1'
+    expect(commentAbove(sql, sql.indexOf('SELECT'))).toBe('查询用户')
+  })
+
+  it('上方是代码(非注释)→ null', () => {
+    const sql = 'CREATE TABLE t(a int);\nSELECT 1'
+    expect(commentAbove(sql, sql.indexOf('SELECT'))).toBeNull()
+  })
+
+  it('无上方行 / 空文件 → null', () => {
+    expect(commentAbove('SELECT 1', 0)).toBeNull()
+    expect(commentAbove('', 0)).toBeNull()
+  })
+
+  it('# 形式注释同样识别', () => {
+    const sql = '# 查询用户\nSELECT 1'
+    expect(commentAbove(sql, sql.indexOf('SELECT'))).toBe('查询用户')
+  })
+
+  it('注释含文本:仅去前缀并 trim,保留冒号等其余内容', () => {
+    const sql = '-- 标签: 用户表全量导出\nSELECT * FROM users'
+    expect(commentAbove(sql, sql.indexOf('SELECT'))).toBe('标签: 用户表全量导出')
+  })
+
+  it('带缩进的注释同样识别;光杆注释返回空串', () => {
+    const sql = '  -- 缩进注释\nSELECT 1'
+    expect(commentAbove(sql, sql.indexOf('SELECT'))).toBe('缩进注释')
+    expect(commentAbove('--\nSELECT 1', 3)).toBe('')
+    expect(commentAbove('#\nSELECT 1', 2)).toBe('')
+  })
+
+  it('语句前是注释 → 命中;同行紧邻内容是代码则不跨行找注释', () => {
+    const sql = '-- 头注释\nSELECT 1; SELECT 2'
+    expect(commentAbove(sql, sql.indexOf('SELECT'))).toBe('头注释')
+    // 第二条语句与第一条同行:语句之前已是代码,不跨行找注释 → null。
+    expect(commentAbove(sql, sql.lastIndexOf('SELECT'))).toBeNull()
   })
 })

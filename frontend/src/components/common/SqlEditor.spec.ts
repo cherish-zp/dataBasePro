@@ -225,3 +225,111 @@ describe('SqlEditor 语句级增强', () => {
     expect(wrapper.findAll('.cm-current-statement')).toHaveLength(1)
   })
 })
+
+// —— 右键执行菜单(enableRunMenu)——
+describe('SqlEditor 右键执行菜单', () => {
+  const doc = 'SELECT 1; SELECT 2'
+
+  // 在 CM contentDOM 上派发 contextmenu,返回事件供 defaultPrevented 断言。
+  function openRunMenu(wrapper: VueWrapper, x = 24, y = 36): MouseEvent {
+    const ev = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+    })
+    cmView(wrapper).contentDOM.dispatchEvent(ev)
+    return ev
+  }
+
+  it('未开启 enableRunMenu(默认):contextmenu 不被拦截,菜单不出现', async () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: doc } })
+    const ev = openRunMenu(wrapper)
+    await nextTick()
+    expect(ev.defaultPrevented).toBe(false)
+    expect(wrapper.find('[data-test="editor-run-menu"]').exists()).toBe(false)
+  })
+
+  it('开启后:contextmenu 被阻止,菜单在光标坐标处出现', async () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: doc, enableRunMenu: true } })
+    const ev = openRunMenu(wrapper, 30, 40)
+    await nextTick()
+    expect(ev.defaultPrevented).toBe(true)
+    const menu = wrapper.find('[data-test="editor-run-menu"]')
+    expect(menu.exists()).toBe(true)
+    expect(menu.attributes('style')).toContain('left: 30px')
+    expect(menu.attributes('style')).toContain('top: 40px')
+  })
+
+  it('有选区 → 「执行选中语句」,点击 emit run-selection(选中文本)并关闭', async () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: doc, enableRunMenu: true } })
+    cmView(wrapper).dispatch({ selection: { anchor: 0, head: 8 } })
+    openRunMenu(wrapper)
+    await nextTick()
+    const item = wrapper.find('[data-test="menu-run-selection"]')
+    expect(item.exists()).toBe(true)
+    // 菜单内部 mousedown 不应提前关闭菜单(外部点击才关闭)。
+    await item.trigger('mousedown')
+    expect(wrapper.find('[data-test="editor-run-menu"]').exists()).toBe(true)
+    await item.trigger('click')
+    const emitted = wrapper.emitted('run-selection')
+    expect(emitted).toHaveLength(1)
+    expect(emitted?.[0]).toEqual(['SELECT 1'])
+    expect(wrapper.find('[data-test="editor-run-menu"]').exists()).toBe(false)
+  })
+
+  it('无选区 → 无「执行选中语句」;当前语句/运行全部 emit 并带快捷键 title', async () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: doc, enableRunMenu: true } })
+    openRunMenu(wrapper)
+    await nextTick()
+    expect(wrapper.find('[data-test="menu-run-selection"]').exists()).toBe(false)
+    const current = wrapper.find('[data-test="menu-run-current"]')
+    expect(current.attributes('title')).toContain('⌘Enter')
+    await current.trigger('click')
+    expect(wrapper.emitted('run-current')).toHaveLength(1)
+    expect(wrapper.emitted('run-selection')).toBeUndefined()
+    // 点击后菜单已关闭,重新打开再验证「运行全部」。
+    openRunMenu(wrapper)
+    await nextTick()
+    const all = wrapper.find('[data-test="menu-run-all"]')
+    expect(all.attributes('title')).toContain('⌘⇧Enter')
+    await all.trigger('click')
+    expect(wrapper.emitted('run-all')).toHaveLength(1)
+  })
+
+  it('Esc 关闭;点击外部(冒泡 mousedown)关闭,菜单内部 mousedown 不关', async () => {
+    const wrapper = mount(SqlEditor, {
+      props: { modelValue: doc, enableRunMenu: true },
+      attachTo: document.body,
+    })
+    openRunMenu(wrapper)
+    await nextTick()
+    expect(wrapper.find('[data-test="editor-run-menu"]').exists()).toBe(true)
+    // Esc 关闭。
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+    expect(wrapper.find('[data-test="editor-run-menu"]').exists()).toBe(false)
+    // 重新打开:菜单内部 mousedown 不关闭。
+    openRunMenu(wrapper)
+    await nextTick()
+    await wrapper.find('[data-test="editor-run-menu"]').trigger('mousedown')
+    expect(wrapper.find('[data-test="editor-run-menu"]').exists()).toBe(true)
+    // 菜单外(编辑器内容区)mousedown 冒泡到 document → 关闭。
+    await wrapper.find('.cm-content').trigger('mousedown')
+    expect(wrapper.find('[data-test="editor-run-menu"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('运行期关闭 enableRunMenu → 菜单消失且不再拦截 contextmenu', async () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: doc, enableRunMenu: true } })
+    openRunMenu(wrapper)
+    await nextTick()
+    expect(wrapper.find('[data-test="editor-run-menu"]').exists()).toBe(true)
+    await wrapper.setProps({ enableRunMenu: false })
+    expect(wrapper.find('[data-test="editor-run-menu"]').exists()).toBe(false)
+    const ev = openRunMenu(wrapper)
+    await nextTick()
+    expect(ev.defaultPrevented).toBe(false)
+    expect(wrapper.find('[data-test="editor-run-menu"]').exists()).toBe(false)
+  })
+})
