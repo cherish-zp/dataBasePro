@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
-import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo, CHTableInfo, MysqlTableInfo } from '@/api/types'
+import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo, CHTableInfo, MysqlTableInfo, EsIndexInfo, EsTemplateInfo } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
 import { formatCount } from '@/utils/format'
 import { formatBytes } from '@/utils/bytes'
@@ -22,6 +22,10 @@ const emit = defineEmits<{
   (e: 'open-health', connectionId: string): void
   (e: 'open-ch-table', connectionId: string, database: string, table: string): void
   (e: 'open-mysql-table', connectionId: string, database: string, table: string): void
+  (e: 'open-es-index', connectionId: string, index: string): void
+  (e: 'open-es-template', connectionId: string, template: string): void
+  (e: 'open-es-template-create', connectionId: string): void
+  (e: 'open-es-monitor', connectionId: string): void
   (e: 'delete', connectionId: string): void
   (e: 'edit-connection', conn: Connection): void
   (e: 'new'): void
@@ -80,8 +84,10 @@ async function onToggleConnect(conn: Connection): Promise<void> {
 // An "object collection" groups the objects a data source exposes (topics,
 // consumers, tables, indices...). Each collection can optionally offer create
 // actions, so adding MySQL tables later is a matter of declaring a new entry
-// here and a create/delete branch in the dispatch functions below.
-type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db'
+// here and a create/delete branch in the dispatch functions below. ES 的
+// es-index / es-template 不作为 collection 分区,但复用同一批交互状态
+// (右键菜单、删除确认),因此也纳入 ObjectKind。
+type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db' | 'es-index' | 'es-template'
 interface ObjectCollection {
   key: string
   label: string
@@ -124,6 +130,10 @@ const mysqlTablesByDb = ref<Record<string, MysqlTableInfo[]>>({})
 const mysqlTableLoadingByDb = ref<Record<string, boolean>>({})
 const mysqlExpandedByDb = ref<Record<string, boolean>>({})
 const mysqlTableFilterByDb = ref<Record<string, string>>({})
+// --- Elasticsearch 一级树(连接 → 索引;系统索引由后端过滤,无二级展开) ---
+const esIndices = ref<Record<string, EsIndexInfo[]>>({})
+// ES 一级树的索引名模糊过滤词(按连接缓存)。
+const esIndexFilterByConn = ref<Record<string, string>>({})
 const groupsByConn = ref<Record<string, ConsumerGroup[]>>({})
 const loadingByConn = ref<Record<string, boolean>>({})
 const errorByConn = ref<Record<string, string>>({})
@@ -145,10 +155,14 @@ async function toggle(conn: Connection): Promise<void> {
     clearBatchState(id)
     return
   }
+  // 分区状态跨折叠保留:重新展开时「索引模板」分区重新挂载,按约定重拉模板。
+  if (conn.type === 'es' && esSectionOf(id) === 'es-templates') {
+    void loadEsTemplates(id)
+  }
   if (
-    !topicsByConn.value[id] && !redisDBs.value[id] && !chDBs.value[id] && !mysqlDBs.value[id]
+    !topicsByConn.value[id] && !redisDBs.value[id] && !chDBs.value[id] && !mysqlDBs.value[id] && !esIndices.value[id]
     && (conn.type === 'kafka' || conn.type === 'redis' || conn.type === 'clickhouse'
-      || conn.type === 'mysql' || conn.type === 'tidb')
+      || conn.type === 'mysql' || conn.type === 'tidb' || conn.type === 'es')
   ) {
     await load(id)
   }
@@ -170,6 +184,10 @@ async function load(connId: string): Promise<void> {
     } else if (type === 'mysql' || type === 'tidb') {
       // 后端默认已过滤系统库(information_schema/performance_schema 等)。
       mysqlDBs.value[connId] = (await getApi().listMysqlDatabases?.(connId)) ?? []
+      connStore.setStatus(connId, 'connected')
+    } else if (type === 'es') {
+      // 后端默认已过滤系统索引(.kibana* 等)。
+      esIndices.value[connId] = (await getApi().listEsIndices?.(connId)) ?? []
       connStore.setStatus(connId, 'connected')
     } else {
       const [topics, groups] = await Promise.all([
@@ -294,6 +312,155 @@ function mysqlDbCountLabel(connId: string, db: string): string {
   const q = mysqlTableFilterOf(connId, db)
   if (!q) return String(total)
   return `${filteredMysqlTables(connId, db).length}/${total}`
+}
+
+// --- ES 索引过滤(一级树,过滤词按连接缓存,与 MySQL 表过滤同构) ---
+
+function esIndexFilterOf(connId: string): string {
+  return (esIndexFilterByConn.value[connId] ?? '').trim()
+}
+
+// filteredEsIndices 对索引名做本地模糊过滤(fuzzyScore),按相关度排序。
+function filteredEsIndices(connId: string): EsIndexInfo[] {
+  const list = esIndices.value[connId] ?? []
+  const q = esIndexFilterOf(connId)
+  if (!q) return list
+  return list
+    .map((i) => ({ i, score: fuzzyScore(q, i.name) }))
+    .filter((x) => x.score !== Infinity)
+    .sort((a, b) => a.score - b.score)
+    .map((x) => x.i)
+}
+
+// esIndexCountLabel 索引计数徽标:未过滤显示总数,过滤中显示「可见/总数」。
+function esIndexCountLabel(connId: string): string {
+  const total = (esIndices.value[connId] ?? []).length
+  const q = esIndexFilterOf(connId)
+  if (!q) return String(total)
+  return `${filteredEsIndices(connId).length}/${total}`
+}
+
+// --- ES 分区(索引 / 索引模板):与 Kafka 的分段按钮同构,互斥切换 ---
+
+// 索引模板清单项,与 types.ts 的 EsTemplateInfo(wailsjs 生成的
+// model.EsTemplateInfo)一致。
+
+const esTemplatesByConn = ref<Record<string, EsTemplateInfo[]>>({})
+const esTemplatesLoadingByConn = ref<Record<string, boolean>>({})
+const esTemplatesErrorByConn = ref<Record<string, string>>({})
+
+// esSectionOf 返回 ES 连接当前激活的分区,默认「索引」(es-indices)。
+function esSectionOf(connId: string): string {
+  return activeSectionByConn.value[connId] ?? 'es-indices'
+}
+
+function switchEsSection(connId: string, section: string): void {
+  activeSectionByConn.value[connId] = section
+  // 模板清单按连接缓存,每次激活「索引模板」分区都重拉一次以刷新。
+  if (section === 'es-templates') void loadEsTemplates(connId)
+}
+
+async function loadEsTemplates(connId: string): Promise<void> {
+  esTemplatesLoadingByConn.value[connId] = true
+  esTemplatesErrorByConn.value[connId] = ''
+  try {
+    // listEsTemplates 已在 client.ts 的 Api 声明为可选成员(绑定已生成);
+    // 经 WailsApi 调用 ListEsTemplates,缺失时可选链兜底为空清单。
+    esTemplatesByConn.value[connId] = (await getApi().listEsTemplates?.(connId)) ?? []
+  } catch (e) {
+    esTemplatesErrorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    esTemplatesLoadingByConn.value[connId] = false
+  }
+}
+
+// --- ES 分区内的集合编辑(新建/删除/修改):与 Kafka 的 create-form、
+// context menu、ConfirmDialog 链路同构 ---
+
+// ES 索引新建表单:由索引分区标题行(＋ 角标)展开。成功后清空表单(保持
+// 打开,便于连续创建)并重拉索引列表;失败原因显示在表单内。
+const esCreateMeta = ref<{ connId: string } | null>(null)
+const esCreateForm = reactive({ name: '', shards: 1, replicas: 1 })
+const esCreating = ref(false)
+const esCreateError = ref<string | null>(null)
+
+function isEsCreatingFor(connId: string): boolean {
+  return esCreateMeta.value?.connId === connId
+}
+
+function toggleEsCreate(conn: Connection): void {
+  if (isEsCreatingFor(conn.id)) {
+    esCreateMeta.value = null
+    return
+  }
+  esCreateMeta.value = { connId: conn.id }
+  esCreateForm.name = ''
+  esCreateForm.shards = 1
+  esCreateForm.replicas = 1
+  esCreateError.value = null
+}
+
+function closeEsCreate(): void {
+  esCreateMeta.value = null
+}
+
+async function submitEsCreate(conn: Connection): Promise<void> {
+  const name = esCreateForm.name.trim()
+  if (!name) {
+    esCreateError.value = '索引名不能为空'
+    return
+  }
+  esCreating.value = true
+  esCreateError.value = null
+  try {
+    await getApi().esCreateIndex?.({
+      connection_id: conn.id,
+      index: name,
+      shards: Math.max(1, Math.trunc(esCreateForm.shards) || 1),
+      replicas: Math.max(1, Math.trunc(esCreateForm.replicas) || 1),
+    })
+    // 成功:清空表单(保留打开)并重拉索引列表;失败:错误留在表单内。
+    esCreateForm.name = ''
+    esCreateForm.shards = 1
+    esCreateForm.replicas = 1
+    await load(conn.id)
+  } catch (e) {
+    esCreateError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    esCreating.value = false
+  }
+}
+
+// 修改索引设置弹窗:当前仅暴露副本数(number_of_replicas);payload 由前端
+// 组装为设置项 JSON 文本交后端解析转发,前端禁止拼 DSL。
+const esSettingsMeta = ref<{ connId: string; index: string } | null>(null)
+const esSettingsReplicas = ref(1)
+const esSettingsSaving = ref(false)
+const esSettingsError = ref<string | null>(null)
+
+async function submitEsSettings(): Promise<void> {
+  const m = esSettingsMeta.value
+  if (!m || esSettingsSaving.value) return
+  const replicas = esSettingsReplicas.value
+  if (!Number.isInteger(replicas) || replicas < 0) {
+    esSettingsError.value = '请输入非负整数副本数'
+    return
+  }
+  esSettingsSaving.value = true
+  esSettingsError.value = null
+  try {
+    await getApi().esUpdateIndexSettings?.({
+      connection_id: m.connId,
+      index: m.index,
+      settings_json: JSON.stringify({ number_of_replicas: replicas }),
+    })
+    esSettingsMeta.value = null
+    await load(m.connId)
+  } catch (e) {
+    esSettingsError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    esSettingsSaving.value = false
+  }
 }
 
 // countsByConn caches per-topic message counts per connection (retained =
@@ -432,6 +599,8 @@ const confirmMessage = computed(() => {
   const pending = confirm.value
   if (!pending) return ''
   if (pending.names) return `确认删除 ${pending.names.length} 个 Topic？此操作不可恢复。`
+  if (pending.kind === 'es-index') return `确认删除索引「${pending.name}」？此操作不可恢复。`
+  if (pending.kind === 'es-template') return `确认删除索引模板「${pending.name}」？此操作不可恢复。`
   return `确认删除 ${pending.kind === 'topic' ? 'Topic' : 'Consumer Group'}「${pending.name}」？此操作不可恢复。`
 })
 
@@ -439,6 +608,8 @@ const confirmText = computed(() => {
   const pending = confirm.value
   if (!pending) return '删除'
   if (pending.names) return `删除 ${pending.names.length} 个 Topic`
+  if (pending.kind === 'es-index') return '删除索引'
+  if (pending.kind === 'es-template') return '删除模板'
   return `删除 ${pending.kind === 'topic' ? 'Topic' : '消费组'}`
 })
 
@@ -463,6 +634,19 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
       { key: 'delete', label: '删除 Topic', danger: true },
     ]
   }
+  if (ctxMenu.value.kind === 'es-index') {
+    return [
+      { key: 'open-es-index', label: '打开索引' },
+      { key: 'es-settings', label: '修改设置…' },
+      { key: 'delete-es-index', label: '删除索引', danger: true },
+    ]
+  }
+  if (ctxMenu.value.kind === 'es-template') {
+    return [
+      { key: 'es-edit-template', label: '编辑模板' },
+      { key: 'delete-es-template', label: '删除模板', danger: true },
+    ]
+  }
   return [
     { key: 'open-group', label: '打开消费组' },
     { key: 'reset-offset-group', label: '重置消费位点…' },
@@ -476,6 +660,14 @@ function openTopicMenu(e: MouseEvent, connId: string, name: string, partitions: 
 
 function openGroupMenu(e: MouseEvent, connId: string, name: string): void {
   ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'group', connId, name, partitions: 0 }
+}
+
+function openEsIndexMenu(e: MouseEvent, connId: string, name: string): void {
+  ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'es-index', connId, name, partitions: 0 }
+}
+
+function openEsTemplateMenu(e: MouseEvent, connId: string, name: string): void {
+  ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'es-template', connId, name, partitions: 0 }
 }
 
 function closeCtxMenu(): void {
@@ -513,6 +705,23 @@ function onCtxSelect(key: string): void {
       break
     case 'delete-group':
       askDelete(props.connections.find((c) => c.id === m.connId)!, 'group', m.name)
+      break
+    case 'open-es-index':
+      emit('open-es-index', m.connId, m.name)
+      break
+    case 'es-settings':
+      esSettingsMeta.value = { connId: m.connId, index: m.name }
+      esSettingsReplicas.value = 1
+      esSettingsError.value = null
+      break
+    case 'delete-es-index':
+      askDelete(props.connections.find((c) => c.id === m.connId)!, 'es-index', m.name)
+      break
+    case 'es-edit-template':
+      emit('open-es-template', m.connId, m.name)
+      break
+    case 'delete-es-template':
+      askDelete(props.connections.find((c) => c.id === m.connId)!, 'es-template', m.name)
       break
   }
 }
@@ -636,6 +845,13 @@ async function executeDelete(): Promise<void> {
       await getApi().deleteTopic({ connection_id: pending.connId, topic: pending.name })
     } else if (pending.kind === 'group') {
       await getApi().deleteConsumerGroup({ connection_id: pending.connId, group: pending.name })
+    } else if (pending.kind === 'es-index') {
+      await getApi().esDeleteIndex?.({ connection_id: pending.connId, index: pending.name })
+    } else if (pending.kind === 'es-template') {
+      await getApi().esDeleteTemplate?.({ connection_id: pending.connId, name: pending.name })
+      // 模板删除后只重拉模板清单,不影响索引列表。
+      await loadEsTemplates(pending.connId)
+      return
     }
     await load(pending.connId)
   } catch (e) {
@@ -704,6 +920,7 @@ function exportTopics(conn: Connection): void {
           <span class="toggle-text">{{ isConnected(conn.id) ? '断开' : '连接' }}</span>
         </button>
         <button v-if="conn.type === 'kafka'" class="conn-health" type="button" data-test="btn-cluster-health" title="集群健康" @click.stop="emit('open-health', conn.id)">🩺</button>
+        <button v-if="conn.type === 'es'" class="conn-health" type="button" data-test="btn-es-monitor" title="集群监控" @click.stop="emit('open-es-monitor', conn.id)">📈</button>
         <button class="conn-edit" type="button" data-test="btn-edit-connection" title="编辑连接" @click.stop="emit('edit-connection', conn)">✎</button>
         <button class="conn-delete" type="button" data-test="btn-delete" @click.stop="emit('delete', conn.id)">🗑</button>
       </div>
@@ -1070,6 +1287,158 @@ function exportTopics(conn: Connection): void {
           <div v-if="(mysqlDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="mysql-db-empty">（无数据库）</div>
         </template>
       </div>
+      <div v-else-if="isExpanded(conn.id) && conn.type === 'es'" class="conn-children">
+        <div v-if="loadingByConn[conn.id]" class="conn-loading" data-test="tree-loading">加载中…</div>
+        <div v-else-if="errorByConn[conn.id]" class="conn-error" data-test="tree-error">{{ errorByConn[conn.id] }}</div>
+        <template v-else>
+          <!-- 分段按钮:索引 / 索引模板,互斥切换,同一时刻只渲染一个列表区。 -->
+          <div class="segmented" data-test="section-tabs" role="tablist">
+            <button
+              type="button"
+              class="segmented-btn"
+              :class="{ active: esSectionOf(conn.id) === 'es-indices' }"
+              data-test="section-tab-es-indices"
+              role="tab"
+              :aria-selected="esSectionOf(conn.id) === 'es-indices'"
+              @click="switchEsSection(conn.id, 'es-indices')"
+            >
+              <span class="segmented-icon">📄</span>
+              <span class="segmented-label">索引</span>
+              <span class="segmented-count">{{ (esIndices[conn.id] ?? []).length }}</span>
+            </button>
+            <button
+              type="button"
+              class="segmented-btn"
+              :class="{ active: esSectionOf(conn.id) === 'es-templates' }"
+              data-test="section-tab-es-templates"
+              role="tab"
+              :aria-selected="esSectionOf(conn.id) === 'es-templates'"
+              @click="switchEsSection(conn.id, 'es-templates')"
+            >
+              <span class="segmented-icon">⚙</span>
+              <span class="segmented-label">索引模板</span>
+              <span v-if="esTemplatesByConn[conn.id]" class="segmented-count">{{ esTemplatesByConn[conn.id]?.length }}</span>
+            </button>
+          </div>
+
+          <template v-if="esSectionOf(conn.id) === 'es-indices'">
+            <!-- 分区标题行:照抄 kafka group-label creatable,点击展开内联新建表单。 -->
+            <button
+              class="group-label clickable"
+              type="button"
+              data-test="es-indices-header"
+              title="新建索引"
+              @click="toggleEsCreate(conn)"
+            >
+              <span class="group-title">📄 索引</span>
+              <span class="group-add" aria-hidden="true">＋</span>
+            </button>
+            <div v-if="isEsCreatingFor(conn.id)" class="create-form" data-test="es-create-form">
+              <input
+                v-model="esCreateForm.name"
+                class="input"
+                type="text"
+                data-test="es-create-index"
+                placeholder="索引名称"
+                autocapitalize="off"
+                autocorrect="off"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <div class="create-row">
+                <label class="create-field">
+                  分片
+                  <input v-model.number="esCreateForm.shards" class="input num" type="number" min="1" data-test="es-create-shards" />
+                </label>
+                <label class="create-field">
+                  副本
+                  <input v-model.number="esCreateForm.replicas" class="input num" type="number" min="1" data-test="es-create-replicas" />
+                </label>
+              </div>
+              <div v-if="esCreateError" class="create-error" data-test="es-create-error">{{ esCreateError }}</div>
+              <div class="create-actions">
+                <button
+                  class="btn primary"
+                  type="button"
+                  data-test="btn-es-create-submit"
+                  :disabled="esCreating || esCreateForm.name.trim().length === 0"
+                  @click="submitEsCreate(conn)"
+                >
+                  {{ esCreating ? '创建中…' : '创建' }}
+                </button>
+                <button class="btn ghost" type="button" data-test="btn-es-create-cancel" @click="closeEsCreate">取消</button>
+              </div>
+            </div>
+            <!-- ES 无库层级:连接展开直接列索引(系统索引由后端过滤),双击打开索引浏览。 -->
+            <div class="ch-table-filter">
+              <div class="es-filter-row">
+                <input
+                  v-model="esIndexFilterByConn[conn.id]"
+                  class="search-input ch-filter-input"
+                  type="search"
+                  data-test="es-index-filter"
+                  placeholder="筛选索引"
+                  autocapitalize="off"
+                  autocorrect="off"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <span class="leaf-badge" data-test="es-index-count">{{ esIndexCountLabel(conn.id) }}</span>
+              </div>
+            </div>
+            <div
+              v-for="esIdx in filteredEsIndices(conn.id)"
+              :key="esIdx.name"
+              class="leaf"
+              data-test="es-index-node"
+              :title="`${esIdx.name}(${formatBytes(esIdx.store_size_bytes)})`"
+              @dblclick="emit('open-es-index', conn.id, esIdx.name)"
+              @contextmenu.prevent.stop="openEsIndexMenu($event, conn.id, esIdx.name)"
+            >
+              <span class="leaf-name" data-test="es-index-name">{{ esIdx.name }}</span>
+              <span
+                class="leaf-badge"
+                data-test="es-index-docs"
+                :title="`约 ${esIdx.docs_count.toLocaleString()} 条文档`"
+              >{{ formatCount(esIdx.docs_count) }}</span>
+            </div>
+            <div v-if="filteredEsIndices(conn.id).length === 0" class="leaf muted" data-test="es-index-empty">
+              {{ (esIndices[conn.id] ?? []).length === 0 ? '（无索引）' : '无匹配索引' }}
+            </div>
+          </template>
+
+          <template v-else>
+            <!-- 分区标题行:整行可点击,打开模板面板新建态。 -->
+            <button
+              class="group-label clickable"
+              type="button"
+              data-test="es-templates-header"
+              title="新建索引模板"
+              @click="emit('open-es-template-create', conn.id)"
+            >
+              <span class="group-title">⚙ 索引模板</span>
+              <span class="group-add" aria-hidden="true">＋</span>
+            </button>
+            <div v-if="esTemplatesLoadingByConn[conn.id]" class="conn-loading" data-test="es-templates-loading">加载中…</div>
+            <div v-else-if="esTemplatesErrorByConn[conn.id]" class="conn-error" data-test="es-templates-error">{{ esTemplatesErrorByConn[conn.id] }}</div>
+            <template v-else>
+              <div
+                v-for="tpl in esTemplatesByConn[conn.id] ?? []"
+                :key="tpl.name"
+                class="leaf"
+                :data-test="`es-template-item-${tpl.name}`"
+                :title="`${tpl.name}(order ${tpl.order})`"
+                @click="emit('open-es-template', conn.id, tpl.name)"
+                @contextmenu.prevent.stop="openEsTemplateMenu($event, conn.id, tpl.name)"
+              >
+                <span class="leaf-name">{{ tpl.name }}</span>
+                <span class="leaf-badge" data-test="es-template-order" title="模板合并顺序(order 越大优先级越高)">{{ tpl.order }}</span>
+              </div>
+              <div v-if="(esTemplatesByConn[conn.id] ?? []).length === 0" class="leaf muted" data-test="es-templates-empty">（无模板）</div>
+            </template>
+          </template>
+        </template>
+      </div>
       <div v-else-if="isExpanded(conn.id)" class="conn-children">
         <div class="leaf muted" data-test="type-unsupported">{{ typeMeta(conn).label }} 类型暂未支持</div>
       </div>
@@ -1112,6 +1481,38 @@ function exportTopics(conn: Connection): void {
       @confirm="executeDelete"
       @cancel="confirm = null"
     />
+    <!-- 修改索引设置弹窗:与 ConfirmDialog 同样 Teleport 到 body(侧栏的
+         backdrop-filter 会把 position:fixed 限制在侧栏盒内)。 -->
+    <Teleport to="body">
+      <div v-if="esSettingsMeta" class="es-settings-backdrop" data-test="es-settings-dialog" @click.self="esSettingsMeta = null">
+        <div class="es-settings-modal">
+          <div class="es-settings-title">修改索引设置</div>
+          <div class="es-settings-index" :title="esSettingsMeta.index">{{ esSettingsMeta.index }}</div>
+          <label class="create-field">
+            副本数
+            <input
+              v-model.number="esSettingsReplicas"
+              class="input num"
+              type="number"
+              min="0"
+              step="1"
+              data-test="es-settings-replicas"
+            />
+          </label>
+          <div v-if="esSettingsError" class="create-error" data-test="es-settings-error">{{ esSettingsError }}</div>
+          <div class="es-settings-actions">
+            <button class="btn ghost" type="button" data-test="es-settings-cancel" @click="esSettingsMeta = null">取消</button>
+            <button
+              class="btn primary"
+              type="button"
+              data-test="es-settings-submit"
+              :disabled="esSettingsSaving"
+              @click="submitEsSettings"
+            >{{ esSettingsSaving ? '保存中…' : '保存' }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1268,6 +1669,9 @@ function exportTopics(conn: Connection): void {
 /* DB 节点展开后的表过滤输入框:紧凑、宽约 90%,风格与树内搜索一致。 */
 .ch-table-filter { margin: 4px 0 2px; }
 .ch-table-filter .search-input { width: 90%; padding: 4px 8px; }
+/* ES 一级树的索引过滤行:输入框 + 计数徽标(复用 .leaf-badge)。 */
+.es-filter-row { display: flex; align-items: center; gap: 6px; }
+.es-filter-row .search-input { width: auto; flex: 1; min-width: 0; }
 .leaf-info:hover { color: var(--info); background: var(--info-soft); }
 .leaf-info:active { transform: scale(0.92); }
 .leaf-info:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
@@ -1329,4 +1733,24 @@ function exportTopics(conn: Connection): void {
 .lag-entry .lag-entry-icon { flex: none; }
 .conn-loading { color: var(--text-secondary); padding: 5px; }
 .conn-error { color: var(--danger); padding: 5px; }
+/* ES 修改索引设置弹窗:遮罩与卡片的风格对齐全局 ConfirmDialog。 */
+.es-settings-backdrop {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(0, 0, 0, 0.32);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center;
+}
+.es-settings-modal {
+  width: 320px; max-width: calc(100vw - 48px);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+  padding: 16px; display: flex; flex-direction: column; gap: 10px;
+}
+.es-settings-title { font-size: 14px; font-weight: 600; }
+.es-settings-index {
+  font-size: 12px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.es-settings-actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>

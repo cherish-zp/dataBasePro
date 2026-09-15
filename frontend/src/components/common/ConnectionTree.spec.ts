@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { setApi } from '@/api/client'
+import { setApi, WailsApi } from '@/api/client'
 import type { Api } from '@/api/client'
 import type { Connection, RedisConfigShape } from '@/api/types'
 import { CSV_MIME, saveFile } from '@/utils/export'
 import { formatBytes } from '@/utils/bytes'
+import { formatCount } from '@/utils/format'
 import { useConnectionsStore } from '@/store/connections'
+import * as App from '../../../wailsjs/go/backend/App'
 import ConnectionTree from './ConnectionTree.vue'
 
 // Stub the DOM download trigger but keep the real CSV builders, so the
@@ -14,6 +16,21 @@ import ConnectionTree from './ConnectionTree.vue'
 vi.mock('@/utils/export', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/utils/export')>()
   return { ...actual, downloadFile: vi.fn(), saveFile: vi.fn(async () => {}) }
+})
+
+// wailsjs 绑定层 mock:仅替换 ES 模板/监控相关导出,其余保持原样。
+// EsClusterStats 绑定尚未由 wails generate 生成,mock 工厂补齐该导出名,
+// 以锁定 client 侧形状断言的调用名。
+vi.mock('../../../wailsjs/go/backend/App', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../wailsjs/go/backend/App')>()
+  return {
+    ...actual,
+    ListEsTemplates: vi.fn(),
+    GetEsTemplate: vi.fn(),
+    PutEsTemplate: vi.fn(),
+    DeleteEsTemplate: vi.fn(),
+    EsClusterStats: vi.fn(),
+  }
 })
 
 function fakeApi(overrides: Partial<Api> = {}): Api {
@@ -181,13 +198,14 @@ describe('ConnectionTree', () => {
     expect(wrapper.find('[data-test="conn-caret"]').classes()).not.toContain('open')
   })
 
-  it('shows an unsupported message for non-kafka types', async () => {
-    const wrapper = mount(ConnectionTree, { props: { connections: [conn('e', 'es')] } })
+  it('shows an unsupported message for unknown types', async () => {
+    // es 等已知类型均已支持;此处用一个未知类型验证兜底分支。
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('x', 'oracle' as Connection['type'])] } })
     await wrapper.find('[data-test="conn-name"]').trigger('click')
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="type-unsupported"]').exists()).toBe(true)
     })
-    expect(wrapper.find('[data-test="type-unsupported"]').text()).toContain('ES')
+    expect(wrapper.find('[data-test="type-unsupported"]').text()).toContain('oracle')
   })
 
   it('filters topics with fuzzy search', async () => {
@@ -1389,5 +1407,645 @@ describe('ConnectionTree', () => {
       expect(wrapper.findAll('[data-test="ch-table-node"]')).toHaveLength(0)
       expect(wrapper.find('[data-test="ch-table-empty"]').text()).toBe('无匹配表')
     })
+  })
+
+  const esConn = (id: string): Connection => ({
+    id, name: `conn-${id}`, type: 'es',
+    config: { hosts: ['127.0.0.1:9200'], username: '', password: '', api_key: '', auth_mode: 'none', tls_mode: 'disabled' },
+    created_at: 1, updated_at: 1,
+  })
+
+  it('lists es indices with doc-count badges when an es connection expands', async () => {
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => [
+        { name: 'user-logs', docs_count: 1234, store_size_bytes: 4096 },
+        { name: 'orders', docs_count: 0, store_size_bytes: 0 },
+      ]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(2)
+    })
+    // 后端已过滤系统索引,树直接展示;不得走 kafka 分支。
+    expect(api2.listEsIndices).toHaveBeenCalledWith('es')
+    expect(api2.listTopics).not.toHaveBeenCalled()
+    expect(wrapper.findAll('[data-test="es-index-name"]').map((n) => n.text())).toEqual(['user-logs', 'orders'])
+    // 文档数徽标。
+    expect(wrapper.findAll('[data-test="es-index-docs"]').map((n) => n.text())).toEqual([formatCount(1234), formatCount(0)])
+  })
+
+  it('emits open-es-index with connection and index on index node double click', async () => {
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => [{ name: 'user-logs', docs_count: 5, store_size_bytes: 1 }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="es-index-node"]').trigger('dblclick')
+    expect(wrapper.emitted('open-es-index')?.[0]).toEqual(['es', 'user-logs'])
+  })
+
+  it('marks the es connection as error when listing indices fails', async () => {
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => {
+        throw new Error('connection refused')
+      }),
+    })
+    setApi(api2)
+    const store = useConnectionsStore()
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="tree-error"]').text()).toBe('connection refused')
+      expect(store.statusById['es']).toBe('error')
+    })
+  })
+
+  it('shows the empty hint when an es connection has no indices', async () => {
+    const api2 = fakeApi({ listEsIndices: vi.fn(async () => []) })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-empty"]').text()).toBe('（无索引）')
+    })
+  })
+
+  it('fuzzy filters es indices above the list and shows the count badge', async () => {
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => [
+        { name: 'user-logs-2024', docs_count: 10, store_size_bytes: 1 },
+        { name: 'order-logs', docs_count: 20, store_size_bytes: 2 },
+        { name: 'payments', docs_count: 30, store_size_bytes: 3 },
+      ]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(3)
+    })
+    const filter = wrapper.find('[data-test="es-index-filter"]')
+    expect(filter.exists()).toBe(true)
+    expect(filter.attributes('placeholder')).toBe('筛选索引')
+    expect(filter.attributes('autocapitalize')).toBe('off')
+    expect(filter.attributes('autocomplete')).toBe('off')
+    // 未过滤时计数徽标显示索引总数。
+    expect(wrapper.find('[data-test="es-index-count"]').text()).toBe('3')
+    await filter.setValue('logs')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(2)
+    })
+    // 模糊命中按相关度排序,不含 payments。
+    expect(wrapper.findAll('[data-test="es-index-name"]').map((n) => n.text())).toEqual(['user-logs-2024', 'order-logs'])
+    // 过滤中计数徽标显示「可见/总数」。
+    expect(wrapper.find('[data-test="es-index-count"]').text()).toBe('2/3')
+    // 过滤后的索引节点仍可双击打开。
+    await wrapper.findAll('[data-test="es-index-node"]')[0].trigger('dblclick')
+    expect(wrapper.emitted('open-es-index')?.[0]).toEqual(['es', 'user-logs-2024'])
+  })
+
+  it('shows a no-match hint when the es index filter matches nothing', async () => {
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => [{ name: 'user-logs', docs_count: 1, store_size_bytes: 1 }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(1)
+    })
+    await wrapper.find('[data-test="es-index-filter"]').setValue('zzz')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(0)
+      expect(wrapper.find('[data-test="es-index-empty"]').text()).toBe('无匹配索引')
+    })
+    expect(wrapper.find('[data-test="es-index-count"]').text()).toBe('0/1')
+  })
+
+  it('restores the full es index list after clearing the filter', async () => {
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => [
+        { name: 'user-logs', docs_count: 10, store_size_bytes: 1 },
+        { name: 'payments', docs_count: 20, store_size_bytes: 2 },
+      ]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(2)
+    })
+    const filter = wrapper.find('[data-test="es-index-filter"]')
+    await filter.setValue('user')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(1)
+    })
+    await filter.setValue('')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-name"]').map((n) => n.text())).toEqual(['user-logs', 'payments'])
+    })
+    // 清空后计数徽标恢复为总数。
+    expect(wrapper.find('[data-test="es-index-count"]').text()).toBe('2')
+  })
+
+  it('matches the es index filter case-insensitively', async () => {
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => [
+        { name: 'UserLogs', docs_count: 1, store_size_bytes: 1 },
+        { name: 'payments', docs_count: 2, store_size_bytes: 2 },
+      ]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(2)
+    })
+    await wrapper.find('[data-test="es-index-filter"]').setValue('USERLOGS')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-name"]').map((n) => n.text())).toEqual(['UserLogs'])
+    })
+  })
+
+  it('shows the es segmented tabs and defaults to the indices section', async () => {
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => [{ name: 'user-logs', docs_count: 1, store_size_bytes: 1 }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    expect(wrapper.find('[data-test="section-tab-es-indices"]').exists()).toBe(false)
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(1)
+    })
+    const indicesTab = wrapper.find('[data-test="section-tab-es-indices"]')
+    const templatesTab = wrapper.find('[data-test="section-tab-es-templates"]')
+    expect(indicesTab.text()).toContain('索引')
+    expect(templatesTab.text()).toContain('索引模板')
+    // 默认激活「索引」分区。
+    expect(indicesTab.classes()).toContain('active')
+    expect(templatesTab.classes()).not.toContain('active')
+  })
+
+  it('switches es sections exclusively and renders the indices area only while es-indices is active', async () => {
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => [{ name: 'user-logs', docs_count: 1, store_size_bytes: 1 }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(1)
+    })
+    await wrapper.find('[data-test="section-tab-es-templates"]').trigger('click')
+    expect(wrapper.find('[data-test="section-tab-es-templates"]').classes()).toContain('active')
+    expect(wrapper.find('[data-test="section-tab-es-indices"]').classes()).not.toContain('active')
+    // 索引分区内容(筛选框/列表/计数徽标)只在该分区激活时渲染。
+    expect(wrapper.find('[data-test="es-index-filter"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="es-index-count"]').exists()).toBe(false)
+    await wrapper.find('[data-test="section-tab-es-indices"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-node"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="es-index-filter"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="section-tab-es-indices"]').classes()).toContain('active')
+    expect(wrapper.find('[data-test="section-tab-es-templates"]').classes()).not.toContain('active')
+  })
+
+  it('ES 连接行渲染集群监控图标(与 Kafka 🩺 同位,连接图标左侧),点击 emit open-es-monitor', async () => {
+    const api2 = fakeApi({ listEsIndices: vi.fn(async () => []) })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    // 图标在连接行上,无需展开即可见。
+    const btn = wrapper.find('[data-test="btn-es-monitor"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.text()).toBe('📈')
+    await btn.trigger('click')
+    // 事件名与参数一字不差:open-es-monitor + 连接 id(Layout 由并行方接线)。
+    expect(wrapper.emitted('open-es-monitor')?.[0]).toEqual(['es'])
+  })
+
+  it('does not render the es monitor entry for kafka connections', async () => {
+    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await expand(wrapper)
+    expect(wrapper.find('[data-test="es-monitor-btn"]').exists()).toBe(false)
+  })
+
+  it('lazily loads and renders es templates with order badges when the templates section activates', async () => {
+    const listEsTemplates = vi.fn(async () => [
+      { name: 'tpl-logs', order: 1 },
+      { name: 'tpl-metrics', order: 100 },
+    ])
+    setApi(fakeApi({ listEsIndices: vi.fn(async () => []), listEsTemplates }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-empty"]').exists()).toBe(true)
+    })
+    // 展开连接只拉索引;模板清单在首次切到「索引模板」分区时才拉取。
+    expect(listEsTemplates).not.toHaveBeenCalled()
+    await wrapper.find('[data-test="section-tab-es-templates"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-template-item-tpl-logs"]').exists()).toBe(true)
+    })
+    expect(listEsTemplates).toHaveBeenCalledTimes(1)
+    expect(listEsTemplates).toHaveBeenCalledWith('es')
+    expect(wrapper.find('[data-test="es-template-item-tpl-logs"] .leaf-name').text()).toBe('tpl-logs')
+    expect(wrapper.find('[data-test="es-template-item-tpl-metrics"]').exists()).toBe(true)
+    // order 徽标显示模板合并顺序。
+    expect(wrapper.find('[data-test="es-template-item-tpl-metrics"] [data-test="es-template-order"]').text()).toBe('100')
+  })
+
+  it('emits open-es-template with the template name on item click', async () => {
+    const listEsTemplates = vi.fn(async () => [{ name: 'tpl-logs', order: 1 }])
+    setApi(fakeApi({ listEsIndices: vi.fn(async () => []), listEsTemplates }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await wrapper.find('[data-test="section-tab-es-templates"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-template-item-tpl-logs"]').exists()).toBe(true)
+    })
+    // 单击即打开该模板(事件名与参数一字不差:open-es-template + 连接 id + 名称)。
+    await wrapper.find('[data-test="es-template-item-tpl-logs"]').trigger('click')
+    expect(wrapper.emitted('open-es-template')?.[0]).toEqual(['es', 'tpl-logs'])
+  })
+
+  it('emits open-es-template-create when the templates header row is clicked', async () => {
+    const listEsTemplates = vi.fn(async () => [{ name: 'tpl-logs', order: 1 }])
+    setApi(fakeApi({ listEsIndices: vi.fn(async () => []), listEsTemplates }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await wrapper.find('[data-test="section-tab-es-templates"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-template-item-tpl-logs"]').exists()).toBe(true)
+    })
+    const header = wrapper.find('[data-test="es-templates-header"]')
+    expect(header.text()).toContain('索引模板')
+    await header.trigger('click')
+    expect(wrapper.emitted('open-es-template-create')?.[0]).toEqual(['es'])
+  })
+
+  it('shows an error message inside the templates section when listing templates fails', async () => {
+    const listEsTemplates = vi.fn(async () => {
+      throw new Error('templates boom')
+    })
+    setApi(fakeApi({ listEsIndices: vi.fn(async () => []), listEsTemplates }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await wrapper.find('[data-test="section-tab-es-templates"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-templates-error"]').text()).toBe('templates boom')
+    })
+    // 模板加载失败不得冒泡成分区外的连接级错误。
+    expect(wrapper.find('[data-test="tree-error"]').exists()).toBe(false)
+  })
+
+  it('shows the no-template hint when the connection has no templates', async () => {
+    const listEsTemplates = vi.fn(async () => [])
+    setApi(fakeApi({ listEsIndices: vi.fn(async () => []), listEsTemplates }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await wrapper.find('[data-test="section-tab-es-templates"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-templates-empty"]').text()).toBe('（无模板）')
+    })
+  })
+
+  it('shows a loading hint while templates are being fetched', async () => {
+    let resolveList!: (v: { name: string; order: number }[]) => void
+    const listEsTemplates = vi.fn(
+      () => new Promise<{ name: string; order: number }[]>((res) => { resolveList = res }),
+    )
+    setApi(fakeApi({ listEsIndices: vi.fn(async () => []), listEsTemplates }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-empty"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="section-tab-es-templates"]').trigger('click')
+    expect(wrapper.find('[data-test="es-templates-loading"]').text()).toBe('加载中…')
+    resolveList([{ name: 'tpl-logs', order: 1 }])
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-template-item-tpl-logs"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="es-templates-loading"]').exists()).toBe(false)
+  })
+
+  it('refetches templates when the templates section is reactivated or the connection re-expands', async () => {
+    const listEsTemplates = vi.fn(async () => [{ name: 'tpl-logs', order: 1 }])
+    setApi(fakeApi({ listEsIndices: vi.fn(async () => []), listEsTemplates }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await wrapper.find('[data-test="section-tab-es-templates"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-template-item-tpl-logs"]').exists()).toBe(true)
+    })
+    expect(listEsTemplates).toHaveBeenCalledTimes(1)
+    // 切走再切回:再次激活重拉。
+    await wrapper.find('[data-test="section-tab-es-indices"]').trigger('click')
+    await wrapper.find('[data-test="section-tab-es-templates"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(listEsTemplates).toHaveBeenCalledTimes(2)
+    })
+    // 折叠再展开(分区状态保留为模板):分区重新挂载同样重拉。
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(listEsTemplates).toHaveBeenCalledTimes(3)
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-template-item-tpl-logs"]').exists()).toBe(true)
+    })
+  })
+
+  // --- ES 分区内的新建/删除/修改(索引与模板) ---
+
+  it('opens the es index create form from the 索引 header and closes it again', async () => {
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => [{ name: 'user-logs', docs_count: 1, store_size_bytes: 1 }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-node"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="es-create-form"]').exists()).toBe(false)
+    // 索引分区标题照抄 kafka group-label creatable:整行为按钮、带 ＋ 角标。
+    const header = wrapper.find('[data-test="es-indices-header"]')
+    expect(header.text()).toContain('索引')
+    expect(header.find('.group-add').exists()).toBe(true)
+    expect(header.element.tagName).toBe('BUTTON')
+    await header.trigger('click')
+    expect(wrapper.find('[data-test="es-create-form"]').exists()).toBe(true)
+    await wrapper.find('[data-test="btn-es-create-cancel"]').trigger('click')
+    expect(wrapper.find('[data-test="es-create-form"]').exists()).toBe(false)
+  })
+
+  it('defaults es create shards/replicas to 1 and disables submit while the name is empty', async () => {
+    const esCreateIndex = vi.fn(async () => {})
+    const api2 = fakeApi({ listEsIndices: vi.fn(async () => []), esCreateIndex })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-empty"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="es-indices-header"]').trigger('click')
+    expect((wrapper.find('[data-test="es-create-shards"]').element as HTMLInputElement).value).toBe('1')
+    expect((wrapper.find('[data-test="es-create-replicas"]').element as HTMLInputElement).value).toBe('1')
+    // 空名时创建按钮禁用(校验前置,而非提交后报错)。
+    expect((wrapper.find('[data-test="btn-es-create-submit"]').element as HTMLButtonElement).disabled).toBe(true)
+    await wrapper.find('[data-test="es-create-index"]').setValue('brand-new')
+    expect((wrapper.find('[data-test="btn-es-create-submit"]').element as HTMLButtonElement).disabled).toBe(false)
+    expect(esCreateIndex).not.toHaveBeenCalled()
+  })
+
+  it('creates an es index with the entered shards/replicas, reloads the list and clears the form', async () => {
+    const esCreateIndex = vi.fn(async () => {})
+    const listEsIndices = vi.fn()
+      .mockResolvedValueOnce([{ name: 'user-logs', docs_count: 1, store_size_bytes: 1 }])
+      .mockResolvedValue([
+        { name: 'user-logs', docs_count: 1, store_size_bytes: 1 },
+        { name: 'brand-new', docs_count: 0, store_size_bytes: 0 },
+      ])
+    setApi(fakeApi({ listEsIndices, esCreateIndex }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="es-indices-header"]').trigger('click')
+    await wrapper.find('[data-test="es-create-index"]').setValue('brand-new')
+    await wrapper.find('[data-test="es-create-shards"]').setValue(3)
+    await wrapper.find('[data-test="es-create-replicas"]').setValue(2)
+    await wrapper.find('[data-test="btn-es-create-submit"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(esCreateIndex).toHaveBeenCalledWith({ connection_id: 'es', index: 'brand-new', shards: 3, replicas: 2 })
+    })
+    // 创建成功后重拉索引列表,新索引出现在树中。
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-name"]').map((n) => n.text())).toContain('brand-new')
+    })
+    // 表单保留但已清空,便于连续创建。
+    expect(wrapper.find('[data-test="es-create-form"]').exists()).toBe(true)
+    expect((wrapper.find('[data-test="es-create-index"]').element as HTMLInputElement).value).toBe('')
+  })
+
+  it('shows the es index create failure inside the create form', async () => {
+    const esCreateIndex = vi.fn(async () => {
+      throw new Error('resource_already_exists_exception')
+    })
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => [{ name: 'user-logs', docs_count: 1, store_size_bytes: 1 }]),
+      esCreateIndex,
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="es-indices-header"]').trigger('click')
+    await wrapper.find('[data-test="es-create-index"]').setValue('user-logs')
+    await wrapper.find('[data-test="btn-es-create-submit"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-create-error"]').text()).toContain('resource_already_exists_exception')
+    })
+    // 失败时表单保留,便于改名重试。
+    expect(wrapper.find('[data-test="es-create-form"]').exists()).toBe(true)
+  })
+
+  it('opens an es index context menu on right-click and emits open-es-index from 打开索引', async () => {
+    const api2 = fakeApi({
+      listEsIndices: vi.fn(async () => [{ name: 'user-logs', docs_count: 1, store_size_bytes: 1 }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="es-index-node"]').trigger('contextmenu', { clientX: 120, clientY: 90 })
+    const menu = document.body.querySelector('[data-test="context-menu"]')
+    expect(menu).not.toBeNull()
+    // 打开索引 is the same action as double-clicking the node.
+    ;(document.body.querySelector('[data-test="context-item-open-es-index"]') as HTMLElement).click()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.emitted('open-es-index')?.[0]).toEqual(['es', 'user-logs'])
+  })
+
+  it('updates index replicas from 修改设置… and reloads the index list', async () => {
+    const esUpdateIndexSettings = vi.fn(async () => {})
+    const listEsIndices = vi.fn(async () => [{ name: 'user-logs', docs_count: 1, store_size_bytes: 1 }])
+    setApi(fakeApi({ listEsIndices, esUpdateIndexSettings }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-node"]').exists()).toBe(true)
+    })
+    const callsBefore = listEsIndices.mock.calls.length
+    await wrapper.find('[data-test="es-index-node"]').trigger('contextmenu', { clientX: 120, clientY: 90 })
+    ;(document.body.querySelector('[data-test="context-item-es-settings"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="es-settings-dialog"]')).not.toBeNull()
+    })
+    const input = document.body.querySelector('[data-test="es-settings-replicas"]') as HTMLInputElement
+    expect(input).not.toBeNull()
+    input.value = '2'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.body.querySelector('[data-test="es-settings-submit"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(esUpdateIndexSettings).toHaveBeenCalledWith({
+        connection_id: 'es',
+        index: 'user-logs',
+        settings_json: '{"number_of_replicas":2}',
+      })
+    })
+    // 成功后关闭弹窗并刷新索引列表。
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="es-settings-dialog"]')).toBeNull()
+    })
+    await vi.waitFor(() => {
+      expect(listEsIndices.mock.calls.length).toBeGreaterThan(callsBefore)
+    })
+  })
+
+  it('shows the settings error inside the dialog when the update fails', async () => {
+    const esUpdateIndexSettings = vi.fn(async () => {
+      throw new Error('cluster_block_exception')
+    })
+    setApi(fakeApi({
+      listEsIndices: vi.fn(async () => [{ name: 'user-logs', docs_count: 1, store_size_bytes: 1 }]),
+      esUpdateIndexSettings,
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="es-index-node"]').trigger('contextmenu', { clientX: 120, clientY: 90 })
+    ;(document.body.querySelector('[data-test="context-item-es-settings"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="es-settings-dialog"]')).not.toBeNull()
+    })
+    const input = document.body.querySelector('[data-test="es-settings-replicas"]') as HTMLInputElement
+    input.value = '2'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.body.querySelector('[data-test="es-settings-submit"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="es-settings-error"]')?.textContent).toContain('cluster_block_exception')
+    })
+    // 失败时弹窗保留,便于重试。
+    expect(document.body.querySelector('[data-test="es-settings-dialog"]')).not.toBeNull()
+  })
+
+  it('deletes an es index from the context menu after confirmation and reloads', async () => {
+    const esDeleteIndex = vi.fn(async () => {})
+    const listEsIndices = vi.fn()
+      .mockResolvedValueOnce([{ name: 'user-logs', docs_count: 1, store_size_bytes: 1 }])
+      .mockResolvedValue([])
+    setApi(fakeApi({ listEsIndices, esDeleteIndex }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-index-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="es-index-node"]').trigger('contextmenu', { clientX: 120, clientY: 90 })
+    ;(document.body.querySelector('[data-test="context-item-delete-es-index"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    // 危险确认文案含索引名与「不可恢复」。
+    expect(confirmDialog()?.textContent).toContain('user-logs')
+    expect(confirmDialog()?.textContent).toContain('不可恢复')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(esDeleteIndex).toHaveBeenCalledWith({ connection_id: 'es', index: 'user-logs' })
+    })
+    // 删除后重拉索引列表,被删索引自然消失。
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="es-index-node"]')).toHaveLength(0)
+    })
+  })
+
+  it('emits open-es-template from the template context menu 编辑模板', async () => {
+    const listEsTemplates = vi.fn(async () => [{ name: 'tpl-logs', order: 1 }])
+    setApi(fakeApi({ listEsIndices: vi.fn(async () => []), listEsTemplates }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await wrapper.find('[data-test="section-tab-es-templates"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-template-item-tpl-logs"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="es-template-item-tpl-logs"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-es-edit-template"]') as HTMLElement).click()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.emitted('open-es-template')?.[0]).toEqual(['es', 'tpl-logs'])
+  })
+
+  it('deletes an es template from the context menu after confirmation and refetches the list', async () => {
+    const esDeleteTemplate = vi.fn(async () => {})
+    const listEsTemplates = vi.fn(async () => [{ name: 'tpl-logs', order: 1 }])
+    setApi(fakeApi({ listEsIndices: vi.fn(async () => []), esDeleteTemplate, listEsTemplates }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await wrapper.find('[data-test="section-tab-es-templates"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-template-item-tpl-logs"]').exists()).toBe(true)
+    })
+    const fetchesBefore = listEsTemplates.mock.calls.length
+    await wrapper.find('[data-test="es-template-item-tpl-logs"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-delete-es-template"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    expect(confirmDialog()?.textContent).toContain('tpl-logs')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(esDeleteTemplate).toHaveBeenCalledWith({ connection_id: 'es', name: 'tpl-logs' })
+    })
+    // 删除后重拉模板清单。
+    await vi.waitFor(() => {
+      expect(listEsTemplates.mock.calls.length).toBeGreaterThan(fetchesBefore)
+    })
+  })
+})
+
+// --- client 层:ES 模板/监控 API 必须路由到正确的 wailsjs 绑定 ---
+// 用户 bug 回归锁:此前 Api/WailsApi 从未声明 listEsTemplates,树的「索引模板」
+// 分区经形状断言可选链调用永远拿到 undefined,界面恒显「(无模板)」。
+describe('client ES template & cluster-stats bindings', () => {
+  it('routes WailsApi es template and monitor calls to the generated wailsjs bindings', async () => {
+    const api = new WailsApi()
+    vi.mocked(App.ListEsTemplates).mockResolvedValue([{ name: 'tpl-logs', order: 1 }])
+    vi.mocked(App.GetEsTemplate).mockResolvedValue({ template_json: '{"index_patterns":["log-*"]}' })
+    vi.mocked(App.PutEsTemplate).mockResolvedValue(undefined)
+    vi.mocked(App.DeleteEsTemplate).mockResolvedValue(undefined)
+    // EsClusterStats 绑定尚未生成,wailsjs 模块类型暂无该导出,经形状断言取 mock。
+    const esClusterStats = (App as unknown as { EsClusterStats: ReturnType<typeof vi.fn> }).EsClusterStats
+    esClusterStats.mockResolvedValue({ cluster_name: 'demo', status: 'green' })
+
+    await expect(api.listEsTemplates?.('es')).resolves.toEqual([{ name: 'tpl-logs', order: 1 }])
+    expect(App.ListEsTemplates).toHaveBeenCalledWith('es')
+    await expect(api.getEsTemplate?.({ connection_id: 'es', name: 'tpl-logs' }))
+      .resolves.toEqual({ template_json: '{"index_patterns":["log-*"]}' })
+    expect(App.GetEsTemplate).toHaveBeenCalledWith({ connection_id: 'es', name: 'tpl-logs' })
+    await expect(api.putEsTemplate?.({ connection_id: 'es', name: 'tpl-logs', template_json: '{"index_patterns":["log-*"]}' }))
+      .resolves.toBeUndefined()
+    expect(App.PutEsTemplate).toHaveBeenCalledWith({ connection_id: 'es', name: 'tpl-logs', template_json: '{"index_patterns":["log-*"]}' })
+    await expect(api.esDeleteTemplate?.({ connection_id: 'es', name: 'tpl-logs' })).resolves.toBeUndefined()
+    expect(App.DeleteEsTemplate).toHaveBeenCalledWith({ connection_id: 'es', name: 'tpl-logs' })
+    await expect(api.esClusterStats?.({ connection_id: 'es' })).resolves.toEqual({ cluster_name: 'demo', status: 'green' })
+    expect(esClusterStats).toHaveBeenCalledWith({ connection_id: 'es' })
   })
 })

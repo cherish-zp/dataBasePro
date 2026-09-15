@@ -64,7 +64,7 @@ function close(): void {
 .modal-close { background: none; border: none; color: var(--text-tertiary); cursor: pointer; font-size: 14px; padding: 2px 4px; border-radius: 6px; }
 .modal-close:hover { color: var(--text); background: var(--bg-hover); }
 .modal-body { padding: 18px; }
-.message { font-size: 13px; color: var(--text); line-height: 1.6; margin: 0; }
+.message { font-size: 13px; color: var(--text); line-height: 1.6; margin: 0; white-space: pre-wrap; word-break: break-all; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 0 18px 16px; }
 .btn { border-radius: 9px; padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid transparent; transition: background 0.15s ease, opacity 0.15s ease; }
 .btn.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }

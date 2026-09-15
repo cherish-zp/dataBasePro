@@ -15,6 +15,10 @@ import CHTableBrowser from '@/components/kafka/CHTableBrowser.vue'
 import CHSqlConsole from '@/components/kafka/CHSqlConsole.vue'
 import MysqlTableBrowser from '@/components/kafka/MysqlTableBrowser.vue'
 import MysqlSqlConsole from '@/components/kafka/MysqlSqlConsole.vue'
+import EsTableBrowser from '@/components/kafka/EsTableBrowser.vue'
+import EsSqlConsole from '@/components/kafka/EsSqlConsole.vue'
+import EsTemplatesPanel from '@/components/kafka/EsTemplatesPanel.vue'
+import EsClusterMonitor from '@/components/kafka/EsClusterMonitor.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import UpdateDialog from './UpdateDialog.vue'
 import StatusBar from '@/components/layout/StatusBar.vue'
@@ -125,14 +129,16 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
     toast.show('未找到文件关联的数据源,无法打开 SQL 控制台')
     return
   }
-  const target: 'sql' | 'ch-sql' | 'mysql-sql' | null =
+  const target: 'sql' | 'ch-sql' | 'mysql-sql' | 'es-sql' | null =
     conn.type === 'kafka'
       ? 'sql'
       : conn.type === 'clickhouse'
         ? 'ch-sql'
         : conn.type === 'mysql' || conn.type === 'tidb'
           ? 'mysql-sql'
-          : null
+          : conn.type === 'es'
+            ? 'es-sql'
+            : null
   if (!target) {
     toast.show('该数据源类型暂不支持 SQL 控制台')
     return
@@ -146,6 +152,8 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
     tabs.openCHSql(connectionId)
   } else if (target === 'mysql-sql') {
     tabs.openMysqlSql(connectionId)
+  } else if (target === 'es-sql') {
+    tabs.openEsSql(connectionId)
   } else {
     // Kafka 不带 topic:通用「SQL 查询」tab,表名写在 SQL 的 FROM 子句里。
     tabs.openSql(connectionId, '', [])
@@ -183,6 +191,7 @@ const activeTopic = computed<Tab | null>(() => (active.value?.kind === 'topic' ?
 const sqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const chSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const mysqlSqlConsoleRef = ref<SqlConsoleApi | null>(null)
+const esSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 
 const activeConsoleApi = computed<SqlConsoleApi | null>(() => {
   const a = active.value
@@ -190,6 +199,7 @@ const activeConsoleApi = computed<SqlConsoleApi | null>(() => {
   if (a.kind === 'sql') return sqlConsoleRef.value
   if (a.kind === 'ch-sql') return chSqlConsoleRef.value
   if (a.kind === 'mysql-sql') return mysqlSqlConsoleRef.value
+  if (a.kind === 'es-sql') return esSqlConsoleRef.value
   return null
 })
 
@@ -208,6 +218,11 @@ function openNewQuery(): void {
   const kind = a.kind
   if (kind === 'mysql-table' || kind === 'mysql-sql') {
     tabs.openMysqlSql(a.connectionId, a.database ?? '')
+    return
+  }
+  // ES 系 tab 打开 ES SQL 控制台(ES 无库概念,不携带 database)。
+  if (kind === 'es-index' || kind === 'es-sql') {
+    tabs.openEsSql(a.connectionId)
     return
   }
   tabs.openSql(a.connectionId, a.topic ?? '', a.partitions ?? [])
@@ -242,6 +257,21 @@ function openMysqlTable(connectionId: string, database: string, table: string): 
   tabs.openMysqlTable(connectionId, database, table)
 }
 
+// ES 索引浏览器:双击树上的索引节点打开/聚焦对应 tab。
+function openEsIndex(connectionId: string, index: string): void {
+  tabs.openEsIndex(connectionId, index)
+}
+
+// ES 索引模板管理:每连接一个 tab(树分段入口)。模板项单击 = 打开面板并
+// 定位到该模板的编辑;分区标题 + = 打开面板直接进入新建态。
+function openEsTemplate(connectionId: string, template: string): void {
+  tabs.openEsTemplates(connectionId, { template })
+}
+
+function openEsTemplateCreate(connectionId: string): void {
+  tabs.openEsTemplates(connectionId, { create: true })
+}
+
 function openLag(connectionId: string): void {
   tabs.openLag(connectionId)
 }
@@ -266,14 +296,15 @@ function openProducerPanel(): void {
 }
 
 // refreshActive bumps the unified refresh counter for the active tab. sql
-// consoles (Kafka, ClickHouse and MySQL) own their editor state and are
+// consoles (Kafka, ClickHouse, MySQL and ES) own their editor state and are
 // excluded from unified refresh.
 function refreshActive(): void {
   if (!active.value) return
   if (
     active.value.kind === 'sql' ||
     active.value.kind === 'ch-sql' ||
-    active.value.kind === 'mysql-sql'
+    active.value.kind === 'mysql-sql' ||
+    active.value.kind === 'es-sql'
   ) {
     return
   }
@@ -416,7 +447,7 @@ function onTabDragEnd(): void {
         class="btn ghost"
         type="button"
         data-test="btn-refresh-active"
-        :disabled="!active || active.kind === 'sql' || active.kind === 'ch-sql' || active.kind === 'mysql-sql'"
+        :disabled="!active || active.kind === 'sql' || active.kind === 'ch-sql' || active.kind === 'mysql-sql' || active.kind === 'es-sql'"
         @click="refreshActive"
       >
         刷新
@@ -470,6 +501,10 @@ function onTabDragEnd(): void {
           @open-health="openHealth"
           @open-ch-table="openCHTable"
           @open-mysql-table="openMysqlTable"
+          @open-es-index="openEsIndex"
+          @open-es-template="openEsTemplate"
+          @open-es-template-create="openEsTemplateCreate"
+          @open-es-monitor="(id) => tabs.openEsMonitor(id)"
           @delete="removeConnection"
           @edit-connection="editConnection"
           @new="emit('new')"
@@ -583,6 +618,34 @@ function onTabDragEnd(): void {
               :database="active.database ?? ''"
             />
           </template>
+          <template v-else-if="active.kind === 'es-index'">
+            <EsTableBrowser
+              :key="active.id"
+              :connection-id="active.connectionId"
+              :index="active.index ?? ''"
+            />
+          </template>
+          <template v-else-if="active.kind === 'es-sql'">
+            <EsSqlConsole
+              ref="esSqlConsoleRef"
+              :key="active.id"
+              :tab-id="active.id"
+              :connection-id="active.connectionId"
+            />
+          </template>
+          <template v-else-if="active.kind === 'es-templates'">
+            <!-- 定位/新建标记随 tab 字段透传:同 tab 重复打开不重挂载(:key 不变),
+                 面板内部靠 watch 响应 props 变化。 -->
+            <EsTemplatesPanel
+              :key="active.id"
+              :connection-id="active.connectionId"
+              :initial-template="active.template"
+              :new-mode="active.newTemplate"
+            />
+          </template>
+          <template v-else-if="active.kind === 'es-monitor'">
+            <EsClusterMonitor :key="active.id" :connection-id="active.connectionId" />
+          </template>
         </div>
       </main>
 
@@ -643,7 +706,7 @@ function onTabDragEnd(): void {
         </button>
         <button class="context-item" type="button" data-test="context-close-all" @click="contextCloseAll">关闭全部</button>
         <button
-          v-if="contextTab.kind !== 'sql' && contextTab.kind !== 'ch-sql' && contextTab.kind !== 'mysql-sql'"
+          v-if="contextTab.kind !== 'sql' && contextTab.kind !== 'ch-sql' && contextTab.kind !== 'mysql-sql' && contextTab.kind !== 'es-sql'"
           class="context-item"
           type="button"
           data-test="context-refresh"

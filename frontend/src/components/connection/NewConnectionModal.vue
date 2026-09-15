@@ -2,7 +2,7 @@
 import { reactive, ref, computed, watch } from 'vue'
 import { getApi } from '@/api/client'
 import { useConnectionsStore, type NewConnectionInput } from '@/store/connections'
-import type { Connection, CHConfigShape, KafkaConfig, MysqlConfigShape, RedisConfigShape, SASLConfig, TLSConfig } from '@/api/types'
+import type { Connection, CHConfigShape, EsConfigShape, KafkaConfig, MysqlConfigShape, RedisConfigShape, SASLConfig, TLSConfig } from '@/api/types'
 
 const props = defineProps<{ show: boolean; connection?: Connection | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -12,13 +12,14 @@ const store = useConnectionsStore()
 const SECURITY_PROTOCOLS = ['PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'] as const
 
 // 两段式第一段:数据库类型卡片。数据来自本地常量数组,后续可换驱动管理页数据。
-type CardType = 'kafka' | 'redis' | 'clickhouse' | 'mysql' | 'tidb'
+type CardType = 'kafka' | 'redis' | 'clickhouse' | 'mysql' | 'tidb' | 'es'
 const TYPE_CARDS: { type: CardType; label: string; icon: string }[] = [
   { type: 'kafka', label: 'Kafka', icon: '⚡' },
   { type: 'redis', label: 'Redis', icon: '🧱' },
   { type: 'clickhouse', label: 'ClickHouse', icon: '🗄️' },
   { type: 'mysql', label: 'MySQL', icon: '🐬' },
   { type: 'tidb', label: 'TiDB', icon: '🌿' },
+  { type: 'es', label: 'Elasticsearch', icon: '🔎' },
 ]
 
 const form = reactive({
@@ -52,16 +53,24 @@ const form = reactive({
   mysqlPassword: '',
   mysqlDatabase: '',
   mysqlTlsMode: 'disabled' as MysqlConfigShape['tls_mode'],
+  // es:hosts 地址自带端口,无需端口预填;认证按 auth_mode 三选一。
+  esHosts: '',
+  esUsername: '',
+  esPassword: '',
+  esApiKey: '',
+  esAuthMode: 'none' as EsConfigShape['auth_mode'],
+  esTlsMode: 'disabled' as EsConfigShape['tls_mode'],
 })
 const testing = ref(false)
 const tested = ref(false)
 const testError = ref<string | null>(null)
 const saveError = ref<string | null>(null)
-// 密码可见性:四个密码框(kafka/redis/clickhouse/mysql)各自独立切换,默认密文。
+// 密码可见性:各密码框(kafka/redis/clickhouse/mysql/es)独立切换,默认密文。
 const showKafkaPassword = ref(false)
 const showRedisPassword = ref(false)
 const showChPassword = ref(false)
 const showMysqlPassword = ref(false)
+const showEsPassword = ref(false)
 
 const editing = computed(() => !!props.connection)
 
@@ -78,8 +87,8 @@ function envDefault(key: string): string {
 
 // pickType 响应类型卡片点击:切进 mysql/tidb 时按类型预填默认端口与 TLS 模式
 // (MySQL 3306/disabled,TiDB 4000/disabled)。自建 TiDB 默认不开 TLS,
-// TLS 供 TiDB Cloud 等托管服务显式选择;编辑回填(fillFrom)直接写
-// connType,不会触发这里的预填,避免覆盖已有配置。
+// TLS 供 TiDB Cloud 等托管服务显式选择;es 的地址自带端口,无需预填。
+// 编辑回填(fillFrom)直接写 connType,不会触发这里的预填,避免覆盖已有配置。
 function pickType(t: CardType): void {
   form.connType = t
   if (t === 'mysql') {
@@ -129,6 +138,19 @@ function fillFrom(conn: Connection): void {
     form.mysqlTlsMode = cfg.tls_mode ?? 'disabled'
     return
   }
+  if (conn.type === 'es') {
+    const cfg = conn.config as EsConfigShape
+    form.connType = 'es'
+    form.esHosts = cfg.hosts.join(', ')
+    // 旧配置缺省 auth_mode 时按 none 回填。
+    form.esAuthMode = cfg.auth_mode ?? 'none'
+    form.esUsername = cfg.username ?? ''
+    form.esPassword = cfg.password ?? ''
+    form.esApiKey = cfg.api_key ?? ''
+    // 旧配置缺省 tls_mode 时按 disabled 回填。
+    form.esTlsMode = cfg.tls_mode ?? 'disabled'
+    return
+  }
   form.connType = 'kafka'
   const cfg = conn.config as KafkaConfig
   const sasl = cfg.sasl
@@ -171,6 +193,7 @@ watch(
 
 const brokers = computed(() => form.brokers.split(',').map((s) => s.trim()).filter(Boolean))
 const chHosts = computed(() => form.chHosts.split(',').map((s) => s.trim()).filter(Boolean))
+const esHosts = computed(() => form.esHosts.split(',').map((s) => s.trim()).filter(Boolean))
 const sasl = computed<SASLConfig | undefined>(() => {
   if (!isSasl.value) return undefined
   if (isGssapi.value) {
@@ -189,7 +212,7 @@ const tls = computed<TLSConfig | undefined>(() => {
   if (!isTLS.value && !form.caCert && !form.insecureSkipVerify) return undefined
   return { enabled: isTLS.value, ca_cert: form.caCert, insecure_skip_verify: form.insecureSkipVerify }
 })
-const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape>(() => {
+const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape>(() => {
   if (form.connType === 'redis') {
     return {
       addr: form.addr,
@@ -219,6 +242,17 @@ const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape | MysqlCo
       tls_mode: form.mysqlTlsMode,
     }
   }
+  if (form.connType === 'es') {
+    // 凭据字段始终显式携带(非对应模式为空串),保存后回填与后端归一都更清晰。
+    return {
+      hosts: esHosts.value,
+      username: form.esUsername,
+      password: form.esPassword,
+      api_key: form.esApiKey,
+      auth_mode: form.esAuthMode,
+      tls_mode: form.esTlsMode,
+    }
+  }
   return {
     bootstrap_servers: brokers.value,
     security_protocol: form.securityProtocol,
@@ -234,9 +268,11 @@ const chHostsInvalid = computed(() => form.connType === 'clickhouse' && chHosts.
 const isMysqlFamily = computed(() => form.connType === 'mysql' || form.connType === 'tidb')
 const mysqlHostInvalid = computed(() => isMysqlFamily.value && form.mysqlHost.trim() === '')
 const mysqlPortInvalid = computed(() => isMysqlFamily.value && (Number(form.mysqlPort) < 1 || Number(form.mysqlPort) > 65535))
-const saveInvalid = computed(() => nameInvalid.value || brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value)
+// ES 地址任一非空即可(逗号/空格不算有效地址)。
+const esHostsInvalid = computed(() => form.connType === 'es' && esHosts.value.length === 0)
+const saveInvalid = computed(() => nameInvalid.value || brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value || esHostsInvalid.value)
 // 测试连接不需要名称,只校验目标地址。
-const targetInvalid = computed(() => brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value)
+const targetInvalid = computed(() => brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value || esHostsInvalid.value)
 
 async function runTest(): Promise<void> {
   if (targetInvalid.value) return
@@ -245,13 +281,16 @@ async function runTest(): Promise<void> {
   testError.value = null
   try {
     // 按类型分派:redis 走 TestRedisConnection,clickhouse 走 TestCHConnection,
-    // mysql/tidb 共用 TestMysqlConnection(config 形状相同),kafka 走原 TestConnection。
+    // mysql/tidb 共用 TestMysqlConnection(config 形状相同),es 走 TestESConnection,
+    // kafka 走原 TestConnection。
     if (form.connType === 'redis') {
       await getApi().testRedisConnection(config.value as RedisConfigShape)
     } else if (form.connType === 'clickhouse') {
       await getApi().testCHConnection(config.value as CHConfigShape)
     } else if (form.connType === 'mysql' || form.connType === 'tidb') {
       await getApi().testMysqlConnection?.(config.value as MysqlConfigShape)
+    } else if (form.connType === 'es') {
+      await getApi().testEsConnection?.(config.value as EsConfigShape)
     } else {
       await store.testConnection(config.value as KafkaConfig)
     }
@@ -267,8 +306,8 @@ async function save(): Promise<void> {
   saveError.value = null
   if (saveInvalid.value) return
   try {
-    // store 入参的 config 联合类型尚未纳入 MysqlConfigShape,这里收窄断言;
-    // type 始终显式携带 form.connType,避免后端对空 type 默认 kafka。
+    // store 入参的 config 联合类型尚未纳入 MysqlConfigShape/EsConfigShape,
+    // 这里收窄断言;type 始终显式携带 form.connType,避免后端对空 type 默认 kafka。
     const input = { name: form.name.trim(), type: form.connType, config: config.value } as NewConnectionInput
     if (props.connection) {
       await store.update(props.connection.id, input)
@@ -452,6 +491,66 @@ function close(): void {
               <option value="verify-full">启用（校验证书）</option>
             </select>
             <p class="hint" data-test="mysql-tls-hint">自建 MySQL/TiDB 默认禁用即可;TiDB Cloud 等托管服务需选择启用</p>
+          </div>
+        </template>
+        <template v-else-if="form.connType === 'es'">
+          <div class="field">
+            <label class="label">节点地址 <span class="req">*</span>(多节点逗号分隔)</label>
+            <input v-model="form.esHosts" data-test="input-es-hosts" class="input" placeholder="127.0.0.1:9200" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            <span class="hint">地址自带端口;无协议前缀时按 http 处理,可写 http://host:9200</span>
+            <span v-if="esHostsInvalid" class="err">至少填写一个节点</span>
+          </div>
+          <div class="field">
+            <label class="label">认证方式</label>
+            <select v-model="form.esAuthMode" class="input" data-test="input-es-auth-mode">
+              <option value="none">无认证</option>
+              <option value="basic">用户名 / 密码</option>
+              <option value="apikey">API Key</option>
+            </select>
+          </div>
+          <template v-if="form.esAuthMode === 'basic'">
+            <div class="field">
+              <label class="label">用户名</label>
+              <input v-model="form.esUsername" data-test="input-es-username" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="field">
+              <label class="label">密码</label>
+              <div class="password-wrap">
+                <input v-model="form.esPassword" :type="showEsPassword ? 'text' : 'password'" data-test="input-es-password" class="input password-input" />
+                <button
+                  type="button"
+                  class="eye-btn"
+                  tabindex="-1"
+                  data-test="toggle-password-es"
+                  :aria-label="showEsPassword ? '隐藏密码' : '显示密码'"
+                  @click="showEsPassword = !showEsPassword"
+                >
+                  <svg v-if="showEsPassword" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </template>
+          <template v-else-if="form.esAuthMode === 'apikey'">
+            <div class="field">
+              <label class="label">API Key(Base64「id:api_key」或编码凭据)</label>
+              <input v-model="form.esApiKey" data-test="input-es-api-key" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            </div>
+          </template>
+          <div class="field">
+            <label class="label">TLS</label>
+            <select v-model="form.esTlsMode" class="input" data-test="input-es-tls-mode">
+              <option value="disabled">禁用</option>
+              <option value="skip-verify">启用（跳过证书校验）</option>
+              <option value="verify-full">启用（校验证书）</option>
+            </select>
+            <p class="hint" data-test="es-tls-hint">自建 ES 默认禁用即可;启用后按 https 访问上方地址</p>
           </div>
         </template>
         <template v-else>

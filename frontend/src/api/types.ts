@@ -35,8 +35,8 @@ export interface Connection {
   name: string
   type: ConnectionType
   // 按类型多态:kafka → KafkaConfig,redis → RedisConfigShape,
-  // clickhouse → CHConfigShape,mysql/tidb → MysqlConfigShape
-  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape
+  // clickhouse → CHConfigShape,mysql/tidb → MysqlConfigShape,es → EsConfigShape
+  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape
   created_at: number
   updated_at: number
 }
@@ -50,7 +50,7 @@ export interface UpdateConnectionRequest {
   id: string
   name: string
   type?: ConnectionType
-  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape
+  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape
 }
 
 export interface Partition {
@@ -663,6 +663,8 @@ export interface MysqlPageRowsResult {
 export interface MysqlExecuteRequest {
   connection_id: string
   sql: string
+  // 非空时后端在该库上执行(等效 USE);空串原样传,由后端按连接默认库处理。
+  database?: string
 }
 
 // 多语句逐条返回:每条一条结果,失败语句带 error 文本;成功语句带列与行。
@@ -702,6 +704,211 @@ export interface MysqlCellUpdateRequest {
 export interface MysqlCellUpdatePreview {
   statement: string
   matched_rows: number
+}
+
+// --- Elasticsearch(镜像 backend/model/es.go) ---
+
+// ES 连接配置:hosts 为 "host:port"(可带 http/https 前缀)地址列表,
+// 地址自带端口,前端不做端口预填。auth_mode 决定携带哪组凭据:none 不携带、
+// basic 用 username/password、apikey 用 api_key;非对应模式的凭据字段
+// 保存空串。tls_mode 三档与 MySQL 一致:disabled 明文 HTTP;skip-verify
+// 走 HTTPS 但跳过证书校验;verify-full 走 HTTPS 并校验证书。
+export interface EsConfigShape {
+  hosts: string[]
+  username: string
+  password: string
+  api_key: string
+  auth_mode: 'none' | 'basic' | 'apikey'
+  tls_mode: 'disabled' | 'skip-verify' | 'verify-full'
+}
+
+// 一个索引:docs_count 为近似文档数(_cat indices 的 docs.count,不可用时 0),
+// store_size_bytes 为索引存储占用字节数。
+export interface EsIndexInfo {
+  name: string
+  docs_count: number
+  store_size_bytes: number
+}
+
+// 列头:字段名 + ES 映射类型(text/keyword/long/date…);comment 可选,
+// wire 缺省表示无描述。
+export interface EsColumn {
+  name: string
+  type: string
+  comment?: string
+}
+
+// 索引映射(字段清单):供表头渲染与 SQL 补全(表名→列名数组)使用。
+export interface EsMappingRequest {
+  connection_id: string
+  index: string
+}
+
+export interface EsPageRowsRequest {
+  connection_id: string
+  index: string
+  // 用户输入的原生过滤片段(ES query string 语义),空省略。
+  where?: string
+  order_by?: string
+  asc?: boolean
+  limit: number
+  offset: number
+}
+
+// rows 单元格为 string 或 null(NULL/缺字段);后端把非字符串列格式化为
+// 字符串。primary_key 为行标识列名数组(ES 即 ["_id"]),供表浏览器行内
+// 编辑定位文档;engine 为索引主导出字段来源说明(空串 = 无)。
+export interface EsPageRowsResult {
+  columns: EsColumn[]
+  rows: (string | null)[][]
+  total_rows: number
+  primary_key: string[]
+  engine: string
+}
+
+export interface EsExecuteRequest {
+  connection_id: string
+  sql: string
+}
+
+// 多语句逐条返回:每条一条结果,失败语句带 error 文本;成功语句带列与行。
+export interface EsStatementResult {
+  sql: string
+  duration_ms: number
+  error?: string
+  columns?: EsColumn[]
+  rows?: (string | null)[][]
+}
+
+// 单元格行内编辑:按 _id 定位文档并更新单个字段;value 为 null 表示清空该
+// 字段(写入 null),后端负责转义,前端禁止拼 DSL。
+export interface EsCellUpdateRequest {
+  connection_id: string
+  index: string
+  id: string
+  column: string
+  value: string | null
+}
+
+export interface EsGetDocRequest {
+  connection_id: string
+  index: string
+  id: string
+}
+
+// 单个文档:id 为 _id,source 为 _source 的 JSON 文本(文档级编辑以 JSON
+// 文本往返,由前端做展示与合法性校验)。
+export interface EsDoc {
+  id: string
+  source: string
+}
+
+// Put 整文档覆盖写入:doc 为完整 _source 的 JSON 文本。
+export interface EsPutDocRequest {
+  connection_id: string
+  index: string
+  id: string
+  doc: string
+}
+
+export interface EsDeleteDocRequest {
+  connection_id: string
+  index: string
+  id: string
+}
+
+// 按查询删除:query 为 ES 查询 DSL 的 JSON 文本(query 子对象),后端转发
+// _delete_by_query;返回删除的文档数。
+export interface EsDeleteByQueryRequest {
+  connection_id: string
+  index: string
+  query: string
+}
+
+// 新建索引:shards/replicas 为主分片与副本数(后端再做 ≥1 下限保护)。
+export interface EsCreateIndexRequest {
+  connection_id: string
+  index: string
+  shards: number
+  replicas: number
+}
+
+// 删除索引:危险操作,前端经确认对话框二次确认后调用。
+export interface EsDeleteIndexRequest {
+  connection_id: string
+  index: string
+}
+
+// 修改索引设置:settings_json 为设置项 JSON 文本(当前用于调整
+// number_of_replicas);解析与转义在后端,前端禁止拼 DSL。
+export interface EsUpdateIndexSettingsRequest {
+  connection_id: string
+  index: string
+  settings_json: string
+}
+
+// 删除索引模板:name 为模板名(与 listEsTemplates 返回项的 name 一致)。
+export interface EsDeleteTemplateRequest {
+  connection_id: string
+  name: string
+}
+
+// 一个索引模板:name 为模板名,order 为模板合并顺序(越大优先级越高)
+// (镜像 model.EsTemplateInfo)。
+export interface EsTemplateInfo {
+  name: string
+  order: number
+}
+
+// 读取单个索引模板:与 listEsTemplates 返回项的 name 一致。
+export interface EsGetTemplateRequest {
+  connection_id: string
+  name: string
+}
+
+// 模板正文:template_json 为模板定义的 JSON 文本(编辑往返不解析)。
+export interface EsTemplateContent {
+  template_json: string
+}
+
+// 新建/覆盖索引模板:template_json 为完整模板定义 JSON 文本,由后端转发,
+// 前端禁止拼 DSL。
+export interface EsPutTemplateRequest {
+  connection_id: string
+  name: string
+  template_json: string
+}
+
+// 集群监控:一个 ES 节点摘要(镜像 model.EsNodeInfo);roles 为节点角色名
+// 数组(如 master/data/ingest)。
+export interface EsNodeInfo {
+  name: string
+  ip: string
+  roles: string
+  heap_percent: number
+  disk_percent: number
+}
+
+// 集群健康总览(镜像 model.EsClusterStats):status 为 green/yellow/red;
+// docs_count 为全集群文档总数,store_size_bytes 为全集群存储占用字节数。
+export interface EsClusterStats {
+  cluster_name: string
+  status: string
+  number_of_nodes: number
+  number_of_data_nodes: number
+  active_shards: number
+  active_primary_shards: number
+  relocating_shards: number
+  unassigned_shards: number
+  indices_count: number
+  docs_count: number
+  store_size_bytes: number
+  templates_count: number
+  nodes: EsNodeInfo[]
+}
+
+export interface EsClusterStatsRequest {
+  connection_id: string
 }
 
 // 驱动管理页一行(镜像 model.DriverInfo):驱动为内置原生实现,

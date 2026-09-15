@@ -49,10 +49,13 @@ interface MysqlCellUpdateTarget {
 }
 
 const app = App as unknown as {
-  MysqlExecute(req: { connection_id: string; sql: string }): Promise<MysqlStatementResult[]>
+  MysqlExecute(req: { connection_id: string; sql: string; database?: string }): Promise<MysqlStatementResult[]>
   MysqlPreviewCellUpdate(req: MysqlCellUpdateTarget): Promise<{ statement: string; matched_rows: number }>
   MysqlUpdateCell(req: MysqlCellUpdateTarget): Promise<void>
   ListMysqlTables(req: { connection_id: string; database: string }): Promise<MysqlTableInfo[]>
+  // ListMysqlDatabases 绑定已生成,签名为 (connection_id: string) => Promise<string[]>;
+  // 为与未生成方法统一经断言对象调用,这里按实际形状声明。
+  ListMysqlDatabases(id: string): Promise<string[]>
 }
 
 const sql = ref('')
@@ -71,13 +74,53 @@ function quoteLiteral(s: string): string {
   return `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
 }
 
+// --- 当前库(单一状态源):命令条选择器、执行 payload、保存文件头、三层补全
+// 都取自 activeDb;初值来自入口传参(表浏览器等),为空 = 连接默认库。 ---
+const activeDb = ref(props.database ?? '')
+const databases = ref<string[]>([])
+
+// 选项 = 后端库清单;activeDb(含失败降级场景)不在清单时动态追加,保证当前值可见。
+const dbOptions = computed(() =>
+  activeDb.value && !databases.value.includes(activeDb.value)
+    ? [...databases.value, activeDb.value]
+    : databases.value,
+)
+
+// 拉取库清单供选择器展示;失败静默为空,不影响编辑与执行。
+async function loadDatabases(): Promise<void> {
+  try {
+    databases.value = await app.ListMysqlDatabases(props.connectionId)
+  } catch {
+    databases.value = []
+  }
+}
+
+// 切换当前库(选择器手动切换 / 载入文件恢复):重拉三层补全并重置语句标记;
+// 同库为幂等空操作。
+async function switchDb(db: string): Promise<void> {
+  if (activeDb.value === db) return
+  activeDb.value = db
+  markedStatements.value = []
+  await loadTables()
+}
+
+function onDbChange(e: Event): void {
+  void switchDb((e.target as HTMLSelectElement).value)
+}
+
 async function loadTables(): Promise<void> {
-  let db = props.database ?? ''
+  let db = activeDb.value
   if (!db) {
-    // 未指定库:先探测连接的当前库;失败降级为仅表名层。
+    // 未指定库:先探测连接的当前库;失败降级为仅表名层。探测出的库只影响
+    // 补全与选择器选项,不改 activeDb(执行仍按连接默认库)。
     try {
-      const res = await app.MysqlExecute({ connection_id: props.connectionId, sql: 'SELECT DATABASE()' })
+      const res = await app.MysqlExecute({
+        connection_id: props.connectionId,
+        sql: 'SELECT DATABASE()',
+        database: activeDb.value,
+      })
       db = res[0]?.rows?.[0]?.[0] ?? ''
+      if (db && !databases.value.includes(db)) databases.value = [...databases.value, db]
     } catch {
       db = ''
     }
@@ -90,6 +133,7 @@ async function loadTables(): Promise<void> {
         const res = await app.MysqlExecute({
           connection_id: props.connectionId,
           sql: `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = ${quoteLiteral(db)} ORDER BY ordinal_position`,
+          database: activeDb.value,
         })
         for (const row of res[0]?.rows ?? []) {
           const tableName = row[0]
@@ -178,7 +222,11 @@ async function runSingle(text: string): Promise<void> {
   resultsOpen.value = true
   markedStatements.value = [{ text, status: 'running' }]
   try {
-    const res = await app.MysqlExecute({ connection_id: props.connectionId, sql: text })
+    const res = await app.MysqlExecute({
+      connection_id: props.connectionId,
+      sql: text,
+      database: activeDb.value,
+    })
     results.value = res
     markedStatements.value = marksFromResults([text], res)
   } catch (e) {
@@ -213,7 +261,11 @@ async function runAll(): Promise<void> {
   const segs = splitSqlStatements(script)
   markedStatements.value = segs.map((s): MarkedStatement => ({ text: s.text, status: 'running' }))
   try {
-    const res = await app.MysqlExecute({ connection_id: props.connectionId, sql: script })
+    const res = await app.MysqlExecute({
+      connection_id: props.connectionId,
+      sql: script,
+      database: activeDb.value,
+    })
     results.value = res
     markedStatements.value = res.map((r, i): MarkedStatement => ({
       text: segs[i]?.text ?? r.sql,
@@ -418,7 +470,11 @@ async function confirmCellUpdate(): Promise<void> {
   const target = idx === null ? undefined : results.value[idx]
   if (!target) return
   try {
-    const fresh = await app.MysqlExecute({ connection_id: props.connectionId, sql: target.sql })
+    const fresh = await app.MysqlExecute({
+      connection_id: props.connectionId,
+      sql: target.sql,
+      database: activeDb.value,
+    })
     if (fresh.length > 0) {
       // 仅替换该索引的结果,其他语句结果保持不变。
       results.value = results.value.map((old, i) => (i === idx ? fresh[0] : old))
@@ -455,6 +511,12 @@ const qf = useQueryFiles({
   setContent: (s: string) => {
     sql.value = s
     savedSnapshot.value = s
+  },
+  // 保存把当前库写入文件头;载入按文件头恢复库并刷新补全。
+  // 空串 = 文件未关联库,保持当前库不动,不误切。
+  getDatabase: () => activeDb.value,
+  setDatabase: (db: string) => {
+    if (db) void switchDb(db)
   },
 })
 
@@ -554,13 +616,15 @@ defineExpose({
 })
 
 onMounted(() => {
+  void loadDatabases()
   void loadTables()
 })
 
-// database 变化(如表浏览器入口切库)→ 重新拉取该库的补全。
+// database 变化(如表浏览器入口切库)→ 同步 activeDb 并重拉该库的补全。
 watch(
   () => props.database,
-  () => {
+  (db) => {
+    activeDb.value = db ?? ''
     void loadTables()
   },
 )
@@ -573,6 +637,14 @@ watch(
         <button class="btn primary" type="button" data-test="btn-mysql-run" :disabled="running || !sql.trim()" @click="runAll">
           {{ running ? '运行中…' : '运行全部' }}
         </button>
+        <!-- 当前库选择器:执行与保存(文件头)统一使用该库;空值 = 连接默认库。 -->
+        <label class="db-select" title="当前库:执行与保存的 SQL 都将使用该库">
+          <span class="toolbar-hint">库</span>
+          <select data-test="mysql-db-select" class="input" :value="activeDb" @change="onDbChange">
+            <option value="">(连接默认库)</option>
+            <option v-for="d in dbOptions" :key="d" :value="d">{{ d }}</option>
+          </select>
+        </label>
         <span class="toolbar-hint">⌘Enter 执行当前语句 · ⌘Shift+Enter 运行全部 · ⌘S 保存</span>
       </div>
       <div class="editor-wrap" @keydown="onEditorKeydown">
@@ -697,6 +769,14 @@ watch(
 .editor-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .command-bar { flex: none; display: flex; align-items: center; gap: 10px; padding-bottom: 8px; }
 .toolbar-hint { font-size: 12px; color: var(--text-tertiary); }
+/* 当前库选择器:hint 风格小标签 + 下拉,紧邻运行按钮右侧。 */
+.db-select { display: inline-flex; align-items: center; gap: 6px; }
+.db-select .input {
+  background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text);
+  border-radius: 7px; padding: 5px 8px; font-size: 12px; max-width: 180px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.db-select .input:focus { outline: none; border-color: var(--accent); background: var(--bg-elevated); }
 .editor-wrap { flex: 1; min-height: 0; display: flex; }
 .editor-wrap :deep(.sql-editor) { flex: 1; min-width: 0; }
 .msg { font-size: 13px; border-radius: 9px; padding: 8px 12px; }

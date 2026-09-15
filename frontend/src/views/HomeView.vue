@@ -15,6 +15,7 @@ const FEATURES: Feature[] = [
   { icon: '👥', title: '消费组与 Lag 总览', desc: '消费状态 / 成员 / 堆积明细,重置消费位移' },
   { icon: '🫀', title: '集群健康与审计', desc: 'Broker 健康检查、操作审计日志、深浅色主题' },
   { icon: '🐬', title: 'MySQL / TiDB 管理', desc: '库表浏览、主键定位的数据编辑与 SQL 控制台' },
+  { icon: '🔎', title: 'Elasticsearch 管理', desc: '索引浏览、文档编辑与 SQL 查询' },
 ]
 </script>
 

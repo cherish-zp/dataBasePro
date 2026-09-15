@@ -15,6 +15,12 @@ export interface QueryFilesOptions {
   connectionId: () => string
   getContent?: () => string // 列表-only 消费者(右侧面板)可不传
   setContent?: (s: string) => void
+  // 当前库(可选):提供后保存 payload 携带 database,由后端写入文件头;
+  // 未提供时 payload 不带该字段(CH/Kafka 控制台零影响)。
+  getDatabase?: () => string
+  // 载入文件后回传文件头记录的库;空串也回调,表示文件未关联库(由
+  // 消费者自行决定是否恢复,例如 MySQL 控制台空串保持当前库不动)。
+  setDatabase?: (db: string) => void
 }
 
 // 模块级共享:所有 useQueryFiles 消费者共用同一份文件列表(新→旧)。
@@ -62,7 +68,11 @@ export function useQueryFiles(opts: QueryFilesOptions): {
     const target = withSqlExt(name)
     try {
       const res = await App.ReadQueryFile({ dir: getQueryDir(), name: target })
-      opts.setContent?.(res.content)
+      // 响应已扩展 database 字段(文件头记录的库);绑定模型待 wails generate
+      // 对齐,这里按契约形状读取,旧后端缺省时视为未关联库。
+      const { content, database } = res as unknown as { content: string; database?: string }
+      opts.setContent?.(content)
+      opts.setDatabase?.(database ?? '')
       currentFile.value = target
       fileError.value = null
     } catch (e) {
@@ -73,12 +83,21 @@ export function useQueryFiles(opts: QueryFilesOptions): {
   async function saveToFile(name: string): Promise<void> {
     const target = withSqlExt(name)
     try {
-      await App.WriteQueryFile({
+      const payload: {
+        dir: string
+        name: string
+        content: string
+        connection_id?: string
+        database?: string
+      } = {
         dir: getQueryDir(),
         name: target,
         content: opts.getContent?.() ?? '',
         connection_id: opts.connectionId(),
-      })
+      }
+      if (opts.getDatabase) payload.database = opts.getDatabase()
+      // QueryFileWriteRequest 绑定模型尚未含 database,待 wails generate 后对齐。
+      await App.WriteQueryFile(payload as unknown as Parameters<typeof App.WriteQueryFile>[0])
       currentFile.value = target
       fileError.value = null
       await refreshFiles()

@@ -337,6 +337,74 @@ describe('askRemoveCurrentFile / removeCurrentFile', () => {
   })
 })
 
+describe('database 透传(保存/载入)', () => {
+  it('提供 getDatabase:saveToFile payload 携带 database(写入文件头)', async () => {
+    const { qf } = setup({ getDatabase: vi.fn(() => 'shop') })
+
+    await qf.saveToFile('a')
+
+    expect(queryFileApp.WriteQueryFile).toHaveBeenCalledWith({
+      dir: DIR,
+      name: 'a.sql',
+      content: 'select 1',
+      connection_id: 'conn-1',
+      database: 'shop',
+    })
+  })
+
+  it('未提供 getDatabase:payload 不含 database 字段(CH/Kafka 消费者零影响)', async () => {
+    const { qf } = setup()
+
+    await qf.saveToFile('a')
+
+    expect(queryFileApp.WriteQueryFile).toHaveBeenCalledWith({
+      dir: DIR,
+      name: 'a.sql',
+      content: 'select 1',
+      connection_id: 'conn-1',
+    })
+    const payload = queryFileApp.WriteQueryFile.mock.calls[0][0] as Record<string, unknown>
+    expect('database' in payload).toBe(false)
+  })
+
+  it('载入文件:setDatabase 回调文件头里的库,且在 setContent 之后', async () => {
+    const setDatabase = vi.fn()
+    const { opts, qf } = setup({ setDatabase })
+    queryFileApp.ReadQueryFile.mockResolvedValue({
+      content: 'select 2',
+      connection_id: 'conn-9',
+      database: 'orders',
+    })
+
+    await qf.loadQueryFile('a')
+
+    expect(setDatabase).toHaveBeenCalledWith('orders')
+    expect(setDatabase.mock.invocationCallOrder[0]).toBeGreaterThan(
+      (opts.setContent as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
+    )
+  })
+
+  it('旧后端响应缺 database 字段:setDatabase 回调空串(向后兼容)', async () => {
+    const setDatabase = vi.fn()
+    const { qf } = setup({ setDatabase })
+    queryFileApp.ReadQueryFile.mockResolvedValue({ content: 'x', connection_id: 'conn-1' })
+
+    await qf.loadQueryFile('a')
+
+    expect(setDatabase).toHaveBeenCalledWith('')
+  })
+
+  it('载入失败:不回调 setDatabase', async () => {
+    const setDatabase = vi.fn()
+    const { qf } = setup({ setDatabase })
+    queryFileApp.ReadQueryFile.mockRejectedValue(new Error('文件不存在'))
+
+    await qf.loadQueryFile('a')
+
+    expect(setDatabase).not.toHaveBeenCalled()
+  })
+})
+
 describe('多实例共享', () => {
   it('两个消费者共享同一 files 列表,实例状态彼此独立', async () => {
     const a = useQueryFiles({

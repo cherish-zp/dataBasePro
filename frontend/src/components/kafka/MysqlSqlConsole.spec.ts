@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount, type VueWrapper } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { EditorView } from '@codemirror/view'
 import { createPinia, setActivePinia } from 'pinia'
@@ -17,6 +17,7 @@ const appMocks = vi.hoisted(() => ({
   MysqlPreviewCellUpdate: vi.fn(),
   MysqlUpdateCell: vi.fn(),
   ListMysqlTables: vi.fn(),
+  ListMysqlDatabases: vi.fn(),
   ListQueryFiles: vi.fn(),
   ReadQueryFile: vi.fn(),
   WriteQueryFile: vi.fn(),
@@ -160,6 +161,7 @@ describe('MysqlSqlConsole', () => {
       matched_rows: 1,
     }))
     app.MysqlUpdateCell.mockImplementation(async () => {})
+    app.ListMysqlDatabases.mockResolvedValue(['shop', 'orders'])
     app.ListQueryFiles.mockImplementation(async () => [])
     app.ReadQueryFile.mockImplementation(async () => ({ content: '', connection_id: '' }))
     app.WriteQueryFile.mockImplementation(async () => {})
@@ -310,7 +312,7 @@ describe('MysqlSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
     await waitForCards(wrapper, 2)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad', database: 'shop' })
     const cards = resultCards(wrapper)
     // 第一条:语句原文、耗时、列与行(NULL 单元格)都经 props 传入卡片。
     expect(cards[0].props('statement')).toBe('SELECT 1')
@@ -352,7 +354,7 @@ describe('MysqlSqlConsole', () => {
     cmInput(wrapper).dispatch({ selection: { anchor: 10, head: 18 } })
     await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
     await waitForCards(wrapper, 2)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT 2' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT 2', database: 'shop' })
     wrapper.unmount()
   })
 
@@ -366,7 +368,7 @@ describe('MysqlSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1')
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop' })
     wrapper.unmount()
   })
 
@@ -381,7 +383,7 @@ describe('MysqlSqlConsole', () => {
     await nextTick()
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1;' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1;', database: 'shop' })
     wrapper.unmount()
   })
 
@@ -396,7 +398,7 @@ describe('MysqlSqlConsole', () => {
     await nextTick()
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT bad' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT bad', database: 'shop' })
     wrapper.unmount()
   })
 
@@ -409,7 +411,7 @@ describe('MysqlSqlConsole', () => {
     cmInput(wrapper).dispatch({ selection: { anchor: 0, head: 8 } })
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1' })
+    expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop' })
     wrapper.unmount()
   })
 
@@ -423,7 +425,7 @@ describe('MysqlSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     pressRunShortcut(wrapper, { metaKey: true, shiftKey: true })
     await waitForCards(wrapper, 2)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad', database: 'shop' })
     wrapper.unmount()
   })
 
@@ -435,7 +437,7 @@ describe('MysqlSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     wrapper.findComponent(SqlEditor).vm.$emit('run-statement', 'SELECT bad')
     await waitForCards(wrapper, 1)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT bad' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT bad', database: 'shop' })
     wrapper.unmount()
   })
 
@@ -639,6 +641,7 @@ describe('MysqlSqlConsole', () => {
         name: '新文件.sql',
         content: 'SELECT 42',
         connection_id: 'm1',
+        database: 'shop',
       })
     })
     // 写入后刷新列表,新文件成为当前打开文件。
@@ -668,11 +671,142 @@ describe('MysqlSqlConsole', () => {
         name: '每日报表.sql',
         content: 'SELECT updated',
         connection_id: 'm1',
+        database: 'shop',
       })
     })
     // 已关联文件 → 直接覆盖,不弹名称输入。
     expect(bodyEl('prompt-dialog')).toBeNull()
     wrapper.unmount()
+  })
+
+  // --- 当前库选择器:切换 / 执行带库 / 查询文件记忆库 ---------------------------
+
+  describe('当前库选择器', () => {
+    it('命令条渲染选择器,初值为 props.database,选项来自 ListMysqlDatabases', async () => {
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await vi.waitFor(() => {
+        expect(app.ListMysqlDatabases).toHaveBeenCalledWith('m1')
+      })
+      const select = wrapper.find('[data-test="mysql-db-select"]')
+      expect(select.exists()).toBe(true)
+      await vi.waitFor(() => {
+        expect((select.element as HTMLSelectElement).value).toBe('shop')
+      })
+      // 后端返回的库清单都在选项里(含当前库)。
+      const values = Array.from((select.element as HTMLSelectElement).options).map((o) => o.value)
+      expect(values).toContain('shop')
+      expect(values).toContain('orders')
+      wrapper.unmount()
+    })
+
+    it('ListMysqlDatabases 失败:静默为空,选择器仍可用且当前库动态补进选项', async () => {
+      app.ListMysqlDatabases.mockRejectedValue(new Error('网络错误'))
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await vi.waitFor(() => {
+        expect(app.ListMysqlDatabases).toHaveBeenCalled()
+      })
+      const select = wrapper.find('[data-test="mysql-db-select"]')
+      expect(select.exists()).toBe(true)
+      expect((select.element as HTMLSelectElement).value).toBe('shop')
+      wrapper.unmount()
+    })
+
+    it('切换库 → ListMysqlTables 以新库重拉三层补全', async () => {
+      app.ListMysqlTables.mockResolvedValue([{ name: 'users' }])
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await vi.waitFor(() => {
+        expect(app.ListMysqlTables).toHaveBeenCalledWith({ connection_id: 'm1', database: 'shop' })
+      })
+      // 等选项渲染完成再切换:setValue 依赖 option 存在,否则 value 归空误切。
+      await vi.waitFor(() => {
+        const select = wrapper.find('[data-test="mysql-db-select"]').element as HTMLSelectElement
+        expect(Array.from(select.options).some((o) => o.value === 'orders')).toBe(true)
+      })
+      await wrapper.find('[data-test="mysql-db-select"]').setValue('orders')
+      await vi.waitFor(() => {
+        expect(app.ListMysqlTables).toHaveBeenLastCalledWith({ connection_id: 'm1', database: 'orders' })
+      })
+      wrapper.unmount()
+    })
+
+    it('⌘Enter 执行 payload 携带当前库 database', async () => {
+      app.MysqlExecute.mockImplementation(withSystemGuard(echoResult))
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, 'SELECT 1')
+      pressRunShortcut(wrapper)
+      await waitForCards(wrapper, 1)
+      expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop' })
+      wrapper.unmount()
+    })
+
+    it('⌘S 保存 WriteQueryFile payload 携带当前库 database', async () => {
+      app.ListQueryFiles.mockResolvedValue(queryFiles())
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, 'SELECT 42')
+      exposedApi(wrapper).requestSave()
+      await vi.waitFor(() => {
+        expect(bodyEl('prompt-dialog')).not.toBeNull()
+      })
+      await confirmPrompt('新文件.sql')
+      await vi.waitFor(() => {
+        expect(app.WriteQueryFile).toHaveBeenCalledWith({
+          dir: TEST_DIR,
+          name: '新文件.sql',
+          content: 'SELECT 42',
+          connection_id: 'm1',
+          database: 'shop',
+        })
+      })
+      wrapper.unmount()
+    })
+
+    it('载入文件头带库的 .sql → 选择器切到该库并重拉补全', async () => {
+      app.ListMysqlTables.mockResolvedValue([{ name: 'users' }])
+      app.MysqlExecute.mockImplementation(async (req: { sql: string }) => columnsQueryResult())
+      app.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'm1', database: 'orders' })
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await vi.waitFor(() => {
+        expect(app.ListMysqlTables).toHaveBeenLastCalledWith({ connection_id: 'm1', database: 'shop' })
+      })
+      exposedApi(wrapper).loadQueryFile('每日报表.sql')
+      await vi.waitFor(() => {
+        const select = wrapper.find('[data-test="mysql-db-select"]').element as HTMLSelectElement
+        expect(select.value).toBe('orders')
+      })
+      await vi.waitFor(() => {
+        expect(app.ListMysqlTables).toHaveBeenLastCalledWith({ connection_id: 'm1', database: 'orders' })
+      })
+      wrapper.unmount()
+    })
+
+    it('载入未关联库(database 为空串)的文件 → 保持当前库不误切', async () => {
+      app.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'm1', database: '' })
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      exposedApi(wrapper).loadQueryFile('每日报表.sql')
+      await vi.waitFor(() => {
+        expect(exposedApi(wrapper).currentFile()).toBe('每日报表.sql')
+      })
+      await flushPromises()
+      const select = wrapper.find('[data-test="mysql-db-select"]').element as HTMLSelectElement
+      expect(select.value).toBe('shop')
+      // 载入未触发重拉:最后一次 ListMysqlTables 仍是挂载时的 shop。
+      expect(app.ListMysqlTables).toHaveBeenLastCalledWith({ connection_id: 'm1', database: 'shop' })
+      wrapper.unmount()
+    })
   })
 
   // --- tab 标题跟随当前打开的 SQL 文件 ----------------------------------------
@@ -875,7 +1009,7 @@ describe('MysqlSqlConsole', () => {
       })
       // 刷新入参是该条语句的原文(而非整段脚本)。
       await vi.waitFor(() => {
-        expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: first.sql })
+        expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: first.sql, database: 'shop' })
       })
       // 第一条结果被替换为刷新后的行;第二条结果保持原样。
       await vi.waitFor(() => {

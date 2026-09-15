@@ -817,4 +817,154 @@ describe('NewConnectionModal', () => {
       )
     })
   })
+
+  it('renders the es card and shows es fields when selected', async () => {
+    const wrapper = mountModal()
+    expect(wrapper.find('[data-test="type-card-es"]').exists()).toBe(true)
+    await wrapper.find('[data-test="type-card-es"]').trigger('click')
+    expect(wrapper.find('[data-test="type-card-es"]').classes()).toContain('active')
+    expect(wrapper.find('[data-test="input-brokers"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-mysql-host"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-ch-hosts"]').exists()).toBe(false)
+    const hosts = wrapper.find('[data-test="input-es-hosts"]')
+    expect(hosts.exists()).toBe(true)
+    // ES 地址自带端口,不渲染端口输入。
+    expect(hosts.attributes('placeholder')).toBe('127.0.0.1:9200')
+    // 默认 none 认证:不渲染任何凭据输入。
+    expect(wrapper.find('[data-test="input-es-username"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-es-password"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-es-api-key"]').exists()).toBe(false)
+    expect((wrapper.find('[data-test="input-es-tls-mode"]').element as HTMLSelectElement).value).toBe('disabled')
+  })
+
+  it('switches es credential fields with the auth mode dropdown', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-es"]').trigger('click')
+    const auth = wrapper.find('[data-test="input-es-auth-mode"]')
+    expect(auth.findAll('option').map((o) => o.element.value)).toEqual(['none', 'basic', 'apikey'])
+    await auth.setValue('basic')
+    expect(wrapper.find('[data-test="input-es-username"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="input-es-password"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="input-es-api-key"]').exists()).toBe(false)
+    await auth.setValue('apikey')
+    expect(wrapper.find('[data-test="input-es-username"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-es-password"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-es-api-key"]').exists()).toBe(true)
+    await auth.setValue('none')
+    expect(wrapper.find('[data-test="input-es-api-key"]').exists()).toBe(false)
+  })
+
+  it('saves an es connection with split hosts, auth mode and tls mode', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-es"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('es-local')
+    await wrapper.find('[data-test="input-es-hosts"]').setValue('127.0.0.1:9200, es2:9200,,')
+    await wrapper.find('[data-test="input-es-auth-mode"]').setValue('basic')
+    await wrapper.find('[data-test="input-es-username"]').setValue('elastic')
+    await wrapper.find('[data-test="input-es-password"]').setValue('pw')
+    await wrapper.find('[data-test="input-es-tls-mode"]').setValue('verify-full')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'es-local',
+          type: 'es',
+          config: {
+            hosts: ['127.0.0.1:9200', 'es2:9200'],
+            username: 'elastic',
+            password: 'pw',
+            api_key: '',
+            auth_mode: 'basic',
+            tls_mode: 'verify-full',
+          },
+        }),
+      )
+    })
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('save stays disabled while every es host is blank', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-es"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('es')
+    expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(true)
+    // 逗号/空格不算有效地址,任一非空即可保存。
+    await wrapper.find('[data-test="input-es-hosts"]').setValue(' , ')
+    expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(true)
+    await wrapper.find('[data-test="input-es-hosts"]').setValue('127.0.0.1:9200')
+    expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('routes test connection to testEsConnection when es is selected', async () => {
+    const api2 = fakeApi({ testEsConnection: vi.fn(async () => {}) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-es"]').trigger('click')
+    await wrapper.find('[data-test="input-es-hosts"]').setValue('127.0.0.1:9200')
+    await wrapper.find('[data-test="btn-test"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.testEsConnection).toHaveBeenCalledWith(
+        expect.objectContaining({ hosts: ['127.0.0.1:9200'], auth_mode: 'none', tls_mode: 'disabled' }),
+      )
+    })
+    expect(api2.testConnection).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="test-ok"]').exists()).toBe(true)
+  })
+
+  it('surfaces test errors for es connections', async () => {
+    const api2 = fakeApi({
+      testEsConnection: vi.fn(async () => {
+        throw new Error('connection refused')
+      }),
+    })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-es"]').trigger('click')
+    await wrapper.find('[data-test="input-es-hosts"]').setValue('127.0.0.1:9200')
+    await wrapper.find('[data-test="btn-test"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="test-error"]').text()).toBe('connection refused')
+    })
+  })
+
+  it('prefills es fields in edit mode and carries type es on update', async () => {
+    const conn: Connection = {
+      id: 'es1',
+      name: 'es-old',
+      type: 'es',
+      config: {
+        hosts: ['10.0.0.1:9200', '10.0.0.2:9200'],
+        username: 'elastic',
+        password: 'pw',
+        api_key: 'ZXNfYXBp',
+        auth_mode: 'apikey',
+        tls_mode: 'skip-verify',
+      },
+      created_at: 1,
+      updated_at: 1,
+    }
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: conn } })
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="input-es-hosts"]').element as HTMLInputElement).value).toBe('10.0.0.1:9200, 10.0.0.2:9200')
+    })
+    expect((wrapper.find('[data-test="input-es-auth-mode"]').element as HTMLSelectElement).value).toBe('apikey')
+    // apikey 模式只回显 api key 输入。
+    expect(wrapper.find('[data-test="input-es-username"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="input-es-password"]').exists()).toBe(false)
+    expect((wrapper.find('[data-test="input-es-api-key"]').element as HTMLInputElement).value).toBe('ZXNfYXBp')
+    expect((wrapper.find('[data-test="input-es-tls-mode"]').element as HTMLSelectElement).value).toBe('skip-verify')
+    expect(wrapper.find('[data-test="type-card-es"]').classes()).toContain('active')
+    await wrapper.find('[data-test="input-name"]').setValue('es-new')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.updateConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'es1',
+          name: 'es-new',
+          type: 'es',
+          config: expect.objectContaining({ hosts: ['10.0.0.1:9200', '10.0.0.2:9200'], auth_mode: 'apikey', tls_mode: 'skip-verify' }),
+        }),
+      )
+    })
+  })
 })

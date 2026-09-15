@@ -12,6 +12,10 @@ import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
 import CHSqlConsole from '@/components/kafka/CHSqlConsole.vue'
 import MysqlTableBrowser from '@/components/kafka/MysqlTableBrowser.vue'
 import MysqlSqlConsole from '@/components/kafka/MysqlSqlConsole.vue'
+import EsTableBrowser from '@/components/kafka/EsTableBrowser.vue'
+import EsSqlConsole from '@/components/kafka/EsSqlConsole.vue'
+import EsTemplatesPanel from '@/components/kafka/EsTemplatesPanel.vue'
+import EsClusterMonitor from '@/components/kafka/EsClusterMonitor.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import { useConnectionsStore } from '@/store/connections'
 import { APP_VERSION } from '@/version'
@@ -29,6 +33,15 @@ const fileAppMocks = vi.hoisted(() => ({
   MysqlPreviewCellUpdate: vi.fn(),
   MysqlUpdateCell: vi.fn(),
   ListMysqlTables: vi.fn(),
+  EsExecute: vi.fn(),
+  ListEsIndices: vi.fn(),
+  EsPageRows: vi.fn(),
+  EsMapping: vi.fn(),
+  // ES 索引模板管理面板(legacy /_template)四方法。
+  ListEsTemplates: vi.fn(),
+  GetEsTemplate: vi.fn(),
+  PutEsTemplate: vi.fn(),
+  DeleteEsTemplate: vi.fn(),
 }))
 vi.mock('../../../wailsjs/go/backend/App', async () => {
   const actual = await vi.importActual<typeof import('../../../wailsjs/go/backend/App')>(
@@ -127,6 +140,9 @@ const mysqlConn = (id: string): Connection => ({
 const tidbConn = (id: string): Connection => ({
   ...conn(id), type: 'tidb', config: {} as Connection['config'],
 })
+const esConn = (id: string): Connection => ({
+  ...conn(id), type: 'es', config: {} as Connection['config'],
+})
 
 const queryFileRow = (name: string, connectionId: string) => ({
   name, connection_id: connectionId, size_bytes: 1, mod_time_ms: 1_700_000_000_000,
@@ -160,6 +176,19 @@ describe('Layout', () => {
     fileAppMocks.MysqlPreviewCellUpdate.mockReset().mockResolvedValue({ statement: '', matched_rows: 0 })
     fileAppMocks.MysqlUpdateCell.mockReset().mockResolvedValue(undefined)
     fileAppMocks.ListMysqlTables.mockReset().mockResolvedValue([])
+    // ES 控制台挂载期的补全与执行绑定恢复默认空实现。
+    fileAppMocks.EsExecute.mockReset().mockResolvedValue([])
+    fileAppMocks.ListEsIndices.mockReset().mockResolvedValue([])
+    // ES 索引浏览器挂载期的映射与分页绑定恢复默认空实现。
+    fileAppMocks.EsPageRows.mockReset().mockResolvedValue({
+      columns: [], rows: [], total_rows: 0, primary_key: [], engine: '',
+    })
+    fileAppMocks.EsMapping.mockReset().mockResolvedValue([])
+    // ES 模板面板挂载期四方法恢复默认空实现。
+    fileAppMocks.ListEsTemplates.mockReset().mockResolvedValue([])
+    fileAppMocks.GetEsTemplate.mockReset().mockResolvedValue({ template_json: '{}' })
+    fileAppMocks.PutEsTemplate.mockReset().mockResolvedValue(undefined)
+    fileAppMocks.DeleteEsTemplate.mockReset().mockResolvedValue(undefined)
     // 右栏展开态/宽度也会跨用例泄漏(挂载时提前刷新导致拿到空列表)。
     localStorage.removeItem('dbclient-files-open')
     localStorage.removeItem('dbclient-files-width')
@@ -808,6 +837,142 @@ describe('Layout', () => {
     expect(wrapper.find('[data-test="tab-title"]').text()).toBe('SQL 查询')
   })
 
+  // --- ES 索引浏览器 / SQL 控制台 ---------------------------------------------
+
+  it('opens an es index browser tab from the tree and renders the index browser', async () => {
+    const { wrapper } = mountLayout([esConn('e1')])
+    emitTree(wrapper, 'open-es-index', 'e1', 'logs-2024')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-table-browser"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="home-view"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="tab"]').text()).toContain('logs-2024')
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['es-index'])
+    expect(wrapper.findComponent(EsTableBrowser).props()).toEqual(
+      expect.objectContaining({ connectionId: 'e1', index: 'logs-2024' }),
+    )
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('renders the es sql console for an active es-sql tab with refresh disabled', async () => {
+    const { wrapper } = mountLayout([esConn('e1')])
+    const tabs = useTabsStore()
+    tabs.openEsSql('e1')
+    await nextTick()
+    expect(wrapper.find('[data-test="es-sql-console"]').exists()).toBe(true)
+    const console_ = wrapper.findComponent(EsSqlConsole)
+    expect(console_.props('tabId')).toBe(tabs.openTabs[0].id)
+    expect(console_.props('connectionId')).toBe('e1')
+    // ES 控制台自持编辑器状态:刷新按钮禁用(与 Kafka/CH/MySQL 控制台一致)。
+    expect(wrapper.find('[data-test="btn-refresh-active"]').attributes('disabled')).toBeDefined()
+    // 新建查询在 es 系 tab 激活时可用。
+    expect(wrapper.find('[data-test="btn-new-query"]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('opens an es sql console tab from 新建查询 on an active es-index tab', async () => {
+    const { wrapper } = mountLayout([esConn('e1')])
+    emitTree(wrapper, 'open-es-index', 'e1', 'logs-2024')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-table-browser"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="btn-new-query"]').trigger('click')
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.some((t) => t.kind === 'es-index')).toBe(true)
+    expect(tabs.openTabs.some((t) => t.kind === 'es-sql' && t.connectionId === 'e1')).toBe(true)
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-sql-console"]').exists()).toBe(true)
+    })
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('opens an es templates panel tab from the tree and renders the panel', async () => {
+    const { wrapper } = mountLayout([esConn('e1')])
+    // 分区标题 +:打开面板并直接进入新建态。
+    emitTree(wrapper, 'open-es-template-create', 'e1')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-templates-panel"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="home-view"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="tab"]').text()).toContain('索引模板')
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['es-templates'])
+    expect(wrapper.findComponent(EsTemplatesPanel).props('connectionId')).toBe('e1')
+    expect(wrapper.findComponent(EsTemplatesPanel).props('newMode')).toBe(true)
+    // 重复触发只聚焦同一个 tab。
+    emitTree(wrapper, 'open-es-template-create', 'e1')
+    await nextTick()
+    expect(tabs.openTabs).toHaveLength(1)
+    // 模板面板挂载期拉取模板列表。
+    expect(fileAppMocks.ListEsTemplates).toHaveBeenCalledWith('e1')
+  })
+
+  it('passes the es templates tab locate/create flags through to the panel', async () => {
+    const { wrapper } = mountLayout([esConn('e1')])
+    // 树模板项单击:tab 携带 template,面板收到 initialTemplate。
+    emitTree(wrapper, 'open-es-template', 'e1', 'logs-template')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-templates-panel"]').exists()).toBe(true)
+    })
+    const tabs = useTabsStore()
+    expect(tabs.openTabs[0].template).toBe('logs-template')
+    expect(wrapper.findComponent(EsTemplatesPanel).props('initialTemplate')).toBe('logs-template')
+    expect(wrapper.findComponent(EsTemplatesPanel).props('newMode')).toBeUndefined()
+    // 分区标题 +:同 tab 重开进入新建态,字段更新并聚焦,面板收到 newMode。
+    emitTree(wrapper, 'open-es-template-create', 'e1')
+    await nextTick()
+    expect(tabs.openTabs).toHaveLength(1)
+    expect(tabs.activeTabId).toBe('es-templates:e1')
+    expect(tabs.openTabs[0].newTemplate).toBe(true)
+    expect(tabs.openTabs[0].template).toBeUndefined()
+    expect(wrapper.findComponent(EsTemplatesPanel).props('initialTemplate')).toBeUndefined()
+    expect(wrapper.findComponent(EsTemplatesPanel).props('newMode')).toBe(true)
+    // 无 opts 普通打开(如命令面板等入口):字段清空并透传 undefined。
+    tabs.openEsTemplates('e1')
+    await nextTick()
+    expect(wrapper.findComponent(EsTemplatesPanel).props('initialTemplate')).toBeUndefined()
+    expect(wrapper.findComponent(EsTemplatesPanel).props('newMode')).toBeUndefined()
+  })
+
+  it('opens an es cluster monitor tab from the tree event and renders the panel', async () => {
+    // client.ts 尚未声明 esClusterStats,先形状断言传入 fake(B 落盘后无需改写)。
+    const { wrapper } = mountLayout([esConn('e1')], {
+      esClusterStats: vi.fn(async () => ({
+        cluster_name: 'es-prod',
+        status: 'green',
+        number_of_nodes: 3,
+        number_of_data_nodes: 2,
+        active_shards: 42,
+        active_primary_shards: 20,
+        relocating_shards: 0,
+        unassigned_shards: 0,
+        indices_count: 18,
+        docs_count: 1,
+        store_size_bytes: 1,
+        templates_count: 5,
+        nodes: [],
+      })),
+    } as Partial<Api>)
+    emitTree(wrapper, 'open-es-monitor', 'e1')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="es-cluster-monitor"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="monitor-status"]').exists()).toBe(true)
+    expect(wrapper.findAll('[data-test="tab"]').some((t) => t.text().includes('集群监控'))).toBe(true)
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['es-monitor'])
+    expect(wrapper.findComponent(EsClusterMonitor).props('connectionId')).toBe('e1')
+    // 重复触发只聚焦同一个 tab。
+    emitTree(wrapper, 'open-es-monitor', 'e1')
+    await nextTick()
+    expect(tabs.openTabs).toHaveLength(1)
+    wrapper.unmount()
+  })
+
   // --- SQL文件右栏 ------------------------------------------------------------
 
   it('toggles the sql files sidebar from the top bar and persists the state', async () => {
@@ -937,6 +1102,22 @@ describe('Layout', () => {
     expect(tabs.openTabs[0].connectionId).toBe('t1')
     expect(fileAppMocks.ReadQueryFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'ti.sql' }))
     expect(wrapper.find('[data-test="mysql-sql-console"]').exists()).toBe(true)
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('点击 ES 归属文件自动打开 ES SQL 控制台并载入内容', async () => {
+    const { wrapper } = mountLayout([esConn('e1')])
+    fileAppMocks.ListQueryFiles.mockResolvedValue([queryFileRow('es.sql', 'e1')])
+    fileAppMocks.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'e1' })
+
+    await openPanelAndClickFile(wrapper, 0)
+
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['es-sql'])
+    expect(tabs.openTabs[0].connectionId).toBe('e1')
+    expect(fileAppMocks.ReadQueryFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'es.sql' }))
+    expect(wrapper.find('[data-test="es-sql-console"]').exists()).toBe(true)
     wrapper.unmount()
     await drainPendingEdits()
   })

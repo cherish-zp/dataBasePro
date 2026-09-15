@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys' | 'ch-table' | 'ch-sql' | 'mysql-table' | 'mysql-sql'
+export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys' | 'ch-table' | 'ch-sql' | 'mysql-table' | 'mysql-sql' | 'es-index' | 'es-sql' | 'es-templates' | 'es-monitor'
 
 export interface Tab {
   id: string
@@ -14,6 +14,12 @@ export interface Tab {
   // ClickHouse 表浏览器 / SQL 控制台携带的库与表名。
   database?: string
   table?: string
+  // Elasticsearch 索引浏览器携带的索引名。
+  index?: string
+  // es-templates tab 携带的定位/新建标记:template 指向待选中的模板名(树模板
+  // 项单击),newTemplate 表示进入新建态(树分区标题 + 入口)。
+  template?: string
+  newTemplate?: boolean
   partitions?: number[]
 }
 
@@ -234,6 +240,100 @@ export const useTabsStore = defineStore('tabs', () => {
     return tab
   }
 
+  // openEsIndex opens an Elasticsearch index browser keyed by connection +
+  // index (dedupe rules copied from openMysqlTable); reopening an already
+  // open index only focuses it.
+  function openEsIndex(connectionId: string, index: string): Tab {
+    const id = `es-index:${connectionId}:${index}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'es-index',
+      title: `索引 · ${index}`,
+      connectionId,
+      index,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  // openEsSql opens the Elasticsearch SQL console. One console per connection:
+  // the id keys on the connection alone (copied from openCHSql).
+  function openEsSql(connectionId: string): Tab {
+    const id = `es-sql:${connectionId}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'es-sql',
+      title: 'SQL 控制台',
+      connectionId,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  // openEsTemplates opens the Elasticsearch index-template management panel.
+  // One such tab per connection (legacy /_template API), so the id keys on the
+  // connection alone (copied from openEsSql). opts carries the segmented-tree
+  // entry intent: { template } locates a template's editor, { create: true }
+  // enters the new-template mode. Reopening refreshes both fields on the
+  // existing tab (cleared when opts is omitted) and focuses it — the panel
+  // reacts to the prop change since :key=active.id does not remount it.
+  function openEsTemplates(connectionId: string, opts?: { template?: string; create?: boolean }): Tab {
+    const id = `es-templates:${connectionId}`
+    const applyOpts = (tab: Tab): void => {
+      tab.template = opts?.template
+      tab.newTemplate = opts?.create === true ? true : undefined
+    }
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      applyOpts(existing)
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'es-templates',
+      title: '索引模板',
+      connectionId,
+    }
+    applyOpts(tab)
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  // openEsMonitor opens the Elasticsearch cluster monitoring panel. One such
+  // tab per connection, so the id keys on the connection alone (copied from
+  // openHealth).
+  function openEsMonitor(connectionId: string): Tab {
+    const id = `es-monitor:${connectionId}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'es-monitor',
+      title: '集群监控',
+      connectionId,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
   function closeTab(id: string): void {
     const idx = openTabs.value.findIndex((t) => t.id === id)
     if (idx < 0) return
@@ -295,6 +395,10 @@ export const useTabsStore = defineStore('tabs', () => {
     openCHSql,
     openMysqlTable,
     openMysqlSql,
+    openEsIndex,
+    openEsSql,
+    openEsTemplates,
+    openEsMonitor,
     closeTab,
     closeOthers,
     closeAll,

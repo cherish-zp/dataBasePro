@@ -80,6 +80,30 @@ import type {
   MysqlTruncateTableRequest,
   MysqlCellUpdateRequest,
   MysqlCellUpdatePreview,
+  EsConfigShape,
+  EsIndexInfo,
+  EsColumn,
+  EsMappingRequest,
+  EsPageRowsRequest,
+  EsPageRowsResult,
+  EsExecuteRequest,
+  EsStatementResult,
+  EsCellUpdateRequest,
+  EsGetDocRequest,
+  EsDoc,
+  EsPutDocRequest,
+  EsDeleteDocRequest,
+  EsDeleteByQueryRequest,
+  EsCreateIndexRequest,
+  EsDeleteIndexRequest,
+  EsUpdateIndexSettingsRequest,
+  EsDeleteTemplateRequest,
+  EsTemplateInfo,
+  EsGetTemplateRequest,
+  EsTemplateContent,
+  EsPutTemplateRequest,
+  EsClusterStatsRequest,
+  EsClusterStats,
 } from './types'
 
 export interface Api {
@@ -160,6 +184,31 @@ export interface Api {
   mysqlPreviewCellUpdate?(req: MysqlCellUpdateRequest): Promise<MysqlCellUpdatePreview>
   mysqlUpdateCell?(req: MysqlCellUpdateRequest): Promise<void>
   mysqlTruncateTable?(req: MysqlTruncateTableRequest): Promise<void>
+  // Elasticsearch 系列:后端绑定尚未由 wails generate 生成,同样声明为可选
+  // 成员(全仓既有 fakeApi 零改动);调用方用可选链(?.)访问。
+  testEsConnection?(cfg: EsConfigShape): Promise<void>
+  listEsIndices?(id: string): Promise<EsIndexInfo[]>
+  esMapping?(req: EsMappingRequest): Promise<EsColumn[]>
+  esPageRows?(req: EsPageRowsRequest): Promise<EsPageRowsResult>
+  esExecute?(req: EsExecuteRequest): Promise<EsStatementResult[]>
+  esGetDoc?(req: EsGetDocRequest): Promise<EsDoc>
+  esPutDoc?(req: EsPutDocRequest): Promise<void>
+  esUpdateCell?(req: EsCellUpdateRequest): Promise<void>
+  esDeleteDoc?(req: EsDeleteDocRequest): Promise<void>
+  esDeleteByQuery?(req: EsDeleteByQueryRequest): Promise<number>
+  // ES 集合编辑系列(索引/模板的新建、删除与设置修改):后端绑定尚未由
+  // wails generate 生成,同样声明为可选成员;调用方用可选链(?.)访问。
+  esCreateIndex?(req: EsCreateIndexRequest): Promise<void>
+  esDeleteIndex?(req: EsDeleteIndexRequest): Promise<void>
+  esUpdateIndexSettings?(req: EsUpdateIndexSettingsRequest): Promise<void>
+  esDeleteTemplate?(req: EsDeleteTemplateRequest): Promise<void>
+  // ES 索引模板读取/保存与集群监控:ListEsTemplates/GetEsTemplate/PutEsTemplate/
+  // DeleteEsTemplate 绑定已由 wailsjs 生成;EsClusterStats 绑定尚未生成(主控
+  // 稍后重生成)。全部声明为可选成员(既有 fake 零改动),调用方用可选链(?.)访问。
+  listEsTemplates?(id: string): Promise<EsTemplateInfo[]>
+  getEsTemplate?(req: EsGetTemplateRequest): Promise<EsTemplateContent>
+  putEsTemplate?(req: EsPutTemplateRequest): Promise<void>
+  esClusterStats?(req: EsClusterStatsRequest): Promise<EsClusterStats>
 }
 
 // The Wails binding generator models Go `[]byte` fields as `number[]`, but
@@ -400,6 +449,68 @@ export class WailsApi implements Api {
   }
   mysqlTruncateTable(req: MysqlTruncateTableRequest): Promise<void> {
     return (App as unknown as { MysqlTruncateTable: (req: never) => Promise<void> }).MysqlTruncateTable(req as unknown as never)
+  }
+  // 以下 Elasticsearch API 的后端绑定尚未由 wails generate 生成,先对模块形状
+  // 断言,待主会话生成绑定后即可直接调用(接口侧为可选成员,fake 无需实现)。
+  testEsConnection(cfg: EsConfigShape): Promise<void> {
+    return (App as unknown as { TestESConnection: (cfg: never) => Promise<void> }).TestESConnection(cfg as unknown as never)
+  }
+  listEsIndices(id: string): Promise<EsIndexInfo[]> {
+    return (App as unknown as { ListESIndices: (id: string) => Promise<EsIndexInfo[]> }).ListESIndices(id) as unknown as Promise<EsIndexInfo[]>
+  }
+  esMapping(req: EsMappingRequest): Promise<EsColumn[]> {
+    return (App as unknown as { ESMapping: (req: never) => Promise<EsColumn[]> }).ESMapping(req as unknown as never)
+  }
+  esPageRows(req: EsPageRowsRequest): Promise<EsPageRowsResult> {
+    return (App as unknown as { ESPageRows: (req: never) => Promise<EsPageRowsResult> }).ESPageRows(req as unknown as never)
+  }
+  esExecute(req: EsExecuteRequest): Promise<EsStatementResult[]> {
+    return (App as unknown as { ESExecute: (req: never) => Promise<EsStatementResult[]> }).ESExecute(req as unknown as never)
+  }
+  esGetDoc(req: EsGetDocRequest): Promise<EsDoc> {
+    return (App as unknown as { ESGetDoc: (req: never) => Promise<EsDoc> }).ESGetDoc(req as unknown as never)
+  }
+  esPutDoc(req: EsPutDocRequest): Promise<void> {
+    return (App as unknown as { ESPutDoc: (req: never) => Promise<void> }).ESPutDoc(req as unknown as never)
+  }
+  esUpdateCell(req: EsCellUpdateRequest): Promise<void> {
+    return (App as unknown as { ESUpdateCell: (req: never) => Promise<void> }).ESUpdateCell(req as unknown as never)
+  }
+  esDeleteDoc(req: EsDeleteDocRequest): Promise<void> {
+    return (App as unknown as { ESDeleteDoc: (req: never) => Promise<void> }).ESDeleteDoc(req as unknown as never)
+  }
+  esDeleteByQuery(req: EsDeleteByQueryRequest): Promise<number> {
+    return (App as unknown as { ESDeleteByQuery: (req: never) => Promise<number> }).ESDeleteByQuery(req as unknown as never)
+  }
+  // 以下 ES 集合编辑 API 的后端绑定尚未由 wails generate 生成,先对模块形状
+  // 断言,待主会话生成绑定后即可直接调用(接口侧为可选成员,fake 无需实现)。
+  esCreateIndex(req: EsCreateIndexRequest): Promise<void> {
+    return (App as unknown as { EsCreateIndex: (req: never) => Promise<void> }).EsCreateIndex(req as unknown as never)
+  }
+  esDeleteIndex(req: EsDeleteIndexRequest): Promise<void> {
+    return (App as unknown as { EsDeleteIndex: (req: never) => Promise<void> }).EsDeleteIndex(req as unknown as never)
+  }
+  esUpdateIndexSettings(req: EsUpdateIndexSettingsRequest): Promise<void> {
+    return (App as unknown as { EsUpdateIndexSettings: (req: never) => Promise<void> }).EsUpdateIndexSettings(req as unknown as never)
+  }
+  // esDeleteTemplate 的绑定已由 wailsjs 生成,直接调用。
+  esDeleteTemplate(req: EsDeleteTemplateRequest): Promise<void> {
+    return App.DeleteEsTemplate(req as unknown as never)
+  }
+  // 以下 ES 模板/监控 API:模板四个绑定已由 wailsjs 生成,直接调用;
+  // esClusterStats 绑定尚未生成,先对模块形状断言,待主会话生成绑定后即可
+  // 直接调用(接口侧为可选成员,fake 无需实现)。
+  listEsTemplates(id: string): Promise<EsTemplateInfo[]> {
+    return App.ListEsTemplates(id) as unknown as Promise<EsTemplateInfo[]>
+  }
+  getEsTemplate(req: EsGetTemplateRequest): Promise<EsTemplateContent> {
+    return App.GetEsTemplate(req as unknown as never) as unknown as Promise<EsTemplateContent>
+  }
+  putEsTemplate(req: EsPutTemplateRequest): Promise<void> {
+    return App.PutEsTemplate(req as unknown as never)
+  }
+  esClusterStats(req: EsClusterStatsRequest): Promise<EsClusterStats> {
+    return (App as unknown as { EsClusterStats: (req: never) => Promise<EsClusterStats> }).EsClusterStats(req as unknown as never)
   }
 }
 
