@@ -384,22 +384,64 @@ func (c *MysqlClient) TruncateTable(ctx context.Context, database, table string)
 	return nil
 }
 
+// mysqlExecutor abstracts the shared query/exec surface of *sql.DB and
+// *sql.Conn so the statement loop runs against the pool or a dedicated pinned
+// connection alike, and unit tests can inject fakes without dialing.
+type mysqlExecutor interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // Execute runs the script statement by statement (autocommit; no explicit
-// transaction). Each result carries its duration, and either columns+rows
+// transaction). database 非空时取一条专用连接先执行 USE,随后全部语句固定在
+// 该连接上运行(在 *sql.DB 连接池上 USE 的会话状态不跨语句保持);为空时
+// 沿用连接池路径。Each result carries its duration, and either columns+rows
 // (statements that return a result set) or an error text. A failing statement
 // records its error and stops the run; the results gathered so far are
 // returned.
-func (c *MysqlClient) Execute(ctx context.Context, sqlText string) ([]model.MysqlStatementResult, error) {
+func (c *MysqlClient) Execute(ctx context.Context, database, sqlText string) ([]model.MysqlStatementResult, error) {
 	statements := SplitSQLStatements(sqlText)
 	if len(statements) == 0 {
 		return nil, errors.New("没有可执行的 SQL 语句")
 	}
+	if db := strings.TrimSpace(database); db != "" {
+		return c.executeOnPinnedDatabase(ctx, db, statements)
+	}
+	return runMysqlStatements(ctx, c.db, statements)
+}
+
+// executeOnPinnedDatabase grabs one dedicated connection, pins it to the
+// database with a backtick-escaped USE, and runs every statement there so the
+// selected schema persists across the script. The connection goes back to the
+// pool afterwards. USE 失败即中止(库不存在等),不执行任何语句。
+func (c *MysqlClient) executeOnPinnedDatabase(ctx context.Context, database string, statements []string) ([]model.MysqlStatementResult, error) {
+	conn, err := c.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, buildMysqlUseDatabase(database)); err != nil {
+		return nil, fmt.Errorf("use database: %w", err)
+	}
+	return runMysqlStatements(ctx, conn, statements)
+}
+
+// buildMysqlUseDatabase renders the USE statement: the identifier is
+// backtick-quoted with embedded backticks doubled.
+func buildMysqlUseDatabase(database string) string {
+	return "USE " + quoteMysqlIdent(database)
+}
+
+// runMysqlStatements runs the statements in order against exec, collecting
+// per-statement results; the first failure records its error and stops the
+// run with the results gathered so far.
+func runMysqlStatements(ctx context.Context, exec mysqlExecutor, statements []string) ([]model.MysqlStatementResult, error) {
 	out := make([]model.MysqlStatementResult, 0, len(statements))
 	for _, stmt := range statements {
 		res := model.MysqlStatementResult{SQL: stmt}
 		start := time.Now()
 		if mysqlStatementReturnsRows(stmt) {
-			rows, err := c.db.QueryContext(ctx, stmt)
+			rows, err := exec.QueryContext(ctx, stmt)
 			if err != nil {
 				res.DurationMs = msSince(start)
 				res.Error = err.Error()
@@ -419,7 +461,7 @@ func (c *MysqlClient) Execute(ctx context.Context, sqlText string) ([]model.Mysq
 			}
 			res.Columns, res.Rows = cols, dataRows
 		} else {
-			if _, err := c.db.ExecContext(ctx, stmt); err != nil {
+			if _, err := exec.ExecContext(ctx, stmt); err != nil {
 				res.DurationMs = msSince(start)
 				res.Error = err.Error()
 				return append(out, res), nil
@@ -752,13 +794,14 @@ func (s *Service) MysqlTruncateTable(ctx context.Context, id, database, table st
 	return m.TruncateTable(ctx, database, table)
 }
 
-// MysqlExecute runs a SQL script statement by statement.
-func (s *Service) MysqlExecute(ctx context.Context, id, sqlText string) ([]model.MysqlStatementResult, error) {
+// MysqlExecute runs a SQL script statement by statement; database 非空时全部
+// 语句固定在一条 USE 过的专用连接上执行,为空时走连接池。
+func (s *Service) MysqlExecute(ctx context.Context, id, database, sqlText string) ([]model.MysqlStatementResult, error) {
 	m, err := s.mysql(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return m.Execute(ctx, sqlText)
+	return m.Execute(ctx, database, sqlText)
 }
 
 // MysqlPreviewCellUpdate 预览单元格更新:构造展示语句 + 同 WHERE 命中行数

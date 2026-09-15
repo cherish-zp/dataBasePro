@@ -102,12 +102,12 @@ func TestQueryFileListIgnoresNonSQLAndSubdirsAndTempFiles(t *testing.T) {
 func TestQueryFileReadRoundTripsHeaderAndBody(t *testing.T) {
 	dir := t.TempDir()
 	s := NewQueryFileStore(dir)
-	header := "-- connection: conn-9\n"
+	header := "-- connection: conn-9\n-- database: 订单库\n"
 	body := "SELECT count(*) FROM events;\n"
-	if err := s.Write("消费统计.sql", body, "conn-9"); err != nil {
+	if err := s.Write("消费统计.sql", body, "conn-9", "订单库"); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	content, connectionID, err := s.Read("消费统计.sql")
+	content, connectionID, database, err := s.Read("消费统计.sql")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -117,6 +117,9 @@ func TestQueryFileReadRoundTripsHeaderAndBody(t *testing.T) {
 	if connectionID != "conn-9" {
 		t.Fatalf("connection id = %q, want conn-9", connectionID)
 	}
+	if database != "订单库" {
+		t.Fatalf("database = %q, want 订单库", database)
+	}
 }
 
 func TestQueryFileReadLegacyFileWithoutHeader(t *testing.T) {
@@ -124,21 +127,21 @@ func TestQueryFileReadLegacyFileWithoutHeader(t *testing.T) {
 	raw := "SELECT 1;\n-- connection: 不在头部,不算数\n"
 	writeQueryFileRaw(t, dir, "legacy.sql", raw, time.Now())
 
-	content, connectionID, err := NewQueryFileStore(dir).Read("legacy.sql")
+	content, connectionID, database, err := NewQueryFileStore(dir).Read("legacy.sql")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
 	if content != raw {
 		t.Fatalf("legacy content must be returned verbatim, got %q", content)
 	}
-	if connectionID != "" {
-		t.Fatalf("legacy file must have an empty connection id, got %q", connectionID)
+	if connectionID != "" || database != "" {
+		t.Fatalf("legacy file must have empty header values, got connection %q database %q", connectionID, database)
 	}
 }
 
 func TestQueryFileReadMissing(t *testing.T) {
 	s := NewQueryFileStore(t.TempDir())
-	_, _, err := s.Read("missing.sql")
+	_, _, _, err := s.Read("missing.sql")
 	if err == nil {
 		t.Fatal("reading a missing query file must fail")
 	}
@@ -150,7 +153,8 @@ func TestQueryFileReadMissing(t *testing.T) {
 func TestQueryFileWriteCreatesDirAndPersistsHeader(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "queries")
 	s := NewQueryFileStore(dir)
-	if err := s.Write("订单查询.sql", "SELECT * FROM orders;\n", "conn-1"); err != nil {
+	// database 为空时不写 database 行(与既有文件格式保持兼容)。
+	if err := s.Write("订单查询.sql", "SELECT * FROM orders;\n", "conn-1", ""); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "订单查询.sql"))
@@ -172,7 +176,7 @@ func TestQueryFileWriteCreatesDirAndPersistsHeader(t *testing.T) {
 func TestQueryFileWriteWithoutConnectionKeepsContentVerbatim(t *testing.T) {
 	dir := t.TempDir()
 	s := NewQueryFileStore(dir)
-	if err := s.Write("plain.sql", "SELECT 2;\n", ""); err != nil {
+	if err := s.Write("plain.sql", "SELECT 2;\n", "", ""); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "plain.sql"))
@@ -184,13 +188,35 @@ func TestQueryFileWriteWithoutConnectionKeepsContentVerbatim(t *testing.T) {
 	}
 }
 
+func TestQueryFileWriteDatabaseOnlyHeader(t *testing.T) {
+	dir := t.TempDir()
+	s := NewQueryFileStore(dir)
+	if err := s.Write("仅库.sql", "SELECT 3;\n", "", "报表库"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "仅库.sql"))
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(raw) != "-- database: 报表库\nSELECT 3;\n" {
+		t.Fatalf("database-only write must emit only the database line, got %q", string(raw))
+	}
+	_, _, database, err := s.Read("仅库.sql")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if database != "报表库" {
+		t.Fatalf("database = %q, want 报表库", database)
+	}
+}
+
 func TestQueryFileWriteOverwritesSameName(t *testing.T) {
 	dir := t.TempDir()
 	s := NewQueryFileStore(dir)
-	if err := s.Write("同名.sql", "SELECT 1;\n", "conn-1"); err != nil {
+	if err := s.Write("同名.sql", "SELECT 1;\n", "conn-1", "db1"); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
-	if err := s.Write("同名.sql", "SELECT 22;\n", "conn-2"); err != nil {
+	if err := s.Write("同名.sql", "SELECT 22;\n", "conn-2", "db2"); err != nil {
 		t.Fatalf("second write must overwrite: %v", err)
 	}
 	list, err := s.List()
@@ -200,19 +226,19 @@ func TestQueryFileWriteOverwritesSameName(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("overwrite must not create extra files, got %+v", list)
 	}
-	content, connectionID, err := s.Read("同名.sql")
+	content, connectionID, database, err := s.Read("同名.sql")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if content != "-- connection: conn-2\nSELECT 22;\n" || connectionID != "conn-2" {
-		t.Fatalf("overwrite not applied: %q / %q", content, connectionID)
+	if content != "-- connection: conn-2\n-- database: db2\nSELECT 22;\n" || connectionID != "conn-2" || database != "db2" {
+		t.Fatalf("overwrite not applied: %q / %q / %q", content, connectionID, database)
 	}
 }
 
 func TestQueryFileWriteRejectsIllegalNames(t *testing.T) {
 	s := NewQueryFileStore(t.TempDir())
 	for _, name := range []string{"../x.sql", "a/b.sql", `a\b.sql`, "noext", "x.txt"} {
-		if err := s.Write(name, "SELECT 1", "conn-1"); err == nil {
+		if err := s.Write(name, "SELECT 1", "conn-1", ""); err == nil {
 			t.Fatalf("illegal name %q must be rejected", name)
 		}
 	}
@@ -228,13 +254,13 @@ func TestQueryFileWriteRejectsIllegalNames(t *testing.T) {
 func TestQueryFileDelete(t *testing.T) {
 	dir := t.TempDir()
 	s := NewQueryFileStore(dir)
-	if err := s.Write("待删.sql", "SELECT 1;\n", "conn-1"); err != nil {
+	if err := s.Write("待删.sql", "SELECT 1;\n", "conn-1", ""); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if err := s.Delete("待删.sql"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, _, err := s.Read("待删.sql"); err == nil {
+	if _, _, _, err := s.Read("待删.sql"); err == nil {
 		t.Fatal("file must be gone after delete")
 	}
 	entries, err := os.ReadDir(dir)
@@ -298,38 +324,57 @@ func TestParseQueryFileHeader(t *testing.T) {
 		label    string
 		content  string
 		wantID   string
+		wantDB   string
 		wantBody string
 	}{
-		{"带头注释", "-- connection: conn-1\nSELECT 1;", "conn-1", "SELECT 1;"},
-		{"头注释后空行", "-- connection: conn-1\n\nSELECT 1;", "conn-1", "\nSELECT 1;"},
-		{"无头注释", "SELECT 1;", "", "SELECT 1;"},
-		{"空内容", "", "", ""},
+		{"带头注释", "-- connection: conn-1\nSELECT 1;", "conn-1", "", "SELECT 1;"},
+		{"头注释后空行", "-- connection: conn-1\n\nSELECT 1;", "conn-1", "", "\nSELECT 1;"},
+		{"无头注释", "SELECT 1;", "", "", "SELECT 1;"},
+		{"空内容", "", "", "", ""},
 		{
 			"connectionID 含空格",
 			"-- connection: my conn-1 \nSELECT 1;",
 			"my conn-1",
+			"",
 			"SELECT 1;",
 		},
 		{
 			"注释块中混有多行注释",
 			"-- tool: dbclient\n-- connection: conn-2\n-- note: 日常巡检\nSELECT 2;",
 			"conn-2",
+			"",
 			"SELECT 2;",
 		},
 		{
 			"connection 行出现在正文不算头注释",
 			"SELECT 1;\n-- connection: conn-3\n",
 			"",
+			"",
 			"SELECT 1;\n-- connection: conn-3\n",
 		},
-		{"仅头注释无正文", "-- connection: conn-4\n", "conn-4", ""},
+		{"仅头注释无正文", "-- connection: conn-4\n", "conn-4", "", ""},
+		{
+			"database 行跟在 connection 之后",
+			"-- connection: conn-5\n-- database: 报表\nSELECT 5;",
+			"conn-5",
+			"报表",
+			"SELECT 5;",
+		},
+		{"仅 database 行", "-- database: 库A\nSELECT 6;", "", "库A", "SELECT 6;"},
+		{
+			"database 行出现在正文不算头注释",
+			"-- connection: conn-6\nSELECT 7;\n-- database: 正文里的库\n",
+			"conn-6",
+			"",
+			"SELECT 7;\n-- database: 正文里的库\n",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.label, func(t *testing.T) {
-			id, body := ParseQueryFileHeader(tc.content)
-			if id != tc.wantID || body != tc.wantBody {
-				t.Fatalf("ParseQueryFileHeader(%q) = (%q, %q), want (%q, %q)",
-					tc.content, id, body, tc.wantID, tc.wantBody)
+			id, database, body := ParseQueryFileHeader(tc.content)
+			if id != tc.wantID || database != tc.wantDB || body != tc.wantBody {
+				t.Fatalf("ParseQueryFileHeader(%q) = (%q, %q, %q), want (%q, %q, %q)",
+					tc.content, id, database, body, tc.wantID, tc.wantDB, tc.wantBody)
 			}
 		})
 	}

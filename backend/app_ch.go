@@ -43,6 +43,13 @@ var builtinDrivers = []DriverInfo{
 		Description: "ClickHouse 库表浏览、分页查询与 SQL 控制台(原生 TCP 协议)",
 	},
 	{
+		Name:        "Elasticsearch",
+		Library:     "net/http + encoding/json",
+		Version:     "v8.x",
+		DefaultPort: 9200,
+		Description: "Elasticsearch/OpenSearch 索引浏览、文档编辑与 SQL 控制台(REST 协议)",
+	},
+	{
 		Name:        "MySQL",
 		Library:     "go-sql-driver/mysql",
 		Version:     "v1.10.1",

@@ -20,6 +20,7 @@ type fakeMysqlApp struct {
 	pageTarget  string
 	truncated   string
 	truncateErr error
+	execDB      string
 	execSQL     string
 	execResult  []model.MysqlStatementResult
 	execErr     error
@@ -56,7 +57,8 @@ func (f *fakeMysqlApp) TruncateTable(_ context.Context, database, table string) 
 	f.truncated = database + "." + table
 	return f.truncateErr
 }
-func (f *fakeMysqlApp) Execute(_ context.Context, sqlText string) ([]model.MysqlStatementResult, error) {
+func (f *fakeMysqlApp) Execute(_ context.Context, database, sqlText string) ([]model.MysqlStatementResult, error) {
+	f.execDB = database
 	f.execSQL = sqlText
 	return f.execResult, f.execErr
 }
@@ -217,6 +219,25 @@ func TestAppMysqlExecuteAuditedWithCappedTarget(t *testing.T) {
 	}
 }
 
+// TestAppMysqlExecutePassesDatabase 控制台的当前库必须原样透传到执行层。
+func TestAppMysqlExecutePassesDatabase(t *testing.T) {
+	fake := &fakeMysqlApp{}
+	app, connID := newMysqlApp(t, model.ConnectionTypeMySQL, fake)
+	if _, err := app.MysqlExecute(MysqlExecuteRequest{ConnectionID: connID, Database: "订单库", SQL: "SELECT 1"}); err != nil {
+		t.Fatalf("MysqlExecute: %v", err)
+	}
+	if fake.execDB != "订单库" || fake.execSQL != "SELECT 1" {
+		t.Fatalf("database/sql must pass through: db=%q sql=%q", fake.execDB, fake.execSQL)
+	}
+	// 空 database 同样透传(空串 = 不发 USE,走连接池默认上下文)。
+	if _, err := app.MysqlExecute(MysqlExecuteRequest{ConnectionID: connID, SQL: "SELECT 2"}); err != nil {
+		t.Fatalf("MysqlExecute without database: %v", err)
+	}
+	if fake.execDB != "" || fake.execSQL != "SELECT 2" {
+		t.Fatalf("empty database must pass through as empty: db=%q sql=%q", fake.execDB, fake.execSQL)
+	}
+}
+
 func TestAppMysqlExecuteFailureAudited(t *testing.T) {
 	app, connID := newMysqlApp(t, model.ConnectionTypeMySQL, &fakeMysqlApp{execErr: errors.New("boom")})
 	if _, err := app.MysqlExecute(MysqlExecuteRequest{ConnectionID: connID, SQL: "SELECT 1"}); err == nil {
@@ -352,14 +373,22 @@ func TestAppMysqlRequestJSONShapes(t *testing.T) {
 		}
 	}
 
-	b, err = json.Marshal(MysqlExecuteRequest{ConnectionID: "c", SQL: "SELECT 1"})
+	b, err = json.Marshal(MysqlExecuteRequest{ConnectionID: "c", Database: "app", SQL: "SELECT 1"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	for _, key := range []string{"connection_id", "sql"} {
+	for _, key := range []string{"connection_id", "database", "sql"} {
 		if !strings.Contains(string(b), `"`+key+`"`) {
 			t.Fatalf("MysqlExecuteRequest JSON must expose %q, got %s", key, b)
 		}
+	}
+	// database 为空时不得出现在 JSON(omitempty)。
+	b, err = json.Marshal(MysqlExecuteRequest{ConnectionID: "c", SQL: "SELECT 1"})
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	if strings.Contains(string(b), "database") {
+		t.Fatalf("empty database must be omitted from the JSON, got %s", b)
 	}
 }
 

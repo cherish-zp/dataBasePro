@@ -105,6 +105,8 @@ func (s *Service) ConnectConnection(ctx context.Context, id string) error {
 		ds, err = s.buildRedisClient(c)
 	case model.ConnectionTypeClickHouse:
 		ds, err = s.buildCHClient(c)
+	case model.ConnectionTypeES:
+		ds, err = s.buildEsClient(c)
 	case model.ConnectionTypeMySQL, model.ConnectionTypeTiDB:
 		ds, err = s.buildMysqlClient(c)
 	default:
@@ -149,6 +151,22 @@ func (s *Service) buildCHClient(c *model.Connection) (*CHClient, error) {
 		return nil, fmt.Errorf("decode clickhouse config: %w", err)
 	}
 	return NewCHClient(cfg)
+}
+
+// buildEsClient creates the Elasticsearch client for the connection (it pings
+// GET / as part of construction).
+func (s *Service) buildEsClient(c *model.Connection) (*EsClient, error) {
+	if c.Type != model.ConnectionTypeES {
+		return nil, fmt.Errorf("connection %q is not an Elasticsearch source (type %q)", c.ID, c.Type)
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	cfg, err := c.EsConfig()
+	if err != nil {
+		return nil, fmt.Errorf("decode es config: %w", err)
+	}
+	return NewEsClient(cfg)
 }
 
 // buildMysqlClient creates the MySQL/TiDB client for the connection (it pings
@@ -443,6 +461,212 @@ func (s *Service) CHExecute(ctx context.Context, id, sqlText string) ([]model.CH
 		return nil, err
 	}
 	return ch.Execute(ctx, sqlText)
+}
+
+// EsTestConnection verifies connectivity to the given config without
+// persisting or pooling anything (the client pings GET / during construction).
+func (s *Service) EsTestConnection(ctx context.Context, cfg model.EsConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	client, err := NewEsClient(cfg)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.Connect(ctx)
+}
+
+// es returns the pooled Elasticsearch client for the connection,
+// auto-connecting when the tree has not connected it yet.
+func (s *Service) es(ctx context.Context, id string) (EsDataSource, error) {
+	if ds, err := s.pool.Get(id); err == nil {
+		e, ok := ds.(EsDataSource)
+		if !ok {
+			return nil, fmt.Errorf("connection %q is not an Elasticsearch source", id)
+		}
+		return e, nil
+	}
+	if err := s.ConnectConnection(ctx, id); err != nil {
+		return nil, err
+	}
+	ds, err := s.pool.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	e, ok := ds.(EsDataSource)
+	if !ok {
+		return nil, fmt.Errorf("connection %q is not an Elasticsearch source", id)
+	}
+	return e, nil
+}
+
+// EsListIndices lists the user indices (system indices filtered client-side).
+func (s *Service) EsListIndices(ctx context.Context, id string) ([]model.EsIndexInfo, error) {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return e.ListIndices(ctx)
+}
+
+// EsClusterStats aggregates the cluster monitoring metrics in one call.
+func (s *Service) EsClusterStats(ctx context.Context, id string) (model.EsClusterStats, error) {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return model.EsClusterStats{}, err
+	}
+	return e.ClusterStats(ctx)
+}
+
+// EsPageRows returns one page of an index's documents with metadata.
+func (s *Service) EsPageRows(ctx context.Context, id, index, where, orderBy string, asc bool, limit, offset int) (model.EsPageRowsResult, error) {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return model.EsPageRowsResult{}, err
+	}
+	return e.PageRows(ctx, index, where, orderBy, asc, limit, offset)
+}
+
+// EsMapping flattens an index's mapping into columns.
+func (s *Service) EsMapping(ctx context.Context, id, index string) ([]model.EsColumn, error) {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return e.Mapping(ctx, index)
+}
+
+// EsGetDoc loads one document's _source JSON text.
+func (s *Service) EsGetDoc(ctx context.Context, id, index, docID string) (string, error) {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return e.GetDoc(ctx, index, docID)
+}
+
+// EsPutDoc replaces one document (dangerous, audited by the app layer).
+func (s *Service) EsPutDoc(ctx context.Context, id, index, docID, docJSON string) error {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return err
+	}
+	return e.PutDoc(ctx, index, docID, docJSON)
+}
+
+// EsUpdateCell patches one document field (dangerous, audited by the app layer).
+func (s *Service) EsUpdateCell(ctx context.Context, id, index, docID, column string, value *string) error {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return err
+	}
+	return e.UpdateCell(ctx, index, docID, column, value)
+}
+
+// EsDeleteDoc removes one document (dangerous, audited by the app layer).
+func (s *Service) EsDeleteDoc(ctx context.Context, id, index, docID string) error {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return err
+	}
+	return e.DeleteDoc(ctx, index, docID)
+}
+
+// EsDeleteByQuery deletes documents matching the DSL query (dangerous, audited
+// by the app layer) and returns the removed count.
+func (s *Service) EsDeleteByQuery(ctx context.Context, id, index, query string) (int64, error) {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	return e.DeleteByQuery(ctx, index, query)
+}
+
+// EsExecute runs a SQL script statement by statement over the probed endpoint.
+func (s *Service) EsExecute(ctx context.Context, id, sqlText string) ([]model.EsStatementResult, error) {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return e.Execute(ctx, sqlText)
+}
+
+// EsRefreshIndex forces the index's shards to refresh (near-immediate search
+// visibility of recently indexed documents).
+func (s *Service) EsRefreshIndex(ctx context.Context, id, index string) error {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return err
+	}
+	return e.RefreshIndex(ctx, index)
+}
+
+// EsListTemplates lists the legacy index templates (name + declared order).
+func (s *Service) EsListTemplates(ctx context.Context, id string) ([]model.EsTemplateInfo, error) {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return e.ListTemplates(ctx)
+}
+
+// EsGetTemplate returns the template's raw JSON text.
+func (s *Service) EsGetTemplate(ctx context.Context, id, name string) (string, error) {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return e.GetTemplate(ctx, name)
+}
+
+// EsPutTemplate creates or replaces the legacy index template (dangerous,
+// audited by the app layer).
+func (s *Service) EsPutTemplate(ctx context.Context, id, name, templateJSON string) error {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return err
+	}
+	return e.PutTemplate(ctx, name, templateJSON)
+}
+
+// EsDeleteTemplate removes the legacy index template (dangerous, audited by
+// the app layer).
+func (s *Service) EsDeleteTemplate(ctx context.Context, id, name string) error {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return err
+	}
+	return e.DeleteTemplate(ctx, name)
+}
+
+// EsCreateIndex creates the index with shard/replica settings (dangerous,
+// audited by the app layer).
+func (s *Service) EsCreateIndex(ctx context.Context, id, index string, shards, replicas int64) error {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return err
+	}
+	return e.CreateIndex(ctx, index, shards, replicas)
+}
+
+// EsDeleteIndex removes the index (dangerous, audited by the app layer).
+func (s *Service) EsDeleteIndex(ctx context.Context, id, index string) error {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return err
+	}
+	return e.DeleteIndex(ctx, index)
+}
+
+// EsUpdateIndexSettings applies index-level settings (dangerous, audited by
+// the app layer).
+func (s *Service) EsUpdateIndexSettings(ctx context.Context, id, index, settingsJSON string) error {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return err
+	}
+	return e.UpdateIndexSettings(ctx, index, settingsJSON)
 }
 
 // MysqlTestConnection verifies connectivity to the given config without

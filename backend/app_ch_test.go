@@ -236,15 +236,16 @@ func TestAppListDriversStatic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListDrivers: %v", err)
 	}
-	if len(drivers) != 5 {
-		t.Fatalf("expected 5 builtin drivers, got %+v", drivers)
+	if len(drivers) != 6 {
+		t.Fatalf("expected 6 builtin drivers, got %+v", drivers)
 	}
 	want := map[string]DriverInfo{
-		"Kafka":      {Name: "Kafka", Library: "franz-go", Version: "v1.21.6", DefaultPort: 9092},
-		"Redis":      {Name: "Redis", Library: "go-redis", Version: "v9.22.0", DefaultPort: 6379},
-		"ClickHouse": {Name: "ClickHouse", Library: "clickhouse-go", Version: "v2.48.0", DefaultPort: 9000},
-		"MySQL":      {Name: "MySQL", Library: "go-sql-driver/mysql", Version: "v1.10.1", DefaultPort: 3306},
-		"TiDB":       {Name: "TiDB", Library: "go-sql-driver/mysql", Version: "v1.10.1", DefaultPort: 4000},
+		"Kafka":         {Name: "Kafka", Library: "franz-go", Version: "v1.21.6", DefaultPort: 9092},
+		"Redis":         {Name: "Redis", Library: "go-redis", Version: "v9.22.0", DefaultPort: 6379},
+		"ClickHouse":    {Name: "ClickHouse", Library: "clickhouse-go", Version: "v2.48.0", DefaultPort: 9000},
+		"Elasticsearch": {Name: "Elasticsearch", Library: "net/http + encoding/json", Version: "v8.x", DefaultPort: 9200},
+		"MySQL":         {Name: "MySQL", Library: "go-sql-driver/mysql", Version: "v1.10.1", DefaultPort: 3306},
+		"TiDB":          {Name: "TiDB", Library: "go-sql-driver/mysql", Version: "v1.10.1", DefaultPort: 4000},
 	}
 	for _, d := range drivers {
 		w, ok := want[d.Name]

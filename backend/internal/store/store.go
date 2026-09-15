@@ -197,7 +197,8 @@ func (s *Store) scanConnection(row scanner) (*model.Connection, error) {
 
 // marshalConfig serialises the config for the connection type, encrypting
 // the password field (kafka: SASL.Password, redis: Password, clickhouse:
-// Password) so the raw stored JSON never contains plaintext secrets.
+// Password, es: Password + ApiKey) so the raw stored JSON never contains
+// plaintext secrets.
 func (s *Store) marshalConfig(typ model.ConnectionType, raw json.RawMessage) (string, error) {
 	switch typ {
 	case model.ConnectionTypeRedis:
@@ -247,6 +248,30 @@ func (s *Store) marshalConfig(typ model.ConnectionType, raw json.RawMessage) (st
 				return "", fmt.Errorf("encrypt password: %w", err)
 			}
 			cfg.Password = enc
+		}
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return "", fmt.Errorf("marshal config: %w", err)
+		}
+		return string(b), nil
+	case model.ConnectionTypeES:
+		var cfg model.EsConfig
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return "", fmt.Errorf("unmarshal es config: %w", err)
+		}
+		if cfg.Password != "" {
+			enc, err := s.crypto.Encrypt(cfg.Password)
+			if err != nil {
+				return "", fmt.Errorf("encrypt password: %w", err)
+			}
+			cfg.Password = enc
+		}
+		if cfg.ApiKey != "" {
+			enc, err := s.crypto.Encrypt(cfg.ApiKey)
+			if err != nil {
+				return "", fmt.Errorf("encrypt api key: %w", err)
+			}
+			cfg.ApiKey = enc
 		}
 		b, err := json.Marshal(cfg)
 		if err != nil {
@@ -323,6 +348,31 @@ func (s *Store) unmarshalConfig(typ string, raw string) (json.RawMessage, error)
 				return nil, fmt.Errorf("decrypt password: %w", err)
 			}
 			cfg.Password = dec
+		}
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(b), nil
+	case model.ConnectionTypeES:
+		var cfg model.EsConfig
+		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+			return nil, fmt.Errorf("unmarshal es config: %w", err)
+		}
+		encPrefixFull := encPrefix + cryptoVersion + ":"
+		if cfg.Password != "" && strings.HasPrefix(cfg.Password, encPrefixFull) {
+			dec, err := s.crypto.Decrypt(cfg.Password)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt password: %w", err)
+			}
+			cfg.Password = dec
+		}
+		if cfg.ApiKey != "" && strings.HasPrefix(cfg.ApiKey, encPrefixFull) {
+			dec, err := s.crypto.Decrypt(cfg.ApiKey)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt api key: %w", err)
+			}
+			cfg.ApiKey = dec
 		}
 		b, err := json.Marshal(cfg)
 		if err != nil {

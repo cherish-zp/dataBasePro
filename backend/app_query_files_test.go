@@ -21,6 +21,7 @@ func TestAppQueryFileRoundTrip(t *testing.T) {
 		Name:         "每日消费延迟",
 		Content:      "SELECT * FROM orders;\n",
 		ConnectionID: "conn-1",
+		Database:     "订单库",
 	}); err != nil {
 		t.Fatalf("WriteQueryFile: %v", err)
 	}
@@ -47,7 +48,10 @@ func TestAppQueryFileRoundTrip(t *testing.T) {
 	if got.ConnectionID != "conn-1" {
 		t.Fatalf("read connection_id = %q, want conn-1", got.ConnectionID)
 	}
-	if got.Content != "-- connection: conn-1\nSELECT * FROM orders;\n" {
+	if got.Database != "订单库" {
+		t.Fatalf("read database = %q, want 订单库", got.Database)
+	}
+	if got.Content != "-- connection: conn-1\n-- database: 订单库\nSELECT * FROM orders;\n" {
 		t.Fatalf("read must return the full original text, got %q", got.Content)
 	}
 	if _, err := app.ReadQueryFile(QueryFileReadRequest{Dir: dir, Name: "每日消费延迟.sql"}); err != nil {
@@ -114,9 +118,31 @@ func TestExpandQueryDir(t *testing.T) {
 	}
 }
 
+// TestAppQueryFileWriteWithoutDatabaseOmitsHeaderLine 空 database 不得写入
+// database 头注释行(旧文件保持无该行)。
+func TestAppQueryFileWriteWithoutDatabaseOmitsHeaderLine(t *testing.T) {
+	app := newTestApp(t)
+	dir := t.TempDir()
+	if err := app.WriteQueryFile(QueryFileWriteRequest{
+		Dir: dir, Name: "无库.sql", Content: "SELECT 1;\n", ConnectionID: "conn-2",
+	}); err != nil {
+		t.Fatalf("WriteQueryFile: %v", err)
+	}
+	got, err := app.ReadQueryFile(QueryFileReadRequest{Dir: dir, Name: "无库"})
+	if err != nil {
+		t.Fatalf("ReadQueryFile: %v", err)
+	}
+	if got.Content != "-- connection: conn-2\nSELECT 1;\n" {
+		t.Fatalf("empty database must not add a header line, got %q", got.Content)
+	}
+	if got.Database != "" {
+		t.Fatalf("empty database must read back empty, got %q", got.Database)
+	}
+}
+
 // TestQueryFileWireShape 锁定前后端 JSON 契约:请求与列表条目均为 snake_case。
 func TestQueryFileWireShape(t *testing.T) {
-	req := QueryFileWriteRequest{Dir: "~/q", Name: "a.sql", Content: "SELECT 1", ConnectionID: "c1"}
+	req := QueryFileWriteRequest{Dir: "~/q", Name: "a.sql", Content: "SELECT 1", ConnectionID: "c1", Database: "app"}
 	raw, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -125,10 +151,18 @@ func TestQueryFileWireShape(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, key := range []string{"dir", "name", "content", "connection_id"} {
+	for _, key := range []string{"dir", "name", "content", "connection_id", "database"} {
 		if _, ok := m[key]; !ok {
 			t.Fatalf("QueryFileWriteRequest JSON must expose key %q, got %s", key, raw)
 		}
+	}
+	// database 为空时不得出现在 JSON(omitempty)。
+	raw, err = json.Marshal(QueryFileWriteRequest{Dir: "d", Name: "a.sql", Content: "s"})
+	if err != nil {
+		t.Fatalf("marshal empty request: %v", err)
+	}
+	if strings.Contains(string(raw), "database") {
+		t.Fatalf("empty database must be omitted from the JSON, got %s", raw)
 	}
 
 	info := store.QueryFileInfo{Name: "a", ConnectionID: "c1", SizeBytes: 7, ModTimeMs: 42}
@@ -145,7 +179,7 @@ func TestQueryFileWireShape(t *testing.T) {
 		}
 	}
 
-	content := QueryFileContent{Content: "SELECT 1", ConnectionID: "c1"}
+	content := QueryFileContent{Content: "SELECT 1", ConnectionID: "c1", Database: "app"}
 	raw, err = json.Marshal(content)
 	if err != nil {
 		t.Fatalf("marshal content: %v", err)
@@ -153,7 +187,7 @@ func TestQueryFileWireShape(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatalf("unmarshal content: %v", err)
 	}
-	for _, key := range []string{"content", "connection_id"} {
+	for _, key := range []string{"content", "connection_id", "database"} {
 		if _, ok := m[key]; !ok {
 			t.Fatalf("QueryFileContent JSON must expose key %q, got %s", key, raw)
 		}

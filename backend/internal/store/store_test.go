@@ -554,3 +554,58 @@ func TestStoreAuditEmptyReturnsSlice(t *testing.T) {
 		t.Fatalf("empty audit list must serialize to [] over JSON, got %s", b)
 	}
 }
+
+// ES 连接必须按类型编解码:config 不得被默认的 kafka 分支重写成
+// {"bootstrap_servers":null};password 与 api_key 两个凭据都要加密落盘、
+// 回读解密,其余字段保真。
+func TestStoreESCreateAndGet(t *testing.T) {
+	s := newTestStore(t)
+	c := &model.Connection{
+		ID:   "es1",
+		Name: "es-dev",
+		Type: model.ConnectionTypeES,
+		Config: model.MustConfigJSON(model.EsConfig{
+			Hosts:    []string{"10.0.0.2:9200"},
+			Username: "elastic",
+			Password: "es-secret",
+			ApiKey:   "es-key-material",
+			AuthMode: model.EsAuthBasic,
+			TLSMode:  model.EsTLSSkipVerify,
+		}),
+	}
+	if err := s.CreateConnection(c); err != nil {
+		t.Fatalf("CreateConnection failed: %v", err)
+	}
+	// 原始落盘 JSON:不得含明文凭据,且必须带加密前缀。
+	var raw string
+	if err := s.db.QueryRow(`SELECT config_json FROM connections WHERE id = ?`, "es1").Scan(&raw); err != nil {
+		t.Fatalf("query raw config failed: %v", err)
+	}
+	if strings.Contains(raw, "es-secret") || strings.Contains(raw, "es-key-material") {
+		t.Fatalf("plaintext es credentials must not appear in stored config_json: %s", raw)
+	}
+	if !strings.Contains(raw, "enc:v1:") {
+		t.Fatal("stored es config_json must contain encrypted credential fields")
+	}
+	// 回读:凭据解密还原,其余字段保真。
+	got, err := s.GetConnection("es1")
+	if err != nil {
+		t.Fatalf("GetConnection failed: %v", err)
+	}
+	gotCfg, err := got.EsConfig()
+	if err != nil {
+		t.Fatalf("decode es config: %v", err)
+	}
+	if gotCfg.Password != "es-secret" {
+		t.Fatalf("es password not round-tripped: %q", gotCfg.Password)
+	}
+	if gotCfg.ApiKey != "es-key-material" {
+		t.Fatalf("es api_key not round-tripped: %q", gotCfg.ApiKey)
+	}
+	if gotCfg.Username != "elastic" || gotCfg.AuthMode != model.EsAuthBasic || gotCfg.TLSMode != model.EsTLSSkipVerify {
+		t.Fatalf("unexpected decoded config: %+v", gotCfg)
+	}
+	if len(gotCfg.Hosts) != 1 || gotCfg.Hosts[0] != "10.0.0.2:9200" {
+		t.Fatalf("es hosts must round-trip, got %+v", gotCfg.Hosts)
+	}
+}

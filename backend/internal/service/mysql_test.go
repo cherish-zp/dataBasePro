@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -283,6 +286,7 @@ type fakeMysqlDS struct {
 	page         model.MysqlPageRowsResult
 	pageTarget   string
 	truncated    string
+	execDB       string
 	execSQL      string
 	execResult   []model.MysqlStatementResult
 	previewOut   model.MysqlCellUpdatePreview
@@ -315,7 +319,8 @@ func (f *fakeMysqlDS) TruncateTable(_ context.Context, database, table string) e
 	f.truncated = database + "." + table
 	return nil
 }
-func (f *fakeMysqlDS) Execute(_ context.Context, sqlText string) ([]model.MysqlStatementResult, error) {
+func (f *fakeMysqlDS) Execute(_ context.Context, database, sqlText string) ([]model.MysqlStatementResult, error) {
+	f.execDB = database
 	f.execSQL = sqlText
 	return f.execResult, nil
 }
@@ -356,8 +361,8 @@ func TestMysqlAccessorDelegatesToPooledFake(t *testing.T) {
 	if !fake.hitDatabases {
 		t.Fatal("delegation must reach the pooled fake")
 	}
-	if _, err := svc.MysqlExecute(ctx, c.ID, "SELECT 1"); err != nil || fake.execSQL != "SELECT 1" {
-		t.Fatalf("MysqlExecute: %v sql=%q", err, fake.execSQL)
+	if _, err := svc.MysqlExecute(ctx, c.ID, "app", "SELECT 1"); err != nil || fake.execSQL != "SELECT 1" || fake.execDB != "app" {
+		t.Fatalf("MysqlExecute: %v sql=%q db=%q", err, fake.execSQL, fake.execDB)
 	}
 }
 
@@ -431,5 +436,156 @@ func TestMysqlCellUpdateServiceDelegation(t *testing.T) {
 	fake.previewErr = errors.New("boom")
 	if _, err := svc.MysqlPreviewCellUpdate(ctx, c.ID, "app", "users", set, where); err == nil {
 		t.Fatal("preview failure must surface")
+	}
+}
+
+// --- Execute:USE 构造与「按库执行」路径 ---
+
+func TestBuildMysqlUseDatabase(t *testing.T) {
+	if got := buildMysqlUseDatabase("app"); got != "USE `app`" {
+		t.Fatalf("buildMysqlUseDatabase(app) = %q, want USE `app`", got)
+	}
+	// 标识符内部反引号必须双写转义。
+	if got := buildMysqlUseDatabase("a`b"); got != "USE `a``b`" {
+		t.Fatalf("embedded backtick must be doubled, got %q", got)
+	}
+}
+
+// fakeMysqlDrvConn 是 driver.Conn 的最小实现:记录在其上 Exec/Query 过的
+// 语句,供「USE 之后全部语句固定在同一连接」的断言使用。
+type fakeMysqlDrvConn struct {
+	execs   []string
+	queries []string
+	useErr  error // 非空时对 USE 语句返回该错误(模拟库不存在)
+}
+
+func (c *fakeMysqlDrvConn) Prepare(query string) (driver.Stmt, error) {
+	return &fakeMysqlDrvStmt{conn: c, query: query}, nil
+}
+func (c *fakeMysqlDrvConn) Close() error { return nil }
+func (c *fakeMysqlDrvConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("transactions unsupported")
+}
+
+type fakeMysqlDrvStmt struct {
+	conn  *fakeMysqlDrvConn
+	query string
+}
+
+func (s *fakeMysqlDrvStmt) Close() error  { return nil }
+func (s *fakeMysqlDrvStmt) NumInput() int { return -1 }
+func (s *fakeMysqlDrvStmt) Exec([]driver.Value) (driver.Result, error) {
+	if strings.HasPrefix(strings.ToUpper(s.query), "USE ") && s.conn.useErr != nil {
+		return nil, s.conn.useErr
+	}
+	s.conn.execs = append(s.conn.execs, s.query)
+	return driver.RowsAffected(0), nil
+}
+func (s *fakeMysqlDrvStmt) Query([]driver.Value) (driver.Rows, error) {
+	if strings.HasPrefix(strings.ToUpper(s.query), "USE ") && s.conn.useErr != nil {
+		return nil, s.conn.useErr
+	}
+	s.conn.queries = append(s.conn.queries, s.query)
+	return &fakeMysqlDrvRows{cols: []string{"1"}}, nil
+}
+
+type fakeMysqlDrvRows struct{ cols []string }
+
+func (r *fakeMysqlDrvRows) Columns() []string         { return r.cols }
+func (r *fakeMysqlDrvRows) Close() error              { return nil }
+func (r *fakeMysqlDrvRows) Next([]driver.Value) error { return io.EOF }
+
+// fakeMysqlConnector 按 database/sql Connector 契约供给 fake 连接;pending
+// 非空时先复用它(可预置故障),否则新建并记录。
+type fakeMysqlConnector struct {
+	pending *fakeMysqlDrvConn
+	created []*fakeMysqlDrvConn
+}
+
+func (c *fakeMysqlConnector) Connect(context.Context) (driver.Conn, error) {
+	if c.pending != nil {
+		conn := c.pending
+		c.created = append(c.created, conn)
+		c.pending = nil
+		return conn, nil
+	}
+	conn := &fakeMysqlDrvConn{}
+	c.created = append(c.created, conn)
+	return conn, nil
+}
+func (c *fakeMysqlConnector) Driver() driver.Driver { return fakeMysqlDrv{} }
+
+type fakeMysqlDrv struct{}
+
+func (fakeMysqlDrv) Open(string) (driver.Conn, error) { return nil, errors.New("use sql.OpenDB") }
+
+// newFakeMysqlClient 基于 in-memory fake 驱动构造 MysqlClient(绕过拨号),
+// 返回记录所有物理连接的切片指针。
+func newFakeMysqlClient(t *testing.T, pending *fakeMysqlDrvConn) (*MysqlClient, *[]*fakeMysqlDrvConn) {
+	t.Helper()
+	ctor := &fakeMysqlConnector{pending: pending}
+	db := sql.OpenDB(ctor)
+	t.Cleanup(func() { _ = db.Close() })
+	return &MysqlClient{db: db, connType: model.ConnectionTypeMySQL}, &ctor.created
+}
+
+func TestMysqlExecuteWithDatabasePinsUSEAndStatements(t *testing.T) {
+	c, created := newFakeMysqlClient(t, nil)
+	results, err := c.Execute(context.Background(), "订单", "SELECT 1;\nSET @x = 1;")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(results) != 2 || results[0].SQL != "SELECT 1" || results[1].SQL != "SET @x = 1" {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+	if len(*created) != 1 {
+		t.Fatalf("all statements must run on one dedicated connection, got %d: %+v", len(*created), *created)
+	}
+	conn := (*created)[0]
+	if len(conn.execs) != 2 || conn.execs[0] != "USE `订单`" || conn.execs[1] != "SET @x = 1" {
+		t.Fatalf("USE must precede exec statements on the pinned conn: %+v", conn.execs)
+	}
+	if len(conn.queries) != 1 || conn.queries[0] != "SELECT 1" {
+		t.Fatalf("rows statement must run on the pinned conn: %+v", conn.queries)
+	}
+}
+
+func TestMysqlExecuteWithoutDatabaseSkipsUSE(t *testing.T) {
+	c, created := newFakeMysqlClient(t, nil)
+	if _, err := c.Execute(context.Background(), "", "SELECT 1"); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, conn := range *created {
+		for _, q := range append(append([]string{}, conn.execs...), conn.queries...) {
+			if strings.HasPrefix(strings.ToUpper(q), "USE ") {
+				t.Fatalf("empty database must not issue USE, got %q", q)
+			}
+		}
+	}
+	if len(*created) == 0 || len((*created)[0].queries) != 1 {
+		t.Fatalf("statement must still run via the pool: %+v", *created)
+	}
+}
+
+func TestMysqlExecuteUSEFailureStopsBeforeStatements(t *testing.T) {
+	pinned := &fakeMysqlDrvConn{useErr: errors.New("Error 1049: Unknown database 'nope'")}
+	c, created := newFakeMysqlClient(t, pinned)
+	results, err := c.Execute(context.Background(), "nope", "SELECT 1;\nSET @x = 1;")
+	if err == nil || !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("USE failure must surface the driver error, got %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("no statement result may be produced when USE fails: %+v", results)
+	}
+	conn := (*created)[0]
+	if len(conn.queries) != 0 || len(conn.execs) != 0 {
+		t.Fatalf("statements must not run after a failed USE: execs=%+v queries=%+v", conn.execs, conn.queries)
+	}
+}
+
+func TestMysqlExecuteEmptyScript(t *testing.T) {
+	c, _ := newFakeMysqlClient(t, nil)
+	if _, err := c.Execute(context.Background(), "app", "  \n "); err == nil || !strings.Contains(err.Error(), "没有可执行的 SQL 语句") {
+		t.Fatalf("empty script must be rejected, got %v", err)
 	}
 }

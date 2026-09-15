@@ -14,6 +14,11 @@ import (
 // query files: `-- connection: <id>`.
 const connHeaderPrefix = "-- connection: "
 
+// dbHeaderPrefix is the metadata comment key for the database context saved
+// alongside the connection: `-- database: <db>`. Written only when a database
+// was selected at save time; legacy files stay without the line.
+const dbHeaderPrefix = "-- database: "
+
 // QueryFileInfo describes one saved .sql query file in the query repository.
 // The JSON shape is the wire shape handed to the frontend (snake_case).
 type QueryFileInfo struct {
@@ -55,11 +60,12 @@ func ValidateQueryFileName(name string) error {
 	return nil
 }
 
-// ParseQueryFileHeader scans the leading block of `--` comment lines for a
-// `-- connection: <id>` entry. Only comments before the first non-comment
-// line count, so the same comment inside the SQL body is ignored. The body is
-// the original content minus the consumed header lines, byte for byte.
-func ParseQueryFileHeader(content string) (connectionID string, body string) {
+// ParseQueryFileHeader scans the leading block of `--` comment lines for the
+// `-- connection: <id>` and `-- database: <db>` entries. Only comments before
+// the first non-comment line count, so the same comments inside the SQL body
+// are ignored. The body is the original content minus the consumed header
+// lines, byte for byte.
+func ParseQueryFileHeader(content string) (connectionID, database, body string) {
 	rest := content
 	for {
 		line, next, found := strings.Cut(rest, "\n")
@@ -70,13 +76,16 @@ func ParseQueryFileHeader(content string) (connectionID string, body string) {
 		if value, ok := strings.CutPrefix(trimmed, connHeaderPrefix); ok {
 			connectionID = strings.TrimSpace(value)
 		}
+		if value, ok := strings.CutPrefix(trimmed, dbHeaderPrefix); ok {
+			database = strings.TrimSpace(value)
+		}
 		if !found {
 			rest = ""
 			break
 		}
 		rest = next
 	}
-	return connectionID, rest
+	return connectionID, database, rest
 }
 
 // List returns every .sql file in the directory, newest first (ties broken by
@@ -114,7 +123,7 @@ func (s *QueryFileStore) List() ([]QueryFileInfo, error) {
 		// Best effort header parse: a file that disappears mid-scan still
 		// lists, just without a connection id.
 		if raw, err := os.ReadFile(filepath.Join(s.Dir, name)); err == nil {
-			item.ConnectionID, _ = ParseQueryFileHeader(string(raw))
+			item.ConnectionID, _, _ = ParseQueryFileHeader(string(raw))
 		}
 		out = append(out, item)
 	}
@@ -127,34 +136,42 @@ func (s *QueryFileStore) List() ([]QueryFileInfo, error) {
 	return out, nil
 }
 
-// Read returns the full original content of <name> plus the connection id
-// parsed from its header comment (empty for legacy files).
-func (s *QueryFileStore) Read(name string) (content string, connectionID string, err error) {
+// Read returns the full original content of <name> plus the connection id and
+// database parsed from the header comments (empty for legacy files).
+func (s *QueryFileStore) Read(name string) (content, connectionID, database string, err error) {
 	if err := ValidateQueryFileName(name); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	raw, err := os.ReadFile(filepath.Join(s.Dir, name))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", "", fmt.Errorf("查询文件不存在: %s", name)
+			return "", "", "", fmt.Errorf("查询文件不存在: %s", name)
 		}
-		return "", "", fmt.Errorf("read query file: %w", err)
+		return "", "", "", fmt.Errorf("read query file: %w", err)
 	}
 	content = string(raw)
-	connectionID, _ = ParseQueryFileHeader(content)
-	return content, connectionID, nil
+	connectionID, database, _ = ParseQueryFileHeader(content)
+	return content, connectionID, database, nil
 }
 
-// Write stores content as <name>, prepending a `-- connection: <id>` header
-// comment when connectionID is non-empty; otherwise the content is stored
-// verbatim (legacy files stay header-free). An existing file of the same name
-// is overwritten, and a missing directory is created.
-func (s *QueryFileStore) Write(name, content, connectionID string) error {
+// Write stores content as <name>, prepending header comments inside the
+// leading comment block: `-- connection: <id>` and `-- database: <db>`, each
+// only when non-empty; with neither the content is stored verbatim (legacy
+// files stay header-free). An existing file of the same name is overwritten,
+// and a missing directory is created.
+func (s *QueryFileStore) Write(name, content, connectionID, database string) error {
 	if err := ValidateQueryFileName(name); err != nil {
 		return err
 	}
+	var header strings.Builder
 	if connectionID != "" {
-		content = connHeaderPrefix + connectionID + "\n" + content
+		header.WriteString(connHeaderPrefix + connectionID + "\n")
+	}
+	if database != "" {
+		header.WriteString(dbHeaderPrefix + database + "\n")
+	}
+	if header.Len() > 0 {
+		content = header.String() + content
 	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return fmt.Errorf("create query dir: %w", err)

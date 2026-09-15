@@ -35,9 +35,12 @@ type MysqlTruncateTableRequest struct {
 	Table        string `json:"table"`
 }
 
-// MysqlExecuteRequest carries the multi-statement SQL script.
+// MysqlExecuteRequest carries the multi-statement SQL script. Database is the
+// console's current database context: non-empty runs the whole script on one
+// connection pinned to it via USE; empty keeps the pool default (no USE).
 type MysqlExecuteRequest struct {
 	ConnectionID string `json:"connection_id"`
+	Database     string `json:"database,omitempty"`
 	SQL          string `json:"sql"`
 }
 
@@ -81,11 +84,12 @@ func (a *App) MysqlTruncateTable(req MysqlTruncateTableRequest) error {
 }
 
 // MysqlExecute runs a SQL script statement by statement (dangerous, audited;
-// the audit target is the script's first 60 characters).
+// the audit target is the script's first 60 characters). The console's current
+// database is passed through so statements execute with that context.
 func (a *App) MysqlExecute(req MysqlExecuteRequest) ([]model.MysqlStatementResult, error) {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	results, err := a.svc.MysqlExecute(ctx, req.ConnectionID, req.SQL)
+	results, err := a.svc.MysqlExecute(ctx, req.ConnectionID, req.Database, req.SQL)
 	a.audit(req.ConnectionID, "mysql_execute", auditSQLTarget(req.SQL), auditResult(err), auditDetail(err))
 	return results, err
 }

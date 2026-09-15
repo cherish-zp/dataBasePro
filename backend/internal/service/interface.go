@@ -106,11 +106,84 @@ type MysqlDataSource interface {
 	Tables(ctx context.Context, database string) ([]model.MysqlTableInfo, error)
 	PageRows(ctx context.Context, database, table, where, orderBy string, asc bool, limit, offset int) (model.MysqlPageRowsResult, error)
 	TruncateTable(ctx context.Context, database, table string) error
-	Execute(ctx context.Context, sqlText string) ([]model.MysqlStatementResult, error)
+	// Execute runs the SQL script statement by statement. When database is
+	// non-empty every statement runs on one dedicated connection pinned to it
+	// via USE (pool connections do not keep session state); empty keeps the
+	// pool path.
+	Execute(ctx context.Context, database, sqlText string) ([]model.MysqlStatementResult, error)
 	// PreviewCellUpdate renders the display text of the UPDATE and counts the
 	// rows matched by the same WHERE conditions (read-only, nothing executes).
 	PreviewCellUpdate(ctx context.Context, database, table string, set model.MysqlCellValue, where []model.MysqlCellValue) (model.MysqlCellUpdatePreview, error)
 	// UpdateCell executes the parameterized cell update; WHERE conditions may
 	// only reference primary key columns.
 	UpdateCell(ctx context.Context, database, table string, set model.MysqlCellValue, where []model.MysqlCellValue) error
+}
+
+// EsDataSource extends DataSource with the Elasticsearch/OpenSearch browser
+// operations: index listing, paged document rows over REST (_search), mapping
+// inspection, document CRUD and a SQL console (endpoint auto-probed per
+// server version; pre-6.3 servers report a clear "no SQL capability" error).
+type EsDataSource interface {
+	DataSource
+	// ListIndices lists user indices ("."-prefixed system indices filtered).
+	ListIndices(ctx context.Context) ([]model.EsIndexInfo, error)
+	// PageRows returns one page of an index's documents; where is the user's
+	// query_string fragment (empty = match_all) and orderBy sorts on a field.
+	PageRows(ctx context.Context, index, where, orderBy string, asc bool, limit, offset int) (model.EsPageRowsResult, error)
+	// Mapping flattens the index mapping into columns (multi-fields included).
+	Mapping(ctx context.Context, index string) ([]model.EsColumn, error)
+	// GetDoc returns the document's _source JSON text.
+	GetDoc(ctx context.Context, index, id string) (string, error)
+	// PutDoc replaces the document identified by id with docJSON.
+	PutDoc(ctx context.Context, index, id, docJSON string) error
+	// UpdateCell patches one field of the document (value nil → JSON null).
+	UpdateCell(ctx context.Context, index, id, column string, value *string) error
+	// DeleteDoc removes one document.
+	DeleteDoc(ctx context.Context, index, id string) error
+	// DeleteByQuery deletes documents matching the DSL query (JSON query text,
+	// sent as {"query":...}) and returns the removed count (dangerous, audited
+	// upstream). The query must be valid JSON; an empty query is rejected.
+	DeleteByQuery(ctx context.Context, index, query string) (int64, error)
+	// Execute runs the SQL script statement by statement over the probed SQL
+	// endpoint (/_sql, /_xpack/sql or /_plugins/_sql).
+	Execute(ctx context.Context, sqlText string) ([]model.EsStatementResult, error)
+	// DSL executes one raw REST request for the DSL console (Kibana Dev Tools
+	// style): method/path/body are validated then forwarded verbatim over the
+	// regular request channel; every HTTP response (4xx/5xx included) comes
+	// back as status+body rather than a Go error.
+	DSL(ctx context.Context, method, path, body string) (model.EsDslResult, error)
+	// RefreshIndex forces a refresh of the index's shards (POST
+	// /{index}/_refresh) so freshly indexed documents become searchable.
+	RefreshIndex(ctx context.Context, index string) error
+	// ListTemplates lists the legacy index templates (GET /_template, usable
+	// on 6.x OSS without X-Pack) with each template's declared order (0 when
+	// absent).
+	ListTemplates(ctx context.Context) ([]model.EsTemplateInfo, error)
+	// GetTemplate returns the template's raw JSON text (GET /_template/{name},
+	// the {"<name>":{...}} envelope passed through verbatim).
+	GetTemplate(ctx context.Context, name string) (string, error)
+	// PutTemplate creates or replaces the legacy index template
+	// (PUT /_template/{name}); templateJSON must be valid JSON.
+	PutTemplate(ctx context.Context, name, templateJSON string) error
+	// DeleteTemplate removes the legacy index template (DELETE /_template/{name}).
+	DeleteTemplate(ctx context.Context, name string) error
+	// CreateIndex creates the index with the given shard/replica counts
+	// (PUT /{index} {"settings":{...}}); the name must pass the ES index-name
+	// rules (non-empty, lowercase, no \ / * ? " < > | space , # or control
+	// characters, no - _ + prefix).
+	CreateIndex(ctx context.Context, index string, shards, replicas int64) error
+	// DeleteIndex removes the index (DELETE /{index}).
+	DeleteIndex(ctx context.Context, index string) error
+	// UpdateIndexSettings applies index-level settings (PUT
+	// /{index}/_settings); settingsJSON must be a valid JSON object and is
+	// forwarded verbatim.
+	UpdateIndexSettings(ctx context.Context, index, settingsJSON string) error
+	// ClusterStats aggregates the cluster monitoring metrics in one call
+	// from free endpoints only (6.1 OSS compatible): /_cluster/health,
+	// /_cat/indices (index/doc/store sums, system indices included),
+	// /_cat/nodes (per-node name/ip/roles and heap/disk percentages) and
+	// /_template (legacy template count). A failing core request (health,
+	// indices, nodes) fails the whole call; a failing template count only
+	// zeroes templates_count.
+	ClusterStats(ctx context.Context) (model.EsClusterStats, error)
 }

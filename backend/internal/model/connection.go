@@ -229,6 +229,15 @@ func (c Connection) Validate() error {
 			return fmt.Errorf("invalid clickhouse config: %w", err)
 		}
 		return cfg.Validate()
+	case ConnectionTypeES:
+		if len(c.Config) == 0 {
+			return errors.New("es config must not be empty")
+		}
+		var cfg EsConfig
+		if err := json.Unmarshal(c.Config, &cfg); err != nil {
+			return fmt.Errorf("invalid es config: %w", err)
+		}
+		return cfg.Validate()
 	case ConnectionTypeMySQL, ConnectionTypeTiDB:
 		if len(c.Config) == 0 {
 			return errors.New("mysql config must not be empty")
@@ -276,6 +285,16 @@ func (c Connection) ClickHouseConfig() (ClickHouseConfig, error) {
 // tidb connections — TiDB speaks the MySQL protocol).
 func (c Connection) MysqlConfig() (MysqlConfig, error) {
 	var cfg MysqlConfig
+	if err := json.Unmarshal(c.Config, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// EsConfig decodes the connection's config as an EsConfig (es connections
+// only).
+func (c Connection) EsConfig() (EsConfig, error) {
+	var cfg EsConfig
 	if err := json.Unmarshal(c.Config, &cfg); err != nil {
 		return cfg, err
 	}
