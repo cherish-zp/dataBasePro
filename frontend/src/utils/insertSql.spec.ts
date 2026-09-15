@@ -105,3 +105,52 @@ describe('buildInsertStatement', () => {
     expect(sql).toBe('INSERT INTO `my db`.`order` (`select`, `from`) VALUES\n(\'1\', \'2\');')
   })
 })
+
+describe('buildInsertStatement — perRow 每行单独 INSERT', () => {
+  it('perRow=true:每行一条完整语句,各自分号结尾,语句间 \\n 连接', () => {
+    const sql = buildInsertStatement(
+      target,
+      cols(['id', 'Int32'], ['name', 'String']),
+      [
+        ['1', 'alice'],
+        ['2', 'bob'],
+      ],
+      1000,
+      { perRow: true },
+    )
+    expect(sql).toBe(
+      [
+        'INSERT INTO `logs`.`events` (`id`, `name`) VALUES (1, \'alice\');',
+        'INSERT INTO `logs`.`events` (`id`, `name`) VALUES (2, \'bob\');',
+      ].join('\n'),
+    )
+  })
+
+  it('perRow=true:截断注释逻辑不变(按行数截断,注释追加在末尾)', () => {
+    const rows = [['1'], ['2'], ['3']]
+    const sql = buildInsertStatement(target, cols(['v', 'Int32']), rows, 2, { perRow: true })
+    expect(sql).toBe(
+      [
+        'INSERT INTO `logs`.`events` (`v`) VALUES (1);',
+        'INSERT INTO `logs`.`events` (`v`) VALUES (2);',
+        '-- 已截断:共 3 行,仅复制前 2 行',
+      ].join('\n'),
+    )
+  })
+
+  it('perRow=true:空行集输出空串', () => {
+    const sql = buildInsertStatement(target, cols(['a']), [], 1000, { perRow: true })
+    expect(sql).toBe('')
+  })
+
+  it('perRow 未传(默认 false)保持单条批量形态', () => {
+    const sql = buildInsertStatement(
+      target,
+      cols(['v', 'Int32']),
+      [['1'], ['2']],
+      1000,
+      {},
+    )
+    expect(sql).toBe('INSERT INTO `logs`.`events` (`v`) VALUES\n(1), (2);')
+  })
+})

@@ -3,8 +3,10 @@
 // 输出形如:
 //   INSERT INTO `db`.`table` (`c1`, `c2`) VALUES
 //   (1, 'a'), (NULL, 'b');
-// 多行数据合并为一个语句;行数超过 maxRows 时只生成前 maxRows 行,
+// 多行数据默认合并为一个语句;行数超过 maxRows 时只生成前 maxRows 行,
 // 并在语句后追加一行中文注释说明截断。
+// opts.perRow = true 时改为每行一条完整 INSERT(各自分号结尾,\n 连接),
+// 截断注释逻辑不变(按行数截断)。
 //
 // 值规则:
 // - null → NULL(数值类型列的空串同样输出 NULL,避免生成非法 SQL);
@@ -20,6 +22,11 @@ export interface InsertTarget {
 export interface InsertColumn {
   name: string
   type?: string
+}
+
+/** INSERT 生成选项:perRow=true 时每行一条独立语句;默认 false 为单条批量。 */
+export interface InsertOptions {
+  perRow?: boolean
 }
 
 // 数值族类型前缀(小写比较):覆盖 ClickHouse 的 Int/UInt/Float/Decimal/Bool 系列与
@@ -47,13 +54,22 @@ export function buildInsertStatement(
   columns: InsertColumn[],
   rows: (string | null)[][],
   maxRows = 1000,
+  opts?: InsertOptions,
 ): string {
   const columnList = columns.map((col) => `\`${col.name}\``).join(', ')
   const used = rows.slice(0, maxRows)
-  const tuples = used.map((row) =>
-    `(${columns.map((col, i) => sqlValue(col.type, row[i] ?? null)).join(', ')})`,
-  )
-  let out = `INSERT INTO \`${target.database}\`.\`${target.table}\` (${columnList}) VALUES\n${tuples.join(', ')};`
+  const tuple = (row: (string | null)[]) =>
+    `(${columns.map((col, i) => sqlValue(col.type, row[i] ?? null)).join(', ')})`
+
+  let out: string
+  if (opts?.perRow) {
+    // 每行一条完整 INSERT,各自分号结尾,\n 连接。
+    out = used
+      .map((row) => `INSERT INTO \`${target.database}\`.\`${target.table}\` (${columnList}) VALUES ${tuple(row)};`)
+      .join('\n')
+  } else {
+    out = `INSERT INTO \`${target.database}\`.\`${target.table}\` (${columnList}) VALUES\n${used.map(tuple).join(', ')};`
+  }
   if (rows.length > maxRows) {
     out += `\n-- 已截断:共 ${rows.length} 行,仅复制前 ${maxRows} 行`
   }

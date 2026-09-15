@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, type ComponentPublicInstance } from 'vue'
+import { computed, ref, watch, onBeforeUnmount, onMounted, type ComponentPublicInstance } from 'vue'
 import { useToastStore } from '@/store/toast'
 import { buildInsertStatement, type InsertTarget } from '@/utils/insertSql'
 import { CSV_MIME, JSONL_MIME, exportCsv, exportJsonl, saveFile } from '@/utils/export'
@@ -28,8 +28,12 @@ const props = withDefaults(
     exportName: string
     error?: string | null
     editing?: EditingCell | null
+    /** true → 行首渲染复选框列 + 表头全选(仅当调用方有 insertTarget 时传 true)。 */
+    selectable?: boolean
+    /** 表的主键列名列表(空/缺省 = 未识别)。 */
+    primaryKey?: string[]
   }>(),
-  { durationMs: null, insertTarget: null, error: null, editing: null },
+  { durationMs: null, insertTarget: null, error: null, editing: null, selectable: false, primaryKey: () => [] },
 )
 
 const emit = defineEmits<{
@@ -83,10 +87,99 @@ async function copyText(text: string, okMsg: string): Promise<void> {
   if (ok) toast.show(okMsg)
 }
 
+// —— 行选择(勾选行只影响复制 INSERT 的行范围,不参与导出)——
+
+const selected = ref<Set<number>>(new Set())
+
+// 行集变化(重新执行查询/翻页)后旧下标失效,清空选择。
+watch(
+  () => props.rows,
+  () => {
+    selected.value = new Set()
+  },
+)
+
+function toggleRow(index: number): void {
+  const next = new Set(selected.value)
+  if (next.has(index)) next.delete(index)
+  else next.add(index)
+  selected.value = next
+}
+
+const allSelected = computed(() => props.rows.length > 0 && selected.value.size === props.rows.length)
+
+function toggleAll(): void {
+  selected.value = allSelected.value ? new Set() : new Set(props.rows.map((_, i) => i))
+}
+
+// —— INSERT 选项(下拉开关,持久化 localStorage)——
+
+const INSERT_OPTS_KEY = 'dbclient-insert-opts'
+
+function loadInsertOpts(): { includePK: boolean; perRow: boolean } {
+  const fallback = { includePK: false, perRow: false }
+  try {
+    const raw = localStorage.getItem(INSERT_OPTS_KEY)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw) as Partial<{ includePK: boolean; perRow: boolean }>
+    return { includePK: parsed.includePK === true, perRow: parsed.perRow === true }
+  } catch {
+    return fallback
+  }
+}
+
+const initialOpts = loadInsertOpts()
+const includePK = ref(initialOpts.includePK)
+const perRowOpt = ref(initialOpts.perRow)
+const insertOptsOpen = ref(false)
+
+// primaryKey 未识别时「包含主键列」强制视为关闭。
+const pkIncluded = computed(() => includePK.value && props.primaryKey.length > 0)
+const pkToggleTitle = computed(() => (props.primaryKey.length === 0 ? '未识别到主键列' : undefined))
+
+watch([includePK, perRowOpt], ([inc, per]) => {
+  try {
+    localStorage.setItem(
+      INSERT_OPTS_KEY,
+      JSON.stringify({ includePK: inc && props.primaryKey.length > 0, perRow: per }),
+    )
+  } catch {
+    // 持久化失败不影响复制功能。
+  }
+})
+
 function onCopyInsert(): void {
   if (!props.insertTarget) return
-  void copyText(buildInsertStatement(props.insertTarget, props.columns, props.rows), '已复制 INSERT 语句')
+  // 行范围:勾选行优先,未勾选取全部。
+  const picked = selected.value.size > 0 ? props.rows.filter((_, i) => selected.value.has(i)) : props.rows
+  // 列范围:「包含主键列」关闭时剔除主键列,值按行同步裁剪。
+  let cols = props.columns
+  let outRows = picked
+  if (!pkIncluded.value) {
+    const pkSet = new Set(props.primaryKey)
+    const keep = props.columns.map((col, i) => ({ col, i })).filter((x) => !pkSet.has(x.col.name))
+    if (keep.length !== props.columns.length) {
+      cols = keep.map((x) => x.col)
+      outRows = picked.map((row) => keep.map((x) => row[x.i] ?? null))
+    }
+  }
+  void copyText(
+    buildInsertStatement(props.insertTarget, cols, outRows, 1000, { perRow: perRowOpt.value }),
+    '已复制 INSERT 语句',
+  )
 }
+
+// 点面板外收起 INSERT 选项(与 ExportDropdown 的外部点击关闭一致)。
+const insertRoot = ref<HTMLElement | null>(null)
+
+function onDocClick(e: MouseEvent): void {
+  if (insertOptsOpen.value && insertRoot.value && !insertRoot.value.contains(e.target as Node)) {
+    insertOptsOpen.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('click', onDocClick))
+onBeforeUnmount(() => document.removeEventListener('click', onDocClick))
 
 // 行号列不导出/不复制;null 导出为空单元格。
 function exportColumns() {
@@ -166,15 +259,47 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
       </div>
       <span class="meta" data-test="result-meta">{{ metaText }}</span>
       <div class="actions">
-        <button
-          type="button"
-          data-test="result-copy-insert"
-          :disabled="!insertTarget"
-          :title="insertTarget ? '复制为 INSERT 语句' : '仅单表查询结果可生成'"
-          @click="onCopyInsert"
-        >
-          复制为 INSERT
-        </button>
+        <span v-if="selected.size > 0" class="selected-count" data-test="selected-count">
+          已选 {{ selected.size }} 行
+        </span>
+        <div ref="insertRoot" class="insert-group">
+          <button
+            type="button"
+            class="insert-main"
+            data-test="result-copy-insert"
+            :disabled="!insertTarget"
+            :title="insertTarget ? '复制为 INSERT 语句' : '仅单表查询结果可生成'"
+            @click="onCopyInsert"
+          >
+            复制为 INSERT
+          </button>
+          <button
+            type="button"
+            class="insert-arrow"
+            data-test="insert-opts"
+            :disabled="!insertTarget"
+            title="INSERT 选项"
+            @click="insertOptsOpen = !insertOptsOpen"
+          >
+            ▾
+          </button>
+          <div v-if="insertOptsOpen" class="insert-pop" data-test="insert-pop">
+            <label class="opt-row">
+              <span>包含主键列</span>
+              <input
+                v-model="includePK"
+                type="checkbox"
+                data-test="insert-opt-pk"
+                :disabled="primaryKey.length === 0"
+                :title="pkToggleTitle"
+              />
+            </label>
+            <label class="opt-row">
+              <span>每行单独 INSERT</span>
+              <input v-model="perRowOpt" type="checkbox" data-test="insert-opt-perrow" />
+            </label>
+          </div>
+        </div>
         <button type="button" data-test="result-copy-csv" title="复制为 CSV(含表头)" @click="onCopyCsv">
           复制为 CSV
         </button>
@@ -203,6 +328,15 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
         <thead>
           <tr>
             <th class="rownum">#</th>
+            <th v-if="selectable" class="checkcell">
+              <input
+                type="checkbox"
+                data-test="row-check-all"
+                :checked="allSelected"
+                title="全选/清空"
+                @change="toggleAll"
+              />
+            </th>
             <th v-for="(col, ci) in columns" :key="ci" :title="col.type ? `${col.name}(${col.type})` : col.name">
               {{ col.name }}
             </th>
@@ -211,6 +345,14 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
         <tbody>
           <tr v-for="(row, ri) in rows" :key="ri" data-test="result-row">
             <td class="rownum">{{ ri + 1 }}</td>
+            <td v-if="selectable" class="checkcell">
+              <input
+                type="checkbox"
+                data-test="row-check"
+                :checked="selected.has(ri)"
+                @change="toggleRow(ri)"
+              />
+            </td>
             <td
               v-for="(cell, ci) in row"
               :key="ci"
@@ -232,7 +374,7 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
             </td>
           </tr>
           <tr v-if="rows.length === 0">
-            <td class="empty-cell" :colspan="columns.length + 1" data-test="result-empty">0 行</td>
+            <td class="empty-cell" :colspan="columns.length + (selectable ? 2 : 1)" data-test="result-empty">0 行</td>
           </tr>
         </tbody>
       </table>
@@ -320,6 +462,68 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
   cursor: not-allowed;
 }
 
+.selected-count {
+  flex: none;
+  font-size: 12px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+/* 复制为 INSERT:主体 + 下拉箭头的连体按钮,下拉面板承载选项开关 */
+.insert-group {
+  flex: none;
+  position: relative;
+  display: flex;
+}
+.insert-main {
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+}
+.insert-arrow {
+  margin-left: -1px;
+  padding: 3px 5px !important;
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
+  color: var(--text-tertiary);
+}
+.insert-arrow:hover:not(:disabled) {
+  color: var(--accent);
+}
+.insert-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+}
+.opt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 2px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.opt-row input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.opt-row input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 /* 错误卡:红色系 + 等宽字体 */
 .result-error {
   display: flex;
@@ -389,6 +593,16 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
   text-align: right;
   color: var(--text-tertiary);
   background: var(--bg-subtle);
+}
+.checkcell {
+  width: 30px;
+  min-width: 30px;
+  text-align: center;
+}
+.checkcell input {
+  accent-color: var(--accent);
+  cursor: pointer;
+  vertical-align: middle;
 }
 .empty-cell {
   text-align: center !important;
