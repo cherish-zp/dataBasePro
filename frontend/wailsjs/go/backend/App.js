@@ -66,6 +66,10 @@ export function DeleteConsumerGroup(arg1) {
   return window['go']['backend']['App']['DeleteConsumerGroup'](arg1);
 }
 
+export function DeleteEsTemplate(arg1) {
+  return window['go']['backend']['App']['DeleteEsTemplate'](arg1);
+}
+
 export function DeleteQueryFile(arg1) {
   return window['go']['backend']['App']['DeleteQueryFile'](arg1);
 }
@@ -102,8 +106,68 @@ export function DownloadUpdate(arg1) {
   return window['go']['backend']['App']['DownloadUpdate'](arg1);
 }
 
+export function ESDeleteByQuery(arg1) {
+  return window['go']['backend']['App']['ESDeleteByQuery'](arg1);
+}
+
+export function ESDeleteDoc(arg1) {
+  return window['go']['backend']['App']['ESDeleteDoc'](arg1);
+}
+
+export function ESDsl(arg1) {
+  return window['go']['backend']['App']['ESDsl'](arg1);
+}
+
+export function ESExecute(arg1) {
+  return window['go']['backend']['App']['ESExecute'](arg1);
+}
+
+export function ESGetDoc(arg1) {
+  return window['go']['backend']['App']['ESGetDoc'](arg1);
+}
+
+export function ESMapping(arg1) {
+  return window['go']['backend']['App']['ESMapping'](arg1);
+}
+
+export function ESPageRows(arg1) {
+  return window['go']['backend']['App']['ESPageRows'](arg1);
+}
+
+export function ESPutDoc(arg1) {
+  return window['go']['backend']['App']['ESPutDoc'](arg1);
+}
+
+export function ESUpdateCell(arg1) {
+  return window['go']['backend']['App']['ESUpdateCell'](arg1);
+}
+
+export function EsClusterStats(arg1) {
+  return window['go']['backend']['App']['EsClusterStats'](arg1);
+}
+
+export function EsCreateIndex(arg1) {
+  return window['go']['backend']['App']['EsCreateIndex'](arg1);
+}
+
+export function EsDeleteIndex(arg1) {
+  return window['go']['backend']['App']['EsDeleteIndex'](arg1);
+}
+
+export function EsRefreshIndex(arg1) {
+  return window['go']['backend']['App']['EsRefreshIndex'](arg1);
+}
+
+export function EsUpdateIndexSettings(arg1) {
+  return window['go']['backend']['App']['EsUpdateIndexSettings'](arg1);
+}
+
 export function GetConnection(arg1) {
   return window['go']['backend']['App']['GetConnection'](arg1);
+}
+
+export function GetEsTemplate(arg1) {
+  return window['go']['backend']['App']['GetEsTemplate'](arg1);
 }
 
 export function GetPartitionLag(arg1, arg2, arg3) {
@@ -144,6 +208,14 @@ export function ListConsumerGroups(arg1) {
 
 export function ListDrivers() {
   return window['go']['backend']['App']['ListDrivers']();
+}
+
+export function ListESIndices(arg1) {
+  return window['go']['backend']['App']['ListESIndices'](arg1);
+}
+
+export function ListEsTemplates(arg1) {
+  return window['go']['backend']['App']['ListEsTemplates'](arg1);
 }
 
 export function ListMysqlDatabases(arg1) {
@@ -204,6 +276,10 @@ export function ProduceMessage(arg1) {
 
 export function ProduceMessages(arg1) {
   return window['go']['backend']['App']['ProduceMessages'](arg1);
+}
+
+export function PutEsTemplate(arg1) {
+  return window['go']['backend']['App']['PutEsTemplate'](arg1);
 }
 
 export function ReadQueryFile(arg1) {
@@ -300,6 +376,10 @@ export function TestCHConnection(arg1) {
 
 export function TestConnection(arg1) {
   return window['go']['backend']['App']['TestConnection'](arg1);
+}
+
+export function TestESConnection(arg1) {
+  return window['go']['backend']['App']['TestESConnection'](arg1);
 }
 
 export function TestMysqlConnection(arg1) {

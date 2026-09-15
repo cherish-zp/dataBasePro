@@ -36,6 +36,8 @@ export function DeleteConnection(arg1:string):Promise<void>;
 
 export function DeleteConsumerGroup(arg1:backend.DeleteConsumerGroupRequest):Promise<void>;
 
+export function DeleteEsTemplate(arg1:backend.EsDeleteTemplateRequest):Promise<void>;
+
 export function DeleteQueryFile(arg1:backend.QueryFileDeleteRequest):Promise<void>;
 
 export function DeleteSavedQuery(arg1:backend.DeleteSavedQueryRequest):Promise<void>;
@@ -54,7 +56,37 @@ export function Disconnect(arg1:string):Promise<void>;
 
 export function DownloadUpdate(arg1:backend.DownloadUpdateRequest):Promise<void>;
 
+export function ESDeleteByQuery(arg1:backend.EsDeleteByQueryRequest):Promise<number>;
+
+export function ESDeleteDoc(arg1:backend.EsDeleteDocRequest):Promise<void>;
+
+export function ESDsl(arg1:backend.EsDslRequest):Promise<model.EsDslResult>;
+
+export function ESExecute(arg1:backend.EsExecuteRequest):Promise<Array<model.EsStatementResult>>;
+
+export function ESGetDoc(arg1:backend.EsGetDocRequest):Promise<model.EsDoc>;
+
+export function ESMapping(arg1:backend.EsMappingRequest):Promise<Array<model.EsColumn>>;
+
+export function ESPageRows(arg1:backend.EsPageRowsRequest):Promise<model.EsPageRowsResult>;
+
+export function ESPutDoc(arg1:backend.EsPutDocRequest):Promise<void>;
+
+export function ESUpdateCell(arg1:backend.EsCellUpdateRequest):Promise<void>;
+
+export function EsClusterStats(arg1:backend.EsClusterStatsRequest):Promise<model.EsClusterStats>;
+
+export function EsCreateIndex(arg1:backend.EsCreateIndexRequest):Promise<void>;
+
+export function EsDeleteIndex(arg1:backend.EsDeleteIndexRequest):Promise<void>;
+
+export function EsRefreshIndex(arg1:backend.EsRefreshIndexRequest):Promise<void>;
+
+export function EsUpdateIndexSettings(arg1:backend.EsUpdateIndexSettingsRequest):Promise<void>;
+
 export function GetConnection(arg1:string):Promise<model.Connection>;
+
+export function GetEsTemplate(arg1:backend.EsGetTemplateRequest):Promise<model.EsTemplateContent>;
 
 export function GetPartitionLag(arg1:string,arg2:string,arg3:string):Promise<Record<number, number>>;
 
@@ -75,6 +107,10 @@ export function ListConnections():Promise<Array<model.Connection>>;
 export function ListConsumerGroups(arg1:string):Promise<Array<model.ConsumerGroup>>;
 
 export function ListDrivers():Promise<Array<backend.DriverInfo>>;
+
+export function ListESIndices(arg1:string):Promise<Array<model.EsIndexInfo>>;
+
+export function ListEsTemplates(arg1:string):Promise<Array<model.EsTemplateInfo>>;
 
 export function ListMysqlDatabases(arg1:string):Promise<Array<string>>;
 
@@ -105,6 +141,8 @@ export function PreviewResetOffset(arg1:backend.ResetOffsetRequest):Promise<Reco
 export function ProduceMessage(arg1:backend.ProduceRequest):Promise<void>;
 
 export function ProduceMessages(arg1:backend.BatchProduceRequest):Promise<Array<model.ProduceResult>>;
+
+export function PutEsTemplate(arg1:backend.EsPutTemplateRequest):Promise<void>;
 
 export function ReadQueryFile(arg1:backend.QueryFileReadRequest):Promise<backend.QueryFileContent>;
 
@@ -153,6 +191,8 @@ export function SaveTextFile(arg1:backend.SaveTextFileRequest):Promise<string>;
 export function TestCHConnection(arg1:model.ClickHouseConfig):Promise<void>;
 
 export function TestConnection(arg1:model.KafkaConfig):Promise<void>;
+
+export function TestESConnection(arg1:model.EsConfig):Promise<void>;
 
 export function TestMysqlConnection(arg1:model.MysqlConfig):Promise<void>;
 

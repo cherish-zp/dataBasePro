@@ -326,6 +326,280 @@ export namespace backend {
 	        this.description = source["description"];
 	    }
 	}
+	export class EsCellUpdateRequest {
+	    connection_id: string;
+	    index: string;
+	    id: string;
+	    column: string;
+	    value?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsCellUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	        this.id = source["id"];
+	        this.column = source["column"];
+	        this.value = source["value"];
+	    }
+	}
+	export class EsClusterStatsRequest {
+	    connection_id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsClusterStatsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	    }
+	}
+	export class EsCreateIndexRequest {
+	    connection_id: string;
+	    index: string;
+	    shards: number;
+	    replicas: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsCreateIndexRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	        this.shards = source["shards"];
+	        this.replicas = source["replicas"];
+	    }
+	}
+	export class EsDeleteByQueryRequest {
+	    connection_id: string;
+	    index: string;
+	    query: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsDeleteByQueryRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	        this.query = source["query"];
+	    }
+	}
+	export class EsDeleteDocRequest {
+	    connection_id: string;
+	    index: string;
+	    id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsDeleteDocRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	        this.id = source["id"];
+	    }
+	}
+	export class EsDeleteIndexRequest {
+	    connection_id: string;
+	    index: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsDeleteIndexRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	    }
+	}
+	export class EsDeleteTemplateRequest {
+	    connection_id: string;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsDeleteTemplateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.name = source["name"];
+	    }
+	}
+	export class EsDslRequest {
+	    connection_id: string;
+	    method: string;
+	    path: string;
+	    body: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsDslRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.method = source["method"];
+	        this.path = source["path"];
+	        this.body = source["body"];
+	    }
+	}
+	export class EsExecuteRequest {
+	    connection_id: string;
+	    sql: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsExecuteRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.sql = source["sql"];
+	    }
+	}
+	export class EsGetDocRequest {
+	    connection_id: string;
+	    index: string;
+	    id: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsGetDocRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	        this.id = source["id"];
+	    }
+	}
+	export class EsGetTemplateRequest {
+	    connection_id: string;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsGetTemplateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.name = source["name"];
+	    }
+	}
+	export class EsMappingRequest {
+	    connection_id: string;
+	    index: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsMappingRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	    }
+	}
+	export class EsPageRowsRequest {
+	    connection_id: string;
+	    index: string;
+	    where?: string;
+	    order_by?: string;
+	    asc: boolean;
+	    limit: number;
+	    offset: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsPageRowsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	        this.where = source["where"];
+	        this.order_by = source["order_by"];
+	        this.asc = source["asc"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class EsPutDocRequest {
+	    connection_id: string;
+	    index: string;
+	    id: string;
+	    doc: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsPutDocRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	        this.id = source["id"];
+	        this.doc = source["doc"];
+	    }
+	}
+	export class EsPutTemplateRequest {
+	    connection_id: string;
+	    name: string;
+	    template_json: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsPutTemplateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.name = source["name"];
+	        this.template_json = source["template_json"];
+	    }
+	}
+	export class EsRefreshIndexRequest {
+	    connection_id: string;
+	    index: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsRefreshIndexRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	    }
+	}
+	export class EsUpdateIndexSettingsRequest {
+	    connection_id: string;
+	    index: string;
+	    settings_json: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsUpdateIndexSettingsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	        this.settings_json = source["settings_json"];
+	    }
+	}
 	export class ListSavedQueriesRequest {
 	    console_type?: string;
 	    connection_id?: string;
@@ -342,6 +616,7 @@ export namespace backend {
 	}
 	export class MysqlExecuteRequest {
 	    connection_id: string;
+	    database?: string;
 	    sql: string;
 	
 	    static createFrom(source: any = {}) {
@@ -351,6 +626,7 @@ export namespace backend {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
 	        this.sql = source["sql"];
 	    }
 	}
@@ -433,6 +709,7 @@ export namespace backend {
 	export class QueryFileContent {
 	    content: string;
 	    connection_id: string;
+	    database: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new QueryFileContent(source);
@@ -442,6 +719,7 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.content = source["content"];
 	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
 	    }
 	}
 	export class QueryFileDeleteRequest {
@@ -489,6 +767,7 @@ export namespace backend {
 	    name: string;
 	    content: string;
 	    connection_id?: string;
+	    database?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new QueryFileWriteRequest(source);
@@ -500,6 +779,7 @@ export namespace backend {
 	        this.name = source["name"];
 	        this.content = source["content"];
 	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
 	    }
 	}
 	export class RedisDeleteKeysRequest {
@@ -1245,6 +1525,265 @@ export namespace model {
 		    }
 		    return a;
 		}
+	}
+	export class EsNodeInfo {
+	    name: string;
+	    ip: string;
+	    roles: string;
+	    heap_percent: number;
+	    disk_percent: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsNodeInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.ip = source["ip"];
+	        this.roles = source["roles"];
+	        this.heap_percent = source["heap_percent"];
+	        this.disk_percent = source["disk_percent"];
+	    }
+	}
+	export class EsClusterStats {
+	    cluster_name: string;
+	    status: string;
+	    number_of_nodes: number;
+	    number_of_data_nodes: number;
+	    active_shards: number;
+	    active_primary_shards: number;
+	    relocating_shards: number;
+	    unassigned_shards: number;
+	    indices_count: number;
+	    docs_count: number;
+	    store_size_bytes: number;
+	    templates_count: number;
+	    nodes: EsNodeInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new EsClusterStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.cluster_name = source["cluster_name"];
+	        this.status = source["status"];
+	        this.number_of_nodes = source["number_of_nodes"];
+	        this.number_of_data_nodes = source["number_of_data_nodes"];
+	        this.active_shards = source["active_shards"];
+	        this.active_primary_shards = source["active_primary_shards"];
+	        this.relocating_shards = source["relocating_shards"];
+	        this.unassigned_shards = source["unassigned_shards"];
+	        this.indices_count = source["indices_count"];
+	        this.docs_count = source["docs_count"];
+	        this.store_size_bytes = source["store_size_bytes"];
+	        this.templates_count = source["templates_count"];
+	        this.nodes = this.convertValues(source["nodes"], EsNodeInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class EsColumn {
+	    name: string;
+	    type: string;
+	    comment?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsColumn(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.comment = source["comment"];
+	    }
+	}
+	export class EsConfig {
+	    hosts: string[];
+	    username: string;
+	    password?: string;
+	    api_key?: string;
+	    auth_mode?: string;
+	    tls_mode?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hosts = source["hosts"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.api_key = source["api_key"];
+	        this.auth_mode = source["auth_mode"];
+	        this.tls_mode = source["tls_mode"];
+	    }
+	}
+	export class EsDoc {
+	    id: string;
+	    source: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsDoc(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.source = source["source"];
+	    }
+	}
+	export class EsDslResult {
+	    status: number;
+	    body: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsDslResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = source["status"];
+	        this.body = source["body"];
+	    }
+	}
+	export class EsIndexInfo {
+	    name: string;
+	    docs_count: number;
+	    store_size_bytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsIndexInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.docs_count = source["docs_count"];
+	        this.store_size_bytes = source["store_size_bytes"];
+	    }
+	}
+	
+	export class EsPageRowsResult {
+	    columns: EsColumn[];
+	    rows: string[][];
+	    total_rows: number;
+	    primary_key: string[];
+	    engine: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsPageRowsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = this.convertValues(source["columns"], EsColumn);
+	        this.rows = source["rows"];
+	        this.total_rows = source["total_rows"];
+	        this.primary_key = source["primary_key"];
+	        this.engine = source["engine"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class EsStatementResult {
+	    sql: string;
+	    duration_ms: number;
+	    error?: string;
+	    columns?: EsColumn[];
+	    rows?: string[][];
+	
+	    static createFrom(source: any = {}) {
+	        return new EsStatementResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sql = source["sql"];
+	        this.duration_ms = source["duration_ms"];
+	        this.error = source["error"];
+	        this.columns = this.convertValues(source["columns"], EsColumn);
+	        this.rows = source["rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class EsTemplateContent {
+	    template_json: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsTemplateContent(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.template_json = source["template_json"];
+	    }
+	}
+	export class EsTemplateInfo {
+	    name: string;
+	    order: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsTemplateInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.order = source["order"];
+	    }
 	}
 	export class GroupMember {
 	    member_id: string;
