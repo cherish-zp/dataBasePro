@@ -38,6 +38,7 @@ interface MysqlStatementResult {
   error?: string
   columns?: MysqlColumn[]
   rows?: (string | null)[][]
+  primary_key?: string[]
 }
 
 // 组件暴露给全局右栏的查询文件能力。
@@ -100,6 +101,38 @@ async function waitForCards(wrapper: VueWrapper, n: number): Promise<void> {
   await vi.waitFor(() => {
     expect(resultCards(wrapper)).toHaveLength(n)
   })
+}
+
+// —— 结果 Tab 条(SqlResultTabs)辅助 ——
+
+// 结果 tab 元素(data-test="result-tab-<i>")。
+function resultTabEls(wrapper: VueWrapper) {
+  return wrapper.findAll('[data-test^="result-tab-"]')
+}
+
+// 等待 N 个结果 tab 就绪(全部脱离 running 态 = 本轮运行完成)。
+async function waitForTabs(wrapper: VueWrapper, n: number): Promise<void> {
+  await vi.waitFor(() => {
+    const tabs = resultTabEls(wrapper)
+    expect(tabs).toHaveLength(n)
+    for (const t of tabs) {
+      expect(t.find('.tab-dot.running').exists()).toBe(false)
+    }
+  })
+}
+
+// 点击第 i 个结果 tab 切换 active 卡。
+async function selectTab(wrapper: VueWrapper, i: number): Promise<void> {
+  await resultTabEls(wrapper)[i].trigger('click')
+}
+
+// 在编辑器内容区右键打开执行菜单(菜单渲染在 SqlEditor 内部)。
+async function openRunMenu(wrapper: VueWrapper): Promise<void> {
+  const content = wrapper.find('[data-test="mysql-sql-input"] .cm-content').element as HTMLElement
+  content.dispatchEvent(
+    new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+  )
+  await nextTick()
 }
 
 // PromptDialog / ConfirmDialog teleport 到 body。
@@ -302,7 +335,7 @@ describe('MysqlSqlConsole', () => {
 
   // --- 运行全部与逐条卡片 ------------------------------------------------------
 
-  it('运行全部:整段脚本发给后端,每条语句渲染一张 SqlResultCard', async () => {
+  it('运行全部:整段脚本发给后端,出现 N 个结果 tab,Tab 条下只渲染 active 一张卡', async () => {
     app.MysqlExecute.mockImplementation(
       withSystemGuard(async (req) => (req.sql === 'SELECT 1; SELECT bad' ? twoResults() : [])),
     )
@@ -311,18 +344,22 @@ describe('MysqlSqlConsole', () => {
     })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad', database: 'shop' })
-    const cards = resultCards(wrapper)
-    // 第一条:语句原文、耗时、列与行(NULL 单元格)都经 props 传入卡片。
-    expect(cards[0].props('statement')).toBe('SELECT 1')
-    expect(cards[0].props('durationMs')).toBe(12)
-    expect(cards[0].props('columns')).toEqual([{ name: 'one', type: 'int' }])
-    expect(cards[0].props('rows')).toEqual([['1'], [null]])
-    expect(cards[0].props('error')).toBeFalsy()
-    // 第二条:错误文本经 error prop 传入,由卡片渲染错误卡。
-    expect(cards[1].props('statement')).toBe('SELECT bad')
-    expect(cards[1].props('error')).toBe('You have an error in your SQL syntax')
+    // Tab 条下方只渲染 active(第 0 个)一张卡:语句原文、耗时、列与行(NULL 单元格)。
+    expect(resultTabEls(wrapper)).toHaveLength(2)
+    expect(resultCards(wrapper)).toHaveLength(1)
+    const card = resultCards(wrapper)[0]
+    expect(card.props('statement')).toBe('SELECT 1')
+    expect(card.props('durationMs')).toBe(12)
+    expect(card.props('columns')).toEqual([{ name: 'one', type: 'int' }])
+    expect(card.props('rows')).toEqual([['1'], [null]])
+    expect(card.props('error')).toBeFalsy()
+    // 点击第二个 tab:切换到错误结果卡。
+    await selectTab(wrapper, 1)
+    const card2 = resultCards(wrapper)[0]
+    expect(card2.props('statement')).toBe('SELECT bad')
+    expect(card2.props('error')).toBe('You have an error in your SQL syntax')
     wrapper.unmount()
   })
 
@@ -335,10 +372,10 @@ describe('MysqlSqlConsole', () => {
     })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
-    await waitForCards(wrapper, 2)
-    const cards = resultCards(wrapper)
-    expect(cards[0].props('exportName')).toBe('mysql-result-0')
-    expect(cards[1].props('exportName')).toBe('mysql-result-1')
+    await waitForTabs(wrapper, 2)
+    expect(resultCards(wrapper)[0].props('exportName')).toBe('mysql-result-0')
+    await selectTab(wrapper, 1)
+    expect(resultCards(wrapper)[0].props('exportName')).toBe('mysql-result-1')
     wrapper.unmount()
   })
 
@@ -353,7 +390,7 @@ describe('MysqlSqlConsole', () => {
     // 选中第二段 'SELECT 2'(10..18),运行全部仍发整段脚本。
     cmInput(wrapper).dispatch({ selection: { anchor: 10, head: 18 } })
     await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT 2', database: 'shop' })
     wrapper.unmount()
   })
@@ -424,7 +461,7 @@ describe('MysqlSqlConsole', () => {
     })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     pressRunShortcut(wrapper, { metaKey: true, shiftKey: true })
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad', database: 'shop' })
     wrapper.unmount()
   })
@@ -532,7 +569,7 @@ describe('MysqlSqlConsole', () => {
       { from: 10, status: 'running' },
     ])
     resolveExec(twoResults())
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     expect(editorComp.props('statementMarks')).toEqual([
       { from: 0, status: 'ok', detail: '12 ms' },
       { from: 10, status: 'fail', detail: 'You have an error in your SQL syntax' },
@@ -549,7 +586,7 @@ describe('MysqlSqlConsole', () => {
     })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     // 改写第一条语句文本 → 其标记被丢弃;第二条文本未变 → 标记保留并重定位
     // ('SELECT 42;' 比 'SELECT 1;' 长 1 字符,第二段 from 随之变为 11)。
     await typeSql(wrapper, 'SELECT 42; SELECT bad')
@@ -595,7 +632,7 @@ describe('MysqlSqlConsole', () => {
     await nextTick()
     expect(bar().text()).toContain('行 3 : 列 5')
     await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     // 最近耗时 = 最近一次运行各语句耗时之和(12 + 3)。
     expect(bar().text()).toContain('最近耗时 15 ms')
     wrapper.unmount()
@@ -895,7 +932,7 @@ describe('MysqlSqlConsole', () => {
       })
       await typeSql(wrapper, results.map((r) => r.sql).join('; '))
       await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
-      await waitForCards(wrapper, results.length)
+      await waitForTabs(wrapper, results.length)
       return wrapper
     }
 
@@ -1001,7 +1038,7 @@ describe('MysqlSqlConsole', () => {
       })
       await typeSql(wrapper, `${first.sql}; ${second.sql}`)
       await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
-      await waitForCards(wrapper, 2)
+      await waitForTabs(wrapper, 2)
       await editAndSubmit(wrapper, 'b')
       ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
       await vi.waitFor(() => {
@@ -1011,11 +1048,12 @@ describe('MysqlSqlConsole', () => {
       await vi.waitFor(() => {
         expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: first.sql, database: 'shop' })
       })
-      // 第一条结果被替换为刷新后的行;第二条结果保持原样。
+      // 第一条结果被替换为刷新后的行;第二条结果保持原样(切 tab 查看)。
       await vi.waitFor(() => {
         expect(resultCards(wrapper)[0].props('rows')).toEqual([['b', 'alice', '30', null]])
       })
-      expect(resultCards(wrapper)[1].props('rows')).toEqual([['42']])
+      await selectTab(wrapper, 1)
+      expect(resultCards(wrapper)[0].props('rows')).toEqual([['42']])
       wrapper.unmount()
     })
 
@@ -1037,7 +1075,8 @@ describe('MysqlSqlConsole', () => {
       }
       const wrapper = await mountWithResults([join, group])
       for (const i of [0, 1]) {
-        const card = resultCards(wrapper)[i]
+        if (i > 0) await selectTab(wrapper, i)
+        const card = resultCards(wrapper)[0]
         card.vm.$emit('cell-dblclick', 0, 0)
         await nextTick()
         expect(card.props('editing')).toBeNull()
@@ -1095,6 +1134,162 @@ describe('MysqlSqlConsole', () => {
       })
       expect(bodyEl('confirm-dialog')).toBeNull()
       expect(app.MysqlUpdateCell).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+  })
+
+  // --- 结果 Tab 条 + 右键执行菜单 ------------------------------------------------
+
+  describe('结果 Tab 条', () => {
+    it('多语句运行出现 N 个 tab,标签取语句前置注释文本', async () => {
+      app.MysqlExecute.mockImplementation(withSystemGuard(async () => twoResults()))
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, '-- 查询员工总数\nSELECT 1;\n-- 第二条:错误示例\nSELECT bad')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      const tabs = resultTabEls(wrapper)
+      expect(tabs[0].text()).toContain('查询员工总数')
+      expect(tabs[1].text()).toContain('第二条:错误示例')
+      wrapper.unmount()
+    })
+
+    it('无前置注释的语句回退「结果 N」,运行全部后 active 指向第 0 个 tab', async () => {
+      app.MysqlExecute.mockImplementation(
+        withSystemGuard(async (req) => (req.sql === 'SELECT 1; SELECT bad' ? twoResults() : [])),
+      )
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, 'SELECT 1; SELECT bad')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      const tabs = resultTabEls(wrapper)
+      expect(tabs[0].text()).toContain('结果 1')
+      expect(tabs[1].text()).toContain('结果 2')
+      expect(tabs[0].classes()).toContain('active')
+      expect(tabs[1].classes()).not.toContain('active')
+      expect(resultCards(wrapper)[0].props('statement')).toBe('SELECT 1')
+      wrapper.unmount()
+    })
+
+    it('点击 tab 切换 active 卡:仅渲染该条结果,active 类随之移动', async () => {
+      app.MysqlExecute.mockImplementation(
+        withSystemGuard(async (req) => (req.sql === 'SELECT 1; SELECT bad' ? twoResults() : [])),
+      )
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, 'SELECT 1; SELECT bad')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      await selectTab(wrapper, 1)
+      const tabs = resultTabEls(wrapper)
+      expect(tabs[1].classes()).toContain('active')
+      expect(tabs[0].classes()).not.toContain('active')
+      expect(resultCards(wrapper)).toHaveLength(1)
+      expect(resultCards(wrapper)[0].props('statement')).toBe('SELECT bad')
+      wrapper.unmount()
+    })
+
+    it('失败 tab 状态:错误语句 tab 状态点为 fail,成功为 ok', async () => {
+      app.MysqlExecute.mockImplementation(
+        withSystemGuard(async (req) => (req.sql === 'SELECT 1; SELECT bad' ? twoResults() : [])),
+      )
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, 'SELECT 1; SELECT bad')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      const tabs = resultTabEls(wrapper)
+      expect(tabs[0].find('.tab-dot.ok').exists()).toBe(true)
+      expect(tabs[1].find('.tab-dot.fail').exists()).toBe(true)
+      wrapper.unmount()
+    })
+
+    it('整段运行链路抛错时全部 tab 置 fail', async () => {
+      app.MysqlExecute.mockRejectedValue(new Error('连接已断开'))
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, 'SELECT 1; SELECT 2')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      for (const t of resultTabEls(wrapper)) {
+        expect(t.find('.tab-dot.fail').exists()).toBe(true)
+      }
+      wrapper.unmount()
+    })
+
+    it('Mysql 卡透传 selectable=true 与结果携带的 primary_key(缺省回退空数组)', async () => {
+      const withPk: MysqlStatementResult = {
+        sql: 'SELECT * FROM users WHERE id = 1 LIMIT 10',
+        duration_ms: 5,
+        columns: [{ name: 'id', type: 'int' }],
+        rows: [['1']],
+        primary_key: ['id'],
+      }
+      app.MysqlExecute.mockImplementation(withSystemGuard(async () => [withPk]))
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, 'SELECT * FROM users WHERE id = 1 LIMIT 10')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      const card = resultCards(wrapper)[0]
+      expect(card.props('selectable')).toBe(true)
+      expect(card.props('primaryKey')).toEqual(['id'])
+      // 无主键结果:primaryKey 回退空数组,selectable 仍开启(由卡片内部降级)。
+      app.MysqlExecute.mockImplementation(withSystemGuard(async () => [
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'one', type: 'int' }], rows: [['1']] },
+      ]))
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(resultCards(wrapper)[0].props('primaryKey')).toEqual([])
+      wrapper.unmount()
+    })
+  })
+
+  describe('右键执行菜单接线', () => {
+    it('SqlEditor 开启 enable-run-menu', async () => {
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      expect(wrapper.findComponent(SqlEditor).props('enableRunMenu')).toBe(true)
+      wrapper.unmount()
+    })
+
+    it('三个菜单入口分别触发:选中语句 / 当前语句 / 运行全部', async () => {
+      // 单段执行回声一条;整段脚本(运行全部)回两条,供 tab 数断言。
+      app.MysqlExecute.mockImplementation(
+        withSystemGuard(async (req) => (req.sql === 'SELECT 1; SELECT bad' ? twoResults() : echoResult(req))),
+      )
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, 'SELECT 1; SELECT bad')
+      // 选中第一条 'SELECT 1'(0..8)→ 右键「执行选中语句」按整段选中文本执行。
+      cmInput(wrapper).dispatch({ selection: { anchor: 0, head: 8 } })
+      await openRunMenu(wrapper)
+      expect(wrapper.find('[data-test="menu-run-selection"]').exists()).toBe(true)
+      await wrapper.find('[data-test="menu-run-selection"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop' })
+      // 无选区右键 →「执行当前语句」:执行光标所在语句(第 2 段)。
+      await typeSql(wrapper, 'SELECT 1; SELECT bad')
+      wrapper.findComponent(SqlEditor).vm.$emit('cursor', { line: 1, col: 13 })
+      await nextTick()
+      await openRunMenu(wrapper)
+      await wrapper.find('[data-test="menu-run-current"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT bad', database: 'shop' })
+      // 「运行全部」→ 整段脚本交给后端。
+      await openRunMenu(wrapper)
+      await wrapper.find('[data-test="menu-run-all"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad', database: 'shop' })
       wrapper.unmount()
     })
   })

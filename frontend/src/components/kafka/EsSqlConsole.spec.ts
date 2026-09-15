@@ -96,6 +96,38 @@ async function waitForCards(wrapper: VueWrapper, n: number): Promise<void> {
   })
 }
 
+// —— 结果 Tab 条(SqlResultTabs)辅助 ——
+
+// 结果 tab 元素(data-test="result-tab-<i>"),SQL/DSL 模式共用同一条 Tab 条。
+function resultTabEls(wrapper: VueWrapper) {
+  return wrapper.findAll('[data-test^="result-tab-"]')
+}
+
+// 等待 N 个结果 tab 就绪(全部脱离 running 态 = 本轮运行完成)。
+async function waitForTabs(wrapper: VueWrapper, n: number): Promise<void> {
+  await vi.waitFor(() => {
+    const tabs = resultTabEls(wrapper)
+    expect(tabs).toHaveLength(n)
+    for (const t of tabs) {
+      expect(t.find('.tab-dot.running').exists()).toBe(false)
+    }
+  })
+}
+
+// 点击第 i 个结果 tab 切换 active 卡。
+async function selectTab(wrapper: VueWrapper, i: number): Promise<void> {
+  await resultTabEls(wrapper)[i].trigger('click')
+}
+
+// 在编辑器内容区右键打开执行菜单(菜单渲染在 SqlEditor 内部)。
+async function openRunMenu(wrapper: VueWrapper): Promise<void> {
+  const content = wrapper.find('[data-test="es-sql-input"] .cm-content').element as HTMLElement
+  content.dispatchEvent(
+    new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }),
+  )
+  await nextTick()
+}
+
 // —— DSL 模式专用辅助 ——
 
 // 切换 SQL/DSL 分段按钮。
@@ -209,26 +241,29 @@ describe('EsSqlConsole', () => {
 
   // --- 运行全部与逐条卡片 ------------------------------------------------------
 
-  it('运行全部:整段脚本发给后端(payload 不带 database),每条语句渲染一张只读 SqlResultCard', async () => {
+  it('运行全部:整段脚本发给后端(payload 不带 database),出现 N 个结果 tab,Tab 条下只渲染 active 一张只读卡', async () => {
     app.ESExecute.mockImplementation(async (req: { sql: string }) =>
       req.sql === 'SELECT 1; SELECT bad' ? twoResults() : [],
     )
     const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-es-run"]').trigger('click')
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     // toHaveBeenCalledWith 为整体深度相等:断言 payload 不携带 database 字段。
     expect(app.ESExecute).toHaveBeenCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT bad' })
-    const cards = resultCards(wrapper)
-    // 第一条:语句原文、耗时、列与行(NULL 单元格)都经 props 传入卡片。
-    expect(cards[0].props('statement')).toBe('SELECT 1')
-    expect(cards[0].props('durationMs')).toBe(12)
-    expect(cards[0].props('columns')).toEqual([{ name: 'one', type: 'bigint' }])
-    expect(cards[0].props('rows')).toEqual([['1'], [null]])
-    expect(cards[0].props('error')).toBeFalsy()
-    // 第二条:错误文本经 error prop 传入,由卡片渲染错误卡。
-    expect(cards[1].props('statement')).toBe('SELECT bad')
-    expect(cards[1].props('error')).toBe(' ES 版本过低或端点不可用')
+    expect(resultCards(wrapper)).toHaveLength(1)
+    // active(第 0 个)卡:语句原文、耗时、列与行(NULL 单元格)。
+    const card = resultCards(wrapper)[0]
+    expect(card.props('statement')).toBe('SELECT 1')
+    expect(card.props('durationMs')).toBe(12)
+    expect(card.props('columns')).toEqual([{ name: 'one', type: 'bigint' }])
+    expect(card.props('rows')).toEqual([['1'], [null]])
+    expect(card.props('error')).toBeFalsy()
+    // 点击第二个 tab:切换到错误结果卡。
+    await selectTab(wrapper, 1)
+    const card2 = resultCards(wrapper)[0]
+    expect(card2.props('statement')).toBe('SELECT bad')
+    expect(card2.props('error')).toBe(' ES 版本过低或端点不可用')
     wrapper.unmount()
   })
 
@@ -239,16 +274,17 @@ describe('EsSqlConsole', () => {
     const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-es-run"]').trigger('click')
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     const cards = resultCards(wrapper)
     expect(cards[0].props('insertTarget')).toBeNull()
-    expect(cards[1].props('insertTarget')).toBeNull()
     expect(cards[0].props('exportName')).toBe('es-result-0')
-    expect(cards[1].props('exportName')).toBe('es-result-1')
+    await selectTab(wrapper, 1)
+    expect(resultCards(wrapper)[0].props('insertTarget')).toBeNull()
+    expect(resultCards(wrapper)[0].props('exportName')).toBe('es-result-1')
     // 控制台不接编辑事件:对卡片发双击,editing prop 保持 null,无任何反应。
-    cards[0].vm.$emit('cell-dblclick', 0, 0)
+    resultCards(wrapper)[0].vm.$emit('cell-dblclick', 0, 0)
     await nextTick()
-    expect(cards[0].props('editing')).toBeNull()
+    expect(resultCards(wrapper)[0].props('editing')).toBeNull()
     wrapper.unmount()
   })
 
@@ -261,7 +297,7 @@ describe('EsSqlConsole', () => {
     // 选中第二段 'SELECT 2'(10..18),运行全部仍发整段脚本。
     cmInput(wrapper).dispatch({ selection: { anchor: 10, head: 18 } })
     await wrapper.find('[data-test="btn-es-run"]').trigger('click')
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     expect(app.ESExecute).toHaveBeenCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT 2' })
     wrapper.unmount()
   })
@@ -324,7 +360,7 @@ describe('EsSqlConsole', () => {
     const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     pressRunShortcut(wrapper, { metaKey: true, shiftKey: true })
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     expect(app.ESExecute).toHaveBeenCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT bad' })
     wrapper.unmount()
   })
@@ -349,7 +385,7 @@ describe('EsSqlConsole', () => {
       { from: 10, status: 'running' },
     ])
     resolveExec(twoResults())
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     expect(editorComp.props('statementMarks')).toEqual([
       { from: 0, status: 'ok', detail: '12 ms' },
       { from: 10, status: 'fail', detail: ' ES 版本过低或端点不可用' },
@@ -364,7 +400,7 @@ describe('EsSqlConsole', () => {
     const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-es-run"]').trigger('click')
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     // 改写第一条语句文本 → 其标记被丢弃;第二条文本未变 → 标记保留并重定位
     // ('SELECT 42;' 比 'SELECT 1;' 长 1 字符,第二段 from 随之变为 11)。
     await typeSql(wrapper, 'SELECT 42; SELECT bad')
@@ -405,7 +441,7 @@ describe('EsSqlConsole', () => {
     await nextTick()
     expect(bar().text()).toContain('行 3 : 列 5')
     await wrapper.find('[data-test="btn-es-run"]').trigger('click')
-    await waitForCards(wrapper, 2)
+    await waitForTabs(wrapper, 2)
     // 最近耗时 = 最近一次运行各语句耗时之和(12 + 3)。
     expect(bar().text()).toContain('最近耗时 15 ms')
     wrapper.unmount()
@@ -585,7 +621,7 @@ describe('EsSqlConsole', () => {
       wrapper.unmount()
     })
 
-    it('运行全部:逐请求解析并调用 ESDsl(method/path/body 断言),每请求一张结果卡', async () => {
+    it('运行全部:逐请求解析并调用 ESDsl(method/path/body 断言),每请求一个结果 tab', async () => {
       app.ESDsl
         .mockResolvedValueOnce({ status: 200, body: '{"took":1}' })
         .mockResolvedValueOnce({ status: 200, body: '{"acknowledged":true}' })
@@ -593,7 +629,7 @@ describe('EsSqlConsole', () => {
       await switchMode(wrapper, 'dsl')
       await typeSql(wrapper, dslTwoRequests)
       await wrapper.find('[data-test="btn-es-run"]').trigger('click')
-      await waitForDslCards(wrapper, 2)
+      await waitForTabs(wrapper, 2)
       expect(app.ESDsl).toHaveBeenNthCalledWith(1, {
         connection_id: 'e1',
         method: 'GET',
@@ -606,6 +642,8 @@ describe('EsSqlConsole', () => {
         path: '/idx/_search',
         body: '{"query":{"match_all":{}}}',
       })
+      // Tab 条下只渲染 active(第 0 个)请求卡。
+      expect(dslCards(wrapper)).toHaveLength(1)
       const cards = dslCards(wrapper)
       expect(cards[0].find('[data-test="es-dsl-card-title"]').text()).toBe('GET /_cat/indices')
       expect(cards[0].find('[data-test="es-dsl-card-meta"]').text()).toContain('HTTP 200')
@@ -728,12 +766,12 @@ describe('EsSqlConsole', () => {
       // ⌘Shift+Enter → 全部请求。
       app.ESDsl.mockClear()
       pressRunShortcut(wrapper, { metaKey: true, shiftKey: true })
-      await waitForDslCards(wrapper, 2)
+      await waitForTabs(wrapper, 2)
       expect(app.ESDsl).toHaveBeenCalledTimes(2)
       // gutter ▶(emit 携带 SQL 段文本,DSL 模式下按 DSL 解析执行)。
       app.ESDsl.mockClear()
       wrapper.findComponent(SqlEditor).vm.$emit('run-statement', dslTwoRequests)
-      await waitForDslCards(wrapper, 2)
+      await waitForTabs(wrapper, 2)
       expect(app.ESDsl).toHaveBeenCalledTimes(2)
       wrapper.unmount()
     })
@@ -746,7 +784,7 @@ describe('EsSqlConsole', () => {
       await switchMode(wrapper, 'dsl')
       await typeSql(wrapper, dslTwoRequests)
       await wrapper.find('[data-test="btn-es-run"]').trigger('click')
-      await waitForDslCards(wrapper, 2)
+      await waitForTabs(wrapper, 2)
       // 第二请求 method 行在第 3 行:from = 17('GET /_cat/indices') + 1 + 1(空行) = 19。
       expect(wrapper.findComponent(SqlEditor).props('statementMarks')).toEqual([
         { from: 0, status: 'ok', detail: 'HTTP 200' },
@@ -814,6 +852,185 @@ describe('EsSqlConsole', () => {
       expect(cmInput(wrapper).state.doc.toString()).toBe('GET /_cat/indices?format=json\n')
       wrapper.unmount()
       localStorage.removeItem('es-console-mode:e1')
+    })
+  })
+
+  // --- 结果 Tab 条(SQL 模式)---------------------------------------------------
+
+  describe('结果 Tab 条(SQL 模式)', () => {
+    beforeEach(() => {
+      // 模式按连接记忆:清掉前序用例可能写入的 DSL 模式,保证 SQL 模式挂载。
+      localStorage.removeItem('es-console-mode:e1')
+    })
+
+    it('多语句运行出现 N 个 tab,标签取语句前置注释文本', async () => {
+      app.ESExecute.mockResolvedValue(twoResults())
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, '-- 查询文档\nSELECT 1;\n-- 第二条:错误示例\nSELECT bad')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      const tabs = resultTabEls(wrapper)
+      expect(tabs[0].text()).toContain('查询文档')
+      expect(tabs[1].text()).toContain('第二条:错误示例')
+      wrapper.unmount()
+    })
+
+    it('无前置注释回退「结果 N」,active 默认第 0 个;失败语句 tab 状态点为 fail', async () => {
+      app.ESExecute.mockResolvedValue(twoResults())
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, 'SELECT 1; SELECT bad')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      const tabs = resultTabEls(wrapper)
+      expect(tabs[0].text()).toContain('结果 1')
+      expect(tabs[1].text()).toContain('结果 2')
+      expect(tabs[0].classes()).toContain('active')
+      expect(tabs[0].find('.tab-dot.ok').exists()).toBe(true)
+      expect(tabs[1].find('.tab-dot.fail').exists()).toBe(true)
+      // 点击第二个 tab:仅渲染该条错误结果卡,active 类随之移动。
+      await selectTab(wrapper, 1)
+      expect(resultTabEls(wrapper)[1].classes()).toContain('active')
+      expect(resultCards(wrapper)).toHaveLength(1)
+      expect(resultCards(wrapper)[0].props('statement')).toBe('SELECT bad')
+      wrapper.unmount()
+    })
+
+    it('SQL/DSL 模式各自持有一组结果 tab', async () => {
+      app.ESExecute.mockImplementation(echoResult)
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(resultTabEls(wrapper)[0].text()).toContain('结果 1')
+      // 切到 DSL:SQL 的 tab 不串场,DSL 侧未运行为空。
+      await switchMode(wrapper, 'dsl')
+      expect(resultTabEls(wrapper)).toHaveLength(0)
+      await typeSql(wrapper, '# 列出索引\nGET /a')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(resultTabEls(wrapper)[0].text()).toContain('列出索引')
+      // 切回 SQL:原 tab 组保留。
+      await switchMode(wrapper, 'sql')
+      await waitForTabs(wrapper, 1)
+      expect(resultTabEls(wrapper)[0].text()).toContain('结果 1')
+      wrapper.unmount()
+    })
+  })
+
+  // --- 结果 Tab 条(DSL 模式)---------------------------------------------------
+
+  describe('结果 Tab 条(DSL 模式)', () => {
+    it('多请求运行为 N 个 tab,标签取请求上方 # 注释文本', async () => {
+      app.ESDsl.mockResolvedValue({ status: 200, body: '{}' })
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await switchMode(wrapper, 'dsl')
+      await typeSql(wrapper, '# 列出索引\nGET /_cat/indices\n\n# 搜索文档\nPOST /idx/_search\n{"query":{"match_all":{}}}')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      const tabs = resultTabEls(wrapper)
+      expect(tabs[0].text()).toContain('列出索引')
+      expect(tabs[1].text()).toContain('搜索文档')
+      wrapper.unmount()
+    })
+
+    it('解析失败 → 单个失败 tab(标签「解析失败」);4xx 请求 tab 状态为 fail', async () => {
+      app.ESDsl.mockResolvedValue({ status: 404, body: '{"error":"not_found"}' })
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await switchMode(wrapper, 'dsl')
+      // 先验证 4xx 完成态的失败 tab。
+      await typeSql(wrapper, 'GET /nope/_search')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(resultTabEls(wrapper)[0].find('.tab-dot.fail').exists()).toBe(true)
+      wrapper.unmount()
+      // 解析失败:tab 标签「解析失败」且为失败态,不发起 ESDsl(清掉上一段的调用记录)。
+      app.ESDsl.mockClear()
+      const wrapper2 = mount(EsSqlConsole, { props: { tabId: 'e-tab2', connectionId: 'e1' } })
+      await switchMode(wrapper2, 'dsl')
+      await typeSql(wrapper2, '{"no":"verb"}')
+      await wrapper2.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper2, 1)
+      expect(app.ESDsl).not.toHaveBeenCalled()
+      const tab = resultTabEls(wrapper2)[0]
+      expect(tab.text()).toContain('解析失败')
+      expect(tab.find('.tab-dot.fail').exists()).toBe(true)
+      wrapper2.unmount()
+    })
+  })
+
+  // --- 右键执行菜单接线 ---------------------------------------------------------
+
+  describe('右键执行菜单接线', () => {
+    beforeEach(() => {
+      // 模式按连接记忆:清掉前序用例可能写入的 DSL 模式(SQL 用例需要)。
+      localStorage.removeItem('es-console-mode:e1')
+    })
+
+    it('SqlEditor 开启 enable-run-menu', async () => {
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      expect(wrapper.findComponent(SqlEditor).props('enableRunMenu')).toBe(true)
+      wrapper.unmount()
+    })
+
+    it('SQL 模式:三个菜单入口分别触发选中语句 / 当前语句 / 运行全部', async () => {
+      // 单段执行回声一条;整段脚本(运行全部)回两条,供 tab 数断言。
+      app.ESExecute.mockImplementation(async (req: { sql: string }) =>
+        req.sql === 'SELECT 1; SELECT bad' ? twoResults() : echoResult(req),
+      )
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, 'SELECT 1; SELECT bad')
+      // 选中第一条 'SELECT 1'(0..8)→ 右键「执行选中语句」按整段选中文本执行。
+      cmInput(wrapper).dispatch({ selection: { anchor: 0, head: 8 } })
+      await openRunMenu(wrapper)
+      expect(wrapper.find('[data-test="menu-run-selection"]').exists()).toBe(true)
+      await wrapper.find('[data-test="menu-run-selection"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT 1' })
+      // 无选区右键 →「执行当前语句」:执行光标所在语句(第 2 段)。
+      await typeSql(wrapper, 'SELECT 1; SELECT bad')
+      wrapper.findComponent(SqlEditor).vm.$emit('cursor', { line: 1, col: 13 })
+      await nextTick()
+      await openRunMenu(wrapper)
+      await wrapper.find('[data-test="menu-run-current"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT bad' })
+      // 「运行全部」→ 整段脚本交给后端。
+      await openRunMenu(wrapper)
+      await wrapper.find('[data-test="menu-run-all"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT bad' })
+      wrapper.unmount()
+    })
+
+    it('DSL 模式:三个菜单入口分别触发选中文本 / 当前请求 / 全部请求', async () => {
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await switchMode(wrapper, 'dsl')
+      await typeSql(wrapper, dslTwoRequests)
+      // 选中第一个请求(0..17)→ run-selection 把选中文本整体按 DSL 解析执行。
+      cmInput(wrapper).dispatch({ selection: { anchor: 0, head: 17 } })
+      await openRunMenu(wrapper)
+      await wrapper.find('[data-test="menu-run-selection"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.ESDsl).toHaveBeenLastCalledWith({ connection_id: 'e1', method: 'GET', path: '/_cat/indices', body: '' })
+      // 无选区右键 →「执行当前请求」:光标在第 3 行 = 第二个请求。
+      await typeSql(wrapper, dslTwoRequests)
+      wrapper.findComponent(SqlEditor).vm.$emit('cursor', { line: 3, col: 1 })
+      await nextTick()
+      await openRunMenu(wrapper)
+      await wrapper.find('[data-test="menu-run-current"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.ESDsl).toHaveBeenLastCalledWith({
+        connection_id: 'e1',
+        method: 'POST',
+        path: '/idx/_search',
+        body: '{"query":{"match_all":{}}}',
+      })
+      // 「运行全部」→ 两个请求各调用一次。
+      await openRunMenu(wrapper)
+      await wrapper.find('[data-test="menu-run-all"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      expect(app.ESDsl).toHaveBeenCalledTimes(4)
+      wrapper.unmount()
     })
   })
 })

@@ -3,12 +3,13 @@ import { computed, onMounted, ref, unref, watch } from 'vue'
 import { getApi } from '@/api/client'
 import type { CHStatementResult } from '@/api/types'
 import { parseCHSingleTableSelect } from '@/utils/chSql'
-import { splitSqlStatements } from '@/utils/sqlSplit'
+import { commentAbove, splitSqlStatements, type SqlSegment } from '@/utils/sqlSplit'
 import { useCHCellUpdate } from '@/composables/chCellUpdate'
 import { useQueryFiles } from '@/composables/queryFiles'
 import { useTabsStore } from '@/store/tabs'
 import SqlEditor from '@/components/common/SqlEditor.vue'
 import SqlResultCard from '@/components/common/SqlResultCard.vue'
+import SqlResultTabs, { type ResultTabItem } from '@/components/common/SqlResultTabs.vue'
 import PromptDialog from '@/components/common/PromptDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
@@ -20,6 +21,41 @@ const running = ref(false)
 const error = ref<string | null>(null)
 const results = ref<CHStatementResult[]>([])
 const editor = ref<InstanceType<typeof SqlEditor> | null>(null)
+
+// --- 结果 Tab 条:每个语句结果一个 tab,Tab 条下方只渲染 active 的那张卡。 ---
+// label = 语句起始上方最近的注释文本(commentAbove),无注释回退「结果 N」;
+// status 随运行推进 running → ok/fail;title 为语句单行摘要。
+const resultTabs = ref<ResultTabItem[]>([])
+const activeResult = ref(0)
+const activeCard = computed(() => results.value[activeResult.value])
+
+// 语句单行摘要:第一条非空行(trim,超长截断),供 tab 悬浮提示。
+function statementSummary(text: string): string {
+  const line = (text.split('\n').find((l) => l.trim() !== '') ?? '').trim()
+  return line.length > 80 ? `${line.slice(0, 80)}…` : line
+}
+
+// tab 标签:语句起始 offset 上方最近的注释;无注释回退「结果 N」。
+function tabLabel(from: number, index: number): string {
+  return commentAbove(sql.value, from) ?? `结果 ${index + 1}`
+}
+
+// 发起「运行全部」:按拆分段生成 running tab,active 指向第 0 个。
+function tabsFromSegments(segs: SqlSegment[]): ResultTabItem[] {
+  return segs.map((s, i) => ({
+    label: tabLabel(s.from, i),
+    status: 'running',
+    title: statementSummary(s.text),
+  }))
+}
+
+// 运行完成:按结果 error 映射 ok/fail;结果可能少于段数(后端遇错即停)。
+function applyTabStatus(tabs: ResultTabItem[], res: CHStatementResult[]): ResultTabItem[] {
+  return tabs.slice(0, res.length).map((t, i) => ({
+    ...t,
+    status: res[i]?.error ? 'fail' : 'ok',
+  }))
+}
 
 // --- 表清单(供编辑器自动补全):挂载时拉取一次并缓存,失败静默退化为无补全。 ---
 const tables = ref<{ name: string; columns?: string[] }[]>([])
@@ -97,7 +133,8 @@ function statementAtCursor(): string | null {
   return (seg ?? segs[0]).text
 }
 
-// 单语句执行:只发该段文本,结果数组替换为该条结果;发起即置 running 标记。
+// 单语句执行:只发该段文本,结果数组替换为该条结果;发起即置 running 标记,
+// 并预置单个 running tab(标签优先取该语句的前置注释)。
 async function runSingle(text: string): Promise<void> {
   if (running.value) return
   if (!text.trim()) return
@@ -105,14 +142,30 @@ async function runSingle(text: string): Promise<void> {
   error.value = null
   resultsOpen.value = true
   markedStatements.value = [{ text, status: 'running' }]
+  const seg = splitSqlStatements(sql.value).find((s) => s.text.trim() === text.trim())
+  resultTabs.value = [
+    {
+      label: seg ? tabLabel(seg.from, 0) : '结果 1',
+      status: 'running',
+      title: statementSummary(text),
+    },
+  ]
+  activeResult.value = 0
   try {
     const res = await getApi().chExecute({ connection_id: props.connectionId, sql: text })
     results.value = res
+    // 选中文本可能含多条语句:结果多于预置 tab 时按序回退「结果 N」补齐。
+    resultTabs.value = res.map((r, i) => ({
+      label: resultTabs.value[i]?.label ?? `结果 ${i + 1}`,
+      status: r.error ? 'fail' : 'ok',
+      title: resultTabs.value[i]?.title ?? statementSummary(r.sql),
+    }))
     markedStatements.value = marksFromResults([text], res)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     error.value = msg
     markedStatements.value = [{ text, status: 'fail', detail: msg }]
+    resultTabs.value = resultTabs.value.map((t) => ({ ...t, status: 'fail' }))
   } finally {
     running.value = false
   }
@@ -130,7 +183,8 @@ async function runCurrentStatement(): Promise<void> {
   await runSingle(text)
 }
 
-// 运行全部:整段脚本交给后端拆分,标记按 split 段与返回结果顺序映射。
+// 运行全部:整段脚本交给后端拆分,标记按 split 段与返回结果顺序映射;
+// 结果 tab 同步推进(running → ok/fail),active 重置到第 0 个。
 async function runAll(): Promise<void> {
   if (running.value) return
   const script = sql.value
@@ -140,9 +194,12 @@ async function runAll(): Promise<void> {
   resultsOpen.value = true
   const segs = splitSqlStatements(script)
   markedStatements.value = segs.map((s): MarkedStatement => ({ text: s.text, status: 'running' }))
+  resultTabs.value = tabsFromSegments(segs)
+  activeResult.value = 0
   try {
     const res = await getApi().chExecute({ connection_id: props.connectionId, sql: script })
     results.value = res
+    resultTabs.value = applyTabStatus(resultTabs.value, res)
     markedStatements.value = res.map((r, i): MarkedStatement => ({
       text: segs[i]?.text ?? r.sql,
       status: r.error ? 'fail' : 'ok',
@@ -152,6 +209,7 @@ async function runAll(): Promise<void> {
     const msg = e instanceof Error ? e.message : String(e)
     error.value = msg
     markedStatements.value = segs.map((s): MarkedStatement => ({ text: s.text, status: 'fail', detail: msg }))
+    resultTabs.value = resultTabs.value.map((t) => ({ ...t, status: 'fail' }))
   } finally {
     running.value = false
   }
@@ -159,6 +217,12 @@ async function runAll(): Promise<void> {
 
 // SqlEditor 主动请求执行某条语句(如编辑器内置快捷键)——走单语句逻辑。
 function onRunStatement(text: string): void {
+  void runSingle(text)
+}
+
+// 右键菜单「执行选中语句」:按整段选中文本执行(多语句由后端拆分);空选区忽略。
+function onRunSelection(text: string): void {
+  if (!text.trim()) return
   void runSingle(text)
 }
 
@@ -324,12 +388,14 @@ async function confirmCellUpdate(): Promise<void> {
     if (fresh.length > 0) {
       // 仅替换该索引的结果,其他语句结果保持不变。
       results.value = results.value.map((old, i) => (i === idx ? fresh[0] : old))
-      // 刷新同样更新该语句的标记(新耗时或错误)。
+      // 刷新同样更新该语句的标记与结果 tab 状态(新耗时或错误)。
       const m = markedStatements.value.find((x) => x.text.trim() === target.sql.trim())
       if (m) {
         m.status = fresh[0].error ? 'fail' : 'ok'
         m.detail = fresh[0].error ?? `${fresh[0].duration_ms} ms`
       }
+      const t = idx === null ? undefined : resultTabs.value[idx]
+      if (t && idx !== null) resultTabs.value[idx] = { ...t, status: fresh[0].error ? 'fail' : 'ok' }
     }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
@@ -474,9 +540,13 @@ onMounted(() => {
           statement-gutter
           :statement-marks="statementMarks"
           highlight-cursor-statement
+          enable-run-menu
           data-test="ch-sql-input"
           placeholder="SELECT database, table FROM system.tables WHERE database = 'default'"
           @run-statement="onRunStatement"
+          @run-selection="onRunSelection"
+          @run-current="runCurrentStatement"
+          @run-all="runAll"
           @cursor="onCursor"
         />
       </div>
@@ -502,20 +572,24 @@ onMounted(() => {
           <button class="results-close" type="button" data-test="results-close" title="关闭结果区" @click="resultsOpen = false">×</button>
         </div>
         <div class="results-body" data-test="results-body">
+          <!-- 结果 Tab 条:每条语句一个 tab,点击切换下方唯一的结果卡。 -->
+          <SqlResultTabs :tabs="resultTabs" :active="activeResult" @select="activeResult = $event" />
           <div v-if="results.length === 0" class="empty" data-test="results-empty">⌘Enter 执行当前语句 · ⌘Shift+Enter 运行全部</div>
+          <!-- 仅渲染 active tab 对应的结果卡;CH 不开行选择(primary-key 传空数组)。 -->
           <SqlResultCard
-            v-for="(r, i) in results"
-            :key="i"
-            :statement="r.sql"
-            :duration-ms="r.duration_ms"
-            :columns="r.columns ?? []"
-            :rows="r.rows ?? []"
-            :insert-target="parseCHSingleTableSelect(r.sql)"
-            :export-name="`ch-result-${i}`"
-            :error="r.error ?? null"
-            :editing="editingFor(i)"
-            @cell-dblclick="(row, col) => startCellEdit(i, row, col)"
-            @edit-commit="(value) => commitCellEdit(i, value ?? '')"
+            v-else-if="activeCard"
+            :key="activeResult"
+            :statement="activeCard.sql"
+            :duration-ms="activeCard.duration_ms"
+            :columns="activeCard.columns ?? []"
+            :rows="activeCard.rows ?? []"
+            :insert-target="parseCHSingleTableSelect(activeCard.sql)"
+            :export-name="`ch-result-${activeResult}`"
+            :error="activeCard.error ?? null"
+            :editing="editingFor(activeResult)"
+            :primary-key="[]"
+            @cell-dblclick="(row, col) => startCellEdit(activeResult, row, col)"
+            @edit-commit="(value) => commitCellEdit(activeResult, value ?? '')"
             @edit-cancel="cancelCellEdit"
           />
         </div>

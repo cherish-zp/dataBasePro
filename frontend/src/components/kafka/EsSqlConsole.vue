@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, unref, watch } from 'vue'
 import type { SqlTableSchema, StatementMark } from '@/components/common/SqlEditor.vue'
-import { splitSqlStatements } from '@/utils/sqlSplit'
+import { commentAbove, splitSqlStatements } from '@/utils/sqlSplit'
 import { EsDslParseError, parseEsDslRequests, prettyJson, type EsDslRequestPart } from '@/utils/esDsl'
 import { useQueryFiles } from '@/composables/queryFiles'
 import { useTabsStore } from '@/store/tabs'
 import { useToastStore } from '@/store/toast'
 import SqlEditor from '@/components/common/SqlEditor.vue'
 import SqlResultCard from '@/components/common/SqlResultCard.vue'
+import SqlResultTabs, { type ResultTabItem } from '@/components/common/SqlResultTabs.vue'
 import PromptDialog from '@/components/common/PromptDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import * as App from '../../../wailsjs/go/backend/App'
@@ -96,6 +97,34 @@ const error = ref<string | null>(null)
 const results = ref<EsStatementResult[]>([])
 const editor = ref<InstanceType<typeof SqlEditor> | null>(null)
 
+// --- 结果 Tab 条:每个语句(请求)结果一个 tab,Tab 条下方只渲染 active 的那张卡。 ---
+// SQL/DSL 各持一组 tab(结果本身也按模式分存);label = 语句起始上方最近的注释
+// 文本(commentAbove),无注释回退「结果 N」;status 随运行推进 running → ok/fail;
+// title 为语句单行摘要(DSL 为 METHOD /path)。
+const sqlResultTabs = ref<ResultTabItem[]>([])
+const sqlActive = ref(0)
+const activeCard = computed(() => results.value[sqlActive.value])
+const dslResultTabs = ref<ResultTabItem[]>([])
+const dslActive = ref(0)
+const activeDslCard = computed(() => dslResults.value[dslActive.value])
+
+// tab 点击随模式写入各自的 active 下标。
+function onTabSelect(i: number): void {
+  if (mode.value === 'sql') sqlActive.value = i
+  else dslActive.value = i
+}
+
+// 语句单行摘要:第一条非空行(trim,超长截断),供 tab 悬浮提示。
+function statementSummary(text: string): string {
+  const line = (text.split('\n').find((l) => l.trim() !== '') ?? '').trim()
+  return line.length > 80 ? `${line.slice(0, 80)}…` : line
+}
+
+// tab 标签:source 内语句起始 offset 上方最近的注释;无注释回退「结果 N」。
+function tabLabel(source: string, from: number, index: number): string {
+  return commentAbove(source, from) ?? `结果 ${index + 1}`
+}
+
 // --- 索引补全(仅索引名一层):挂载时拉一次索引清单;ES 无 DESCRIBE 惯例,
 // 列级补全不做。失败静默降级为无补全,不打断编辑。 ---
 const tables = ref<SqlTableSchema[]>([])
@@ -177,7 +206,8 @@ function maybeFallbackToDsl(msgs: Array<string | null | undefined>): void {
   enterDslMode()
 }
 
-// 单语句执行:只发该段文本,结果数组替换为该条结果;发起即置 running 标记。
+// 单语句执行:只发该段文本,结果数组替换为该条结果;发起即置 running 标记,
+// 并预置单个 running SQL tab(标签优先取该语句的前置注释)。
 // payload 不带 database 字段:ES 无库概念。
 async function runSingle(text: string): Promise<void> {
   if (running.value) return
@@ -186,15 +216,31 @@ async function runSingle(text: string): Promise<void> {
   error.value = null
   resultsOpen.value = true
   markedStatements.value = [{ text, status: 'running' }]
+  const seg = splitSqlStatements(sql.value).find((s) => s.text.trim() === text.trim())
+  sqlResultTabs.value = [
+    {
+      label: seg ? tabLabel(sql.value, seg.from, 0) : '结果 1',
+      status: 'running',
+      title: statementSummary(text),
+    },
+  ]
+  sqlActive.value = 0
   try {
     const res = await app.ESExecute({ connection_id: props.connectionId, sql: text })
     results.value = res
+    // 选中文本可能含多条语句:结果多于预置 tab 时按序回退「结果 N」补齐。
+    sqlResultTabs.value = res.map((r, i) => ({
+      label: sqlResultTabs.value[i]?.label ?? `结果 ${i + 1}`,
+      status: r.error ? 'fail' : 'ok',
+      title: sqlResultTabs.value[i]?.title ?? statementSummary(r.sql),
+    }))
     markedStatements.value = marksFromResults([text], res)
     maybeFallbackToDsl(res.map((r) => r.error))
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     error.value = msg
     markedStatements.value = [{ text, status: 'fail', detail: msg }]
+    sqlResultTabs.value = sqlResultTabs.value.map((t) => ({ ...t, status: 'fail' }))
     maybeFallbackToDsl([msg])
   } finally {
     running.value = false
@@ -213,7 +259,8 @@ async function runCurrentStatement(): Promise<void> {
   await runSingle(text)
 }
 
-// 运行全部:整段脚本交给后端拆分逐条执行,标记按 split 段与返回结果顺序映射。
+// 运行全部:整段脚本交给后端拆分逐条执行,标记按 split 段与返回结果顺序映射;
+// SQL 结果 tab 同步推进(running → ok/fail),active 重置到第 0 个。
 async function runAll(): Promise<void> {
   if (running.value) return
   const script = sql.value
@@ -223,9 +270,19 @@ async function runAll(): Promise<void> {
   resultsOpen.value = true
   const segs = splitSqlStatements(script)
   markedStatements.value = segs.map((s): MarkedStatement => ({ text: s.text, status: 'running' }))
+  sqlResultTabs.value = segs.map((s, i) => ({
+    label: tabLabel(script, s.from, i),
+    status: 'running',
+    title: statementSummary(s.text),
+  }))
+  sqlActive.value = 0
   try {
     const res = await app.ESExecute({ connection_id: props.connectionId, sql: script })
     results.value = res
+    sqlResultTabs.value = sqlResultTabs.value.slice(0, res.length).map((t, i) => ({
+      ...t,
+      status: res[i]?.error ? 'fail' : 'ok',
+    }))
     markedStatements.value = res.map((r, i): MarkedStatement => ({
       text: segs[i]?.text ?? r.sql,
       status: r.error ? 'fail' : 'ok',
@@ -236,6 +293,7 @@ async function runAll(): Promise<void> {
     const msg = e instanceof Error ? e.message : String(e)
     error.value = msg
     markedStatements.value = segs.map((s): MarkedStatement => ({ text: s.text, status: 'fail', detail: msg }))
+    sqlResultTabs.value = sqlResultTabs.value.map((t) => ({ ...t, status: 'fail' }))
     maybeFallbackToDsl([msg])
   } finally {
     running.value = false
@@ -250,6 +308,23 @@ function onRunStatement(text: string): void {
     return
   }
   void runSingle(text)
+}
+
+// 右键菜单「执行选中语句」:SQL 模式按整段选中文本执行(后端拆分多语句);
+// DSL 模式把选中文本整体按 DSL 解析执行;空选区忽略。
+function onRunSelection(text: string): void {
+  if (!text.trim()) return
+  if (mode.value === 'dsl') {
+    void runDslText(text)
+    return
+  }
+  void runSingle(text)
+}
+
+// 右键菜单「执行当前语句」:SQL = 光标所在语句;DSL = 光标所在请求。
+function onRunMenuCurrent(): void {
+  if (mode.value === 'dsl') void runDslCurrent()
+  else void runCurrentStatement()
 }
 
 // --- DSL 模式:Kibana Dev Tools 风格请求执行 ----------------------------------
@@ -324,7 +399,7 @@ function dslBodyText(c: DslResultCard): string {
   return c.method ? prettyJson(c.body) : c.statement
 }
 
-// 解析失败 → 单张错误卡(statement = 失败块原文,error 带行号)。
+// 解析失败 → 单张错误卡(statement = 失败块原文,error 带行号)+ 对应失败 tab。
 function showDslParseError(e: unknown): void {
   if (running.value) return
   resultsOpen.value = true
@@ -339,15 +414,30 @@ function showDslParseError(e: unknown): void {
       error: e instanceof Error ? e.message : String(e),
     },
   ]
+  dslResultTabs.value = [
+    {
+      label: '解析失败',
+      status: 'fail',
+      title: statementSummary(dslResults.value[0]?.error ?? ''),
+    },
+  ]
+  dslActive.value = 0
 }
 
 // 逐请求顺序执行:结果卡与标记随每个响应增量刷新;传输层错误不中断后续请求。
-async function runDslRequests(reqs: EsDslRequestPart[]): Promise<void> {
+// source 为本次解析所用的原文(编辑器全文或选中文本),供 tab 前置注释标签定位。
+async function runDslRequests(reqs: EsDslRequestPart[], source: string): Promise<void> {
   if (running.value || reqs.length === 0) return
   running.value = true
   error.value = null
   resultsOpen.value = true
   dslResults.value = []
+  dslResultTabs.value = reqs.map((r, i) => ({
+    label: tabLabel(source, lineStartOffset(source, r.startLine), i),
+    status: 'running',
+    title: `${r.method} ${r.path}`,
+  }))
+  dslActive.value = 0
   const marks = reqs.map((r): MarkedStatement => ({ text: requestText(r), status: 'running' }))
   markedDsl.value = [...marks]
   const cards: DslResultCard[] = []
@@ -386,13 +476,21 @@ async function runDslRequests(reqs: EsDslRequestPart[]): Promise<void> {
     }
     markedDsl.value = [...marks]
     dslResults.value = [...cards]
+    // 该请求的 tab 随响应脱离 running(HDR 响应 4xx/5xx 也算完成,状态为 fail)。
+    const tab = dslResultTabs.value[i]
+    if (tab) {
+      dslResultTabs.value[i] = {
+        ...tab,
+        status: marks[i]?.status === 'ok' ? 'ok' : 'fail',
+      }
+    }
   }
   running.value = false
 }
 
 async function runDslText(text: string): Promise<void> {
   try {
-    await runDslRequests(parseEsDslRequests(text))
+    await runDslRequests(parseEsDslRequests(text), text)
   } catch (e) {
     showDslParseError(e)
   }
@@ -432,7 +530,7 @@ async function runDslCurrent(): Promise<void> {
   }
   try {
     const target = dslRequestAtCursor(parseEsDslRequests(sql.value))
-    if (target) await runDslRequests([target])
+    if (target) await runDslRequests([target], sql.value)
   } catch (e) {
     showDslParseError(e)
   }
@@ -694,9 +792,13 @@ onMounted(() => {
           statement-gutter
           :statement-marks="activeStatementMarks"
           highlight-cursor-statement
+          enable-run-menu
           data-test="es-sql-input"
           placeholder='SELECT * FROM "my-index" LIMIT 10'
           @run-statement="onRunStatement"
+          @run-selection="onRunSelection"
+          @run-current="onRunMenuCurrent"
+          @run-all="onRunClick"
           @cursor="onCursor"
         />
       </div>
@@ -722,39 +824,47 @@ onMounted(() => {
           <button class="results-close" type="button" data-test="results-close" title="关闭结果区" @click="resultsOpen = false">×</button>
         </div>
         <div class="results-body" data-test="results-body">
+          <!-- 结果 Tab 条:每条语句(请求)一个 tab,SQL/DSL 各持一组,点击切换下方唯一结果卡。 -->
+          <SqlResultTabs
+            :tabs="mode === 'sql' ? sqlResultTabs : dslResultTabs"
+            :active="mode === 'sql' ? sqlActive : dslActive"
+            @select="onTabSelect"
+          />
           <div v-if="(mode === 'sql' ? results : dslResults).length === 0" class="empty" data-test="results-empty">
             {{ mode === 'dsl' ? 'GET /索引/_search ⏎ JSON body · ⌘Enter 执行当前请求' : '⌘Enter 执行当前语句 · ⌘Shift+Enter 运行全部' }}
           </div>
-          <!-- SQL 模式结果卡(只读表格,逻辑不变)。 -->
-          <template v-if="mode === 'sql'">
-            <SqlResultCard
-              v-for="(r, i) in results"
-              :key="i"
-              :statement="r.sql"
-              :duration-ms="r.duration_ms"
-              :columns="r.columns ?? []"
-              :rows="r.rows ?? []"
-              :insert-target="null"
-              :export-name="`es-result-${i}`"
-              :error="r.error ?? null"
-            />
-          </template>
-          <!-- DSL 模式结果卡:头部 METHOD /path · HTTP 状态 · 耗时(2xx 绿 /
-               4xx 5xx 红),正文 pretty JSON 等宽滚动区,复制按钮复制原始 body;
-               解析错误渲染错误卡(statement=失败块原文)。 -->
-          <template v-else>
-            <div v-for="(c, i) in dslResults" :key="i" class="dsl-card" :class="dslTone(c)" data-test="es-dsl-card">
-              <div class="dsl-head">
-                <span class="dsl-dot" :class="dslTone(c)"></span>
-                <span class="dsl-title" data-test="es-dsl-card-title">{{ c.method ? `${c.method} ${c.path}` : '解析失败' }}</span>
-                <span class="dsl-meta" data-test="es-dsl-card-meta">{{ dslMeta(c) }}</span>
-                <button v-if="c.method" type="button" class="dsl-copy" data-test="es-dsl-copy" title="复制原始响应" @click="copyDslBody(c)">
-                  复制
-                </button>
-              </div>
-              <pre class="dsl-body" data-test="es-dsl-result">{{ dslBodyText(c) }}</pre>
+          <!-- SQL 模式:仅渲染 active tab 对应的只读结果卡(逻辑不变)。 -->
+          <SqlResultCard
+            v-else-if="mode === 'sql' && activeCard"
+            :key="sqlActive"
+            :statement="activeCard.sql"
+            :duration-ms="activeCard.duration_ms"
+            :columns="activeCard.columns ?? []"
+            :rows="activeCard.rows ?? []"
+            :insert-target="null"
+            :export-name="`es-result-${sqlActive}`"
+            :error="activeCard.error ?? null"
+          />
+          <!-- DSL 模式:仅渲染 active tab 对应的请求卡:头部 METHOD /path · HTTP 状态 ·
+               耗时(2xx 绿 / 4xx 5xx 红),正文 pretty JSON 等宽滚动区,复制按钮复制原始
+               body;解析错误渲染错误卡(statement=失败块原文)。 -->
+          <div
+            v-else-if="activeDslCard"
+            :key="`dsl-${dslActive}`"
+            class="dsl-card"
+            :class="dslTone(activeDslCard)"
+            data-test="es-dsl-card"
+          >
+            <div class="dsl-head">
+              <span class="dsl-dot" :class="dslTone(activeDslCard)"></span>
+              <span class="dsl-title" data-test="es-dsl-card-title">{{ activeDslCard.method ? `${activeDslCard.method} ${activeDslCard.path}` : '解析失败' }}</span>
+              <span class="dsl-meta" data-test="es-dsl-card-meta">{{ dslMeta(activeDslCard) }}</span>
+              <button v-if="activeDslCard.method" type="button" class="dsl-copy" data-test="es-dsl-copy" title="复制原始响应" @click="copyDslBody(activeDslCard)">
+                复制
+              </button>
             </div>
-          </template>
+            <pre class="dsl-body" data-test="es-dsl-result">{{ dslBodyText(activeDslCard) }}</pre>
+          </div>
         </div>
       </div>
     </template>
