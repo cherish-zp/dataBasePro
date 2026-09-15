@@ -122,10 +122,14 @@ type MysqlCellUpdatePreview struct {
 // MysqlStatementResult is the per-statement outcome of a multi-statement
 // script: duration in ms, and either columns+rows (statements returning a
 // result set) or an error text (failed statement; execution stops there).
+// PrimaryKey lists the table's primary key columns in definition order when
+// the statement is a single-table SELECT(供「复制为 INSERT」可选剥离主键
+// 列);其余语句不填(omitempty)。
 type MysqlStatementResult struct {
 	SQL        string        `json:"sql"`
 	DurationMs int64         `json:"duration_ms"`
 	Error      string        `json:"error,omitempty"`
 	Columns    []MysqlColumn `json:"columns,omitempty"`
 	Rows       [][]*string   `json:"rows,omitempty"`
+	PrimaryKey []string      `json:"primary_key,omitempty"`
 }

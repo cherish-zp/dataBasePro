@@ -271,7 +271,7 @@ func (c *MysqlClient) PageRows(ctx context.Context, database, table, where, orde
 	}
 	res.Engine = engine
 
-	cols, pk, err := c.tableColumnsWithPK(ctx, database, table)
+	cols, pk, err := c.tableColumnsWithPK(ctx, c.db, database, table)
 	if err != nil {
 		return res, err
 	}
@@ -343,10 +343,11 @@ func (c *MysqlClient) tableMeta(ctx context.Context, database, table string) (st
 
 // tableColumnsWithPK reads the table's column metadata in definition order
 // plus the primary key column names (information_schema.columns.column_key =
-// 'PRI', in ordinal position order). 单元格编辑的 WHERE 与分页的 primary_key
-// 元数据同源于这一条查询。
-func (c *MysqlClient) tableColumnsWithPK(ctx context.Context, database, table string) ([]model.MysqlColumn, []string, error) {
-	rows, err := c.db.QueryContext(ctx,
+// 'PRI', in ordinal position order). 单元格编辑的 WHERE、分页与单表 SELECT
+// 结果的 primary_key 元数据同源于这一条查询。exec 由调用方给出(连接池或
+// USE 固定的专用连接),查询只读且全限定,不依赖会话状态。
+func (c *MysqlClient) tableColumnsWithPK(ctx context.Context, exec mysqlExecutor, database, table string) ([]model.MysqlColumn, []string, error) {
+	rows, err := exec.QueryContext(ctx,
 		"SELECT column_name, column_type, column_comment, column_key FROM information_schema.columns"+
 			" WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position", database, table)
 	if err != nil {
@@ -398,7 +399,7 @@ type mysqlExecutor interface {
 // 沿用连接池路径。Each result carries its duration, and either columns+rows
 // (statements that return a result set) or an error text. A failing statement
 // records its error and stops the run; the results gathered so far are
-// returned.
+// returned. 单表 SELECT 的结果额外附带 primary_key(查询失败静默置空)。
 func (c *MysqlClient) Execute(ctx context.Context, database, sqlText string) ([]model.MysqlStatementResult, error) {
 	statements := SplitSQLStatements(sqlText)
 	if len(statements) == 0 {
@@ -407,7 +408,7 @@ func (c *MysqlClient) Execute(ctx context.Context, database, sqlText string) ([]
 	if db := strings.TrimSpace(database); db != "" {
 		return c.executeOnPinnedDatabase(ctx, db, statements)
 	}
-	return runMysqlStatements(ctx, c.db, statements)
+	return c.runMysqlStatements(ctx, c.db, c.defaultDB, statements)
 }
 
 // executeOnPinnedDatabase grabs one dedicated connection, pins it to the
@@ -423,7 +424,7 @@ func (c *MysqlClient) executeOnPinnedDatabase(ctx context.Context, database stri
 	if _, err := conn.ExecContext(ctx, buildMysqlUseDatabase(database)); err != nil {
 		return nil, fmt.Errorf("use database: %w", err)
 	}
-	return runMysqlStatements(ctx, conn, statements)
+	return c.runMysqlStatements(ctx, conn, database, statements)
 }
 
 // buildMysqlUseDatabase renders the USE statement: the identifier is
@@ -434,8 +435,10 @@ func buildMysqlUseDatabase(database string) string {
 
 // runMysqlStatements runs the statements in order against exec, collecting
 // per-statement results; the first failure records its error and stops the
-// run with the results gathered so far.
-func runMysqlStatements(ctx context.Context, exec mysqlExecutor, statements []string) ([]model.MysqlStatementResult, error) {
+// run with the results gathered so far. defaultSchema 是未限定表名解析到的
+// 库(USE 过的专用连接为该库,连接池路径为连接默认库),供单表 SELECT 的
+// 主键元数据查询使用。
+func (c *MysqlClient) runMysqlStatements(ctx context.Context, exec mysqlExecutor, defaultSchema string, statements []string) ([]model.MysqlStatementResult, error) {
 	out := make([]model.MysqlStatementResult, 0, len(statements))
 	for _, stmt := range statements {
 		res := model.MysqlStatementResult{SQL: stmt}
@@ -468,9 +471,149 @@ func runMysqlStatements(ctx context.Context, exec mysqlExecutor, statements []st
 			}
 		}
 		res.DurationMs = msSince(start)
+		// 单表 SELECT 附带主键列(information_schema,与 PageRows 同源),
+		// 供前端「复制为 INSERT」可选剥离主键;任何失败静默置空,不计入
+		// 语句耗时,不影响语句结果。
+		res.PrimaryKey = c.mysqlStatementPrimaryKey(ctx, exec, stmt, defaultSchema)
 		out = append(out, res)
 	}
 	return out, nil
+}
+
+// mysqlStatementPrimaryKey 在语句是单表 SELECT 时查它的主键列
+// (information_schema.columns,与 PageRows 的 primary_key 同源同序)。
+// 未限定表名按 defaultSchema 解析;解析失败、无库可解析、查询报错、无主键
+// 一律返回 nil,绝不影响语句本身的执行结果。
+func (c *MysqlClient) mysqlStatementPrimaryKey(ctx context.Context, exec mysqlExecutor, stmt, defaultSchema string) []string {
+	schema, table, ok := singleTableName(stmt)
+	if !ok {
+		return nil
+	}
+	if schema == "" {
+		schema = defaultSchema
+	}
+	if strings.TrimSpace(schema) == "" {
+		return nil // 未限定且连接无默认库,information_schema 无从查起
+	}
+	_, pk, err := c.tableColumnsWithPK(ctx, exec, schema, table)
+	if err != nil || len(pk) == 0 {
+		return nil
+	}
+	return pk
+}
+
+// singleTableName 判断一条 SQL 是否为「单表 SELECT」:首关键字 SELECT,
+// 顶层恰好一个 FROM,表引用为标识符(可带一段库限定),其后只跟子句关键字
+// 或语句结束。是则返回 (限定库, 表名, true);未限定时 schema 为空,由调用
+// 方按当前库解析。JOIN/逗号多表、UNION、FROM 子查询、WITH、非 SELECT、
+// 无法词法解析等一律 ("", "", false)。复用 essql_translate.go 的 tokenizer
+// 与解析游标(其 EsSqlStatement 不对外暴露表名,故按契约以纯函数最小扩展;
+// 返回值比 (string, bool) 多一个 schema:库限定必须由解析器按反引号拆分,
+// 否则会把 `a.b`.`c` 之类的名字错误切分)。
+func singleTableName(sql string) (schema, table string, ok bool) {
+	toks, err := esTokenizeSQL(sql)
+	if err != nil {
+		return "", "", false
+	}
+	p := &esSQLParser{toks: toks}
+	if !p.eatKeyword("SELECT") {
+		return "", "", false
+	}
+	// 跳过 SELECT 列表:推进到第一个顶层 FROM(括号深度屏蔽子查询与
+	// 函数列里的 FROM;字符串字面量是独立 token,天然免疫)。
+	depth := 0
+	for {
+		t := p.peek()
+		if t.Kind == esTokIdent && depth == 0 && !t.Quoted && strings.EqualFold(t.Text, "FROM") {
+			p.next()
+			break
+		}
+		switch t.Kind {
+		case esTokEOF:
+			return "", "", false // 没有 FROM(如 SELECT 1)
+		case esTokPunct:
+			switch t.Text {
+			case "(":
+				depth++
+			case ")":
+				if depth == 0 {
+					return "", "", false
+				}
+				depth--
+			case ";":
+				return "", "", false
+			}
+		}
+		p.next()
+	}
+	// 表引用:ident(.ident)*;括号开头(FROM 子查询)等一律不支持。
+	t := p.peek()
+	if t.Kind != esTokIdent {
+		return "", "", false
+	}
+	p.next()
+	parts := []string{t.Text}
+	for p.isPunct(".") {
+		if nx := p.toks[p.pos+1]; nx.Kind != esTokIdent {
+			return "", "", false
+		}
+		p.next() // .
+		parts = append(parts, p.next().Text)
+	}
+	if len(parts) > 2 {
+		return "", "", false // MySQL 表引用最多 db.table 两段
+	}
+	// 可选别名:AS x 或裸的非关键字标识符(JOIN/UNION 等不可被误吃为别名)。
+	if p.eatKeyword("AS") {
+		if t := p.peek(); t.Kind != esTokIdent {
+			return "", "", false
+		}
+		p.next()
+	} else if t := p.peek(); t.Kind == esTokIdent && !t.Quoted && !isMysqlClauseKeyword(t.Text) {
+		p.next()
+	}
+	// 表引用之后只允许子句关键字或语句结束,否则视为多表/复合查询。
+	switch t := p.peek(); {
+	case t.Kind == esTokEOF:
+	case t.Kind == esTokPunct && t.Text == ";":
+	case t.Kind == esTokIdent && !t.Quoted && mysqlSelectFollowKeyword(t.Text):
+	default:
+		return "", "", false
+	}
+	if len(parts) == 2 {
+		return parts[0], parts[1], true
+	}
+	return "", parts[0], true
+}
+
+// mysqlSelectFollowKeyword 判断哪些子句关键字可以合法出现在单表 SELECT 的
+// 表引用(及其别名)之后:命中即认为 FROM 仅引用了这一张表。JOIN/UNION/
+// 逗号等不在此列。
+func mysqlSelectFollowKeyword(text string) bool {
+	switch strings.ToUpper(text) {
+	case "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET",
+		"FOR", "INTO", "WINDOW", "LOCK":
+		return true
+	}
+	return false
+}
+
+// isMysqlClauseKeyword 判断裸标识符是否为 MySQL 子句关键字(不能当作表
+// 别名)。比 ES 侧的关键字集更宽:LEFT/UNION/PARTITION 等一旦被误吃为别名,
+// 多表形态就会被漏判成单表。
+func isMysqlClauseKeyword(text string) bool {
+	switch strings.ToUpper(text) {
+	case "SELECT", "FROM", "WHERE", "GROUP", "BY", "HAVING", "ORDER",
+		"LIMIT", "OFFSET", "JOIN", "INNER", "LEFT", "RIGHT", "FULL",
+		"OUTER", "CROSS", "NATURAL", "STRAIGHT_JOIN", "ON", "USING",
+		"UNION", "AS", "AND", "OR", "NOT", "LIKE", "IN", "IS", "NULL",
+		"BETWEEN", "ASC", "DESC", "DISTINCT", "WITH", "FOR", "LOCK",
+		"INTO", "WINDOW", "SET", "VALUES", "USE", "FORCE", "IGNORE",
+		"PARTITION", "LATERAL", "TABLESAMPLE", "CASE", "WHEN", "THEN",
+		"ELSE", "END", "EXISTS", "ALL", "ANY", "SOME":
+		return true
+	}
+	return false
 }
 
 // mysqlStatementReturnsRows reports whether the statement's first keyword is
@@ -581,7 +724,7 @@ func (c *MysqlClient) validateCellEdit(ctx context.Context, database, table stri
 	if strings.TrimSpace(table) == "" {
 		return errors.New("表名不能为空")
 	}
-	_, pk, err := c.tableColumnsWithPK(ctx, database, table)
+	_, pk, err := c.tableColumnsWithPK(ctx, c.db, database, table)
 	if err != nil {
 		return err
 	}

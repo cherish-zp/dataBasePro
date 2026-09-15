@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -452,11 +453,34 @@ func TestBuildMysqlUseDatabase(t *testing.T) {
 }
 
 // fakeMysqlDrvConn 是 driver.Conn 的最小实现:记录在其上 Exec/Query 过的
-// 语句,供「USE 之后全部语句固定在同一连接」的断言使用。
+// 语句,供「USE 之后全部语句固定在同一连接」的断言使用;information_schema
+// 主键查询由 pkByTable/pkErr 桩应答(不记入 queries)。
 type fakeMysqlDrvConn struct {
 	execs   []string
 	queries []string
 	useErr  error // 非空时对 USE 语句返回该错误(模拟库不存在)
+	// pkByTable 按 "schema.table" 给出主键列(模拟 information_schema.columns
+	// 按 ordinal_position 排好序的 PRI 行);缺键/空值即无主键。pkErr 非空时
+	// 主键查询一律报错。pkArgs 记录每次主键查询的 (table_schema, table_name)。
+	pkByTable map[string][]string
+	pkErr     error
+	pkArgs    [][]driver.Value
+}
+
+// pkResultRows 把桩数据渲染成 information_schema.columns 形状的结果集
+// (column_name, column_type, column_comment, column_key),PRI 行按给定
+// 顺序(即 ordinal 序)逐行给出。
+func (c *fakeMysqlDrvConn) pkResultRows(args []driver.Value) *fakeMysqlDrvRows {
+	var pk []string
+	if len(args) >= 2 {
+		pk = c.pkByTable[args[0].(string)+"."+args[1].(string)]
+	}
+	cols := []string{"column_name", "column_type", "column_comment", "column_key"}
+	var vals [][]driver.Value
+	for _, name := range pk {
+		vals = append(vals, []driver.Value{name, "bigint", "", "PRI"})
+	}
+	return &fakeMysqlDrvRows{cols: cols, vals: vals}
 }
 
 func (c *fakeMysqlDrvConn) Prepare(query string) (driver.Stmt, error) {
@@ -481,19 +505,38 @@ func (s *fakeMysqlDrvStmt) Exec([]driver.Value) (driver.Result, error) {
 	s.conn.execs = append(s.conn.execs, s.query)
 	return driver.RowsAffected(0), nil
 }
-func (s *fakeMysqlDrvStmt) Query([]driver.Value) (driver.Rows, error) {
+func (s *fakeMysqlDrvStmt) Query(args []driver.Value) (driver.Rows, error) {
 	if strings.HasPrefix(strings.ToUpper(s.query), "USE ") && s.conn.useErr != nil {
 		return nil, s.conn.useErr
+	}
+	// information_schema 主键查询由桩应答,不记入业务 queries。
+	if strings.Contains(s.query, "information_schema.columns") {
+		s.conn.pkArgs = append(s.conn.pkArgs, args)
+		if s.conn.pkErr != nil {
+			return nil, s.conn.pkErr
+		}
+		return s.conn.pkResultRows(args), nil
 	}
 	s.conn.queries = append(s.conn.queries, s.query)
 	return &fakeMysqlDrvRows{cols: []string{"1"}}, nil
 }
 
-type fakeMysqlDrvRows struct{ cols []string }
+type fakeMysqlDrvRows struct {
+	cols []string
+	vals [][]driver.Value // 预置数据行(空 = 立即 EOF)
+	pos  int
+}
 
-func (r *fakeMysqlDrvRows) Columns() []string         { return r.cols }
-func (r *fakeMysqlDrvRows) Close() error              { return nil }
-func (r *fakeMysqlDrvRows) Next([]driver.Value) error { return io.EOF }
+func (r *fakeMysqlDrvRows) Columns() []string { return r.cols }
+func (r *fakeMysqlDrvRows) Close() error      { return nil }
+func (r *fakeMysqlDrvRows) Next(dest []driver.Value) error {
+	if r.pos >= len(r.vals) {
+		return io.EOF
+	}
+	copy(dest, r.vals[r.pos])
+	r.pos++
+	return nil
+}
 
 // fakeMysqlConnector 按 database/sql Connector 契约供给 fake 连接;pending
 // 非空时先复用它(可预置故障),否则新建并记录。
@@ -587,5 +630,187 @@ func TestMysqlExecuteEmptyScript(t *testing.T) {
 	c, _ := newFakeMysqlClient(t, nil)
 	if _, err := c.Execute(context.Background(), "app", "  \n "); err == nil || !strings.Contains(err.Error(), "没有可执行的 SQL 语句") {
 		t.Fatalf("empty script must be rejected, got %v", err)
+	}
+}
+
+// --- 单表 SELECT 表名解析(Execute 附带 primary_key 的判定基础) ---
+
+func TestSingleTableName(t *testing.T) {
+	cases := []struct {
+		sql    string
+		schema string
+		table  string
+		ok     bool
+	}{
+		{"SELECT * FROM users", "", "users", true},
+		{"select id, name from app.users where id = 1 order by name limit 10", "app", "users", true},
+		{"SELECT * FROM `my db`.`user table`", "my db", "user table", true},
+		{"SELECT * FROM `orders`", "", "orders", true},
+		{"SELECT * FROM users u WHERE u.id = 1", "", "users", true},
+		{"SELECT * FROM users AS u GROUP BY id HAVING count(*) > 1", "", "users", true},
+		{"SELECT COUNT(*) FROM users", "", "users", true},
+		{"SELECT a, (SELECT max(id) FROM logs) AS m FROM users", "", "users", true},
+		{"SELECT 'FROM x' FROM users", "", "users", true},
+		{"SELECT * FROM users;", "", "users", true},
+		{"  select\n *\n from\n t\n", "", "t", true},
+		// 多表/复合/非 SELECT/无法解析一律不判定。
+		{"SELECT * FROM a JOIN b ON a.id = b.id", "", "", false},
+		{"SELECT * FROM a LEFT JOIN b ON a.id = b.id", "", "", false},
+		{"SELECT * FROM a, b", "", "", false},
+		{"SELECT * FROM (SELECT 1) t", "", "", false},
+		{"SELECT * FROM a UNION SELECT * FROM b", "", "", false},
+		{"WITH c AS (SELECT 1) SELECT * FROM c", "", "", false},
+		{"UPDATE users SET a = 1", "", "", false},
+		{"INSERT INTO users VALUES (1)", "", "", false},
+		{"SELECT 1", "", "", false},
+		{"SELECT * FROM", "", "", false},
+		{"SELECT * FROM t WHERE x = ?", "", "", false},
+	}
+	for _, tc := range cases {
+		schema, table, ok := singleTableName(tc.sql)
+		if ok != tc.ok || schema != tc.schema || table != tc.table {
+			t.Errorf("singleTableName(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				tc.sql, schema, table, ok, tc.schema, tc.table, tc.ok)
+		}
+	}
+}
+
+// --- Execute:单表 SELECT 结果附带 primary_key ---
+
+func TestMysqlExecuteFillsPrimaryKeyForSingleTableSelect(t *testing.T) {
+	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{"app.users": {"id", "tenant_id"}}}
+	c, created := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM users")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %+v", results)
+	}
+	res := results[0]
+	if res.Error != "" {
+		t.Fatalf("statement must succeed, got error %q", res.Error)
+	}
+	if !reflect.DeepEqual(res.PrimaryKey, []string{"id", "tenant_id"}) {
+		t.Fatalf("primary key must be filled in ordinal order, got %+v", res.PrimaryKey)
+	}
+	// 未限定表名按当前库解析;主键查询与语句同连接。
+	if len(conn.pkArgs) != 1 || len(conn.pkArgs[0]) != 2 ||
+		conn.pkArgs[0][0] != "app" || conn.pkArgs[0][1] != "users" {
+		t.Fatalf("pk lookup args must be (app, users), got %+v", conn.pkArgs)
+	}
+	if len(*created) != 1 {
+		t.Fatalf("pk lookup must run on the statement connection, got %d conns", len(*created))
+	}
+}
+
+func TestMysqlExecuteQualifiedTableUsesSQLSchema(t *testing.T) {
+	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{"other.users": {"uid"}}}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM other.users")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !reflect.DeepEqual(results[0].PrimaryKey, []string{"uid"}) {
+		t.Fatalf("qualified table must resolve its own schema, got %+v", results[0].PrimaryKey)
+	}
+	if len(conn.pkArgs) != 1 || conn.pkArgs[0][0] != "other" || conn.pkArgs[0][1] != "users" {
+		t.Fatalf("pk lookup args must be (other, users), got %+v", conn.pkArgs)
+	}
+}
+
+func TestMysqlExecuteUnqualifiedTableFallsBackToDefaultDB(t *testing.T) {
+	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{"app.users": {"id"}}}
+	c, _ := newFakeMysqlClient(t, conn)
+	c.defaultDB = "app"
+	results, err := c.Execute(context.Background(), "", "SELECT * FROM users")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !reflect.DeepEqual(results[0].PrimaryKey, []string{"id"}) {
+		t.Fatalf("unqualified table must fall back to the connection default db, got %+v", results[0].PrimaryKey)
+	}
+	if len(conn.pkArgs) != 1 || conn.pkArgs[0][0] != "app" || conn.pkArgs[0][1] != "users" {
+		t.Fatalf("pk lookup args must be (app, users), got %+v", conn.pkArgs)
+	}
+}
+
+func TestMysqlExecuteLeavesPrimaryKeyEmptyForNonSingleTable(t *testing.T) {
+	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{"app.users": {"id"}}}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app",
+		"SELECT * FROM a JOIN b ON a.id = b.id; SELECT 1; UPDATE t SET a = 1")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %+v", results)
+	}
+	for i, res := range results {
+		if len(res.PrimaryKey) != 0 {
+			t.Fatalf("result %d must not carry primary key, got %+v", i, res.PrimaryKey)
+		}
+	}
+	if len(conn.pkArgs) != 0 {
+		t.Fatalf("non single-table statements must not trigger information_schema lookups, got %+v", conn.pkArgs)
+	}
+}
+
+func TestMysqlExecutePrimaryKeyLookupFailureDoesNotAffectResult(t *testing.T) {
+	conn := &fakeMysqlDrvConn{pkErr: errors.New("information_schema unavailable")}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM users")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	res := results[0]
+	if res.Error != "" {
+		t.Fatalf("statement must succeed regardless of pk lookup failure, got %q", res.Error)
+	}
+	if len(res.Columns) == 0 {
+		t.Fatalf("statement columns must survive, got %+v", res.Columns)
+	}
+	if len(res.PrimaryKey) != 0 {
+		t.Fatalf("pk lookup failure must leave primary key empty, got %+v", res.PrimaryKey)
+	}
+}
+
+func TestMysqlExecuteTableWithoutPrimaryKeyLeavesEmpty(t *testing.T) {
+	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{"app.logs": nil}}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM logs")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if results[0].Error != "" {
+		t.Fatalf("statement must succeed, got %q", results[0].Error)
+	}
+	if len(results[0].PrimaryKey) != 0 {
+		t.Fatalf("pk-less table must leave primary key empty, got %+v", results[0].PrimaryKey)
+	}
+}
+
+func TestMysqlExecutePerStatementPrimaryKey(t *testing.T) {
+	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{
+		"app.users":  {"id"},
+		"app.orders": {"order_id"},
+	}}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app",
+		"SELECT * FROM users; INSERT INTO logs(msg) VALUES ('hi'); SELECT * FROM orders")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %+v", results)
+	}
+	if !reflect.DeepEqual(results[0].PrimaryKey, []string{"id"}) {
+		t.Fatalf("users select must carry its pk, got %+v", results[0].PrimaryKey)
+	}
+	if len(results[1].PrimaryKey) != 0 {
+		t.Fatalf("insert must not carry primary key, got %+v", results[1].PrimaryKey)
+	}
+	if !reflect.DeepEqual(results[2].PrimaryKey, []string{"order_id"}) {
+		t.Fatalf("orders select must carry its own pk, got %+v", results[2].PrimaryKey)
 	}
 }
