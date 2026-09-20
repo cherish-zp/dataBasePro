@@ -94,6 +94,23 @@ describe('NewConnectionModal', () => {
     return mount(NewConnectionModal, { props: { show: true } })
   }
 
+  it('新建模式重新打开时表单重置:上次输入的 Redis 信息不残留', async () => {
+    // 第一次打开:填入 Redis 连接信息(模拟用户输入)。
+    const wrapper = mount(NewConnectionModal, { props: { show: true } })
+    await wrapper.find('[data-test="type-card-redis"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('我的 Redis')
+    await wrapper.find('[data-test="input-addr"]').setValue('127.0.0.1:6379')
+    await wrapper.find('[data-test="input-redis-password"]').setValue('s3cret')
+    // 关闭再重新打开(新建模式,无 connection):整体重置,名称清空、
+    // 类型回到默认 kafka(redis 字段需重新切卡后校验)。
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    expect((wrapper.find('[data-test="input-name"]').element as HTMLInputElement).value).toBe('')
+    await wrapper.find('[data-test="type-card-redis"]').trigger('click')
+    expect((wrapper.find('[data-test="input-addr"]').element as HTMLInputElement).value).toBe('')
+    expect((wrapper.find('[data-test="input-redis-password"]').element as HTMLInputElement).value).toBe('')
+  })
+
   it('does not render when hidden', () => {
     const wrapper = mount(NewConnectionModal, { props: { show: false } })
     expect(wrapper.find('[data-test="new-connection-modal"]').exists()).toBe(false)

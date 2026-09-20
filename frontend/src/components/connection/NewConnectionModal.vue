@@ -22,45 +22,51 @@ const TYPE_CARDS: { type: CardType; label: string; icon: string }[] = [
   { type: 'es', label: 'Elasticsearch', icon: '🔎' },
 ]
 
-const form = reactive({
-  name: '',
-  connType: 'kafka' as CardType,
-  addr: '',
-  redisPassword: '',
-  redisDB: 0,
-  redisTLS: false,
-  brokers: '',
-  securityProtocol: 'PLAINTEXT',
-  mechanism: 'PLAIN',
-  username: '',
-  password: '',
-  principal: '',
-  keytabPath: '',
-  krb5ConfPath: '',
-  serviceName: 'kafka',
-  caCert: '',
-  insecureSkipVerify: false,
-  chHosts: '',
-  chUsername: 'default',
-  chPassword: '',
-  chDatabase: 'default',
-  chTLS: false,
-  chProtocol: 'native' as 'native' | 'http',
-  // mysql/tidb 共用一套字段。
-  mysqlHost: '',
-  mysqlPort: 3306,
-  mysqlUsername: 'root',
-  mysqlPassword: '',
-  mysqlDatabase: '',
-  mysqlTlsMode: 'disabled' as MysqlConfigShape['tls_mode'],
-  // es:hosts 地址自带端口,无需端口预填;认证按 auth_mode 三选一。
-  esHosts: '',
-  esUsername: '',
-  esPassword: '',
-  esApiKey: '',
-  esAuthMode: 'none' as EsConfigShape['auth_mode'],
-  esTlsMode: 'disabled' as EsConfigShape['tls_mode'],
-})
+// createDefaultForm 表单初始值工厂:每次「新建连接」打开都从空白开始,
+// 不残留上一次输入(编辑模式由 fillFrom 覆盖,不受影响)。
+function createDefaultForm() {
+  return {
+    name: '',
+    connType: 'kafka' as CardType,
+    addr: '',
+    redisPassword: '',
+    redisDB: 0,
+    redisTLS: false,
+    brokers: '',
+    securityProtocol: 'PLAINTEXT',
+    mechanism: 'PLAIN',
+    username: '',
+    password: '',
+    principal: '',
+    keytabPath: '',
+    krb5ConfPath: '',
+    serviceName: 'kafka',
+    caCert: '',
+    insecureSkipVerify: false,
+    chHosts: '',
+    chUsername: 'default',
+    chPassword: '',
+    chDatabase: 'default',
+    chTLS: false,
+    chProtocol: 'native' as 'native' | 'http',
+    // mysql/tidb 共用一套字段。
+    mysqlHost: '',
+    mysqlPort: 3306,
+    mysqlUsername: 'root',
+    mysqlPassword: '',
+    mysqlDatabase: '',
+    mysqlTlsMode: 'disabled' as MysqlConfigShape['tls_mode'],
+    // es:hosts 地址自带端口,无需端口预填;认证按 auth_mode 三选一。
+    esHosts: '',
+    esUsername: '',
+    esPassword: '',
+    esApiKey: '',
+    esAuthMode: 'none' as EsConfigShape['auth_mode'],
+    esTlsMode: 'disabled' as EsConfigShape['tls_mode'],
+  }
+}
+
+const form = reactive(createDefaultForm())
 const testing = ref(false)
 const tested = ref(false)
 const testError = ref<string | null>(null)
@@ -177,6 +183,8 @@ watch(
       fillFrom(props.connection)
       return
     }
+    // 新建模式:先整体重置为初始值(不残留上一次的输入),再应用环境默认。
+    Object.assign(form, createDefaultForm())
     const principal = envDefault('DS_KAFKA_KERBEROS_PRINCIPAL')
     if (principal) {
       form.securityProtocol = envDefault('DS_KAFKA_SECURITY_PROTOCOL') || 'SASL_PLAINTEXT'
