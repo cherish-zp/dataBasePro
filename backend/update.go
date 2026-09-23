@@ -404,7 +404,7 @@ func (a *App) ApplyUpdate(_ ApplyUpdateRequest) error {
 		runtime.Quit(a.ctx)
 	}
 	return nil
-}// UpdateProgress returns the current download progress for the polling UI.
+} // UpdateProgress returns the current download progress for the polling UI.
 func (a *App) UpdateProgress() UpdateProgressInfo {
 	dl := a.downloadState()
 	info := UpdateProgressInfo{

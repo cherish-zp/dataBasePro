@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
+import { useToastStore } from '@/store/toast'
+import { buildDocSkeleton } from '@/utils/esDocSkeleton'
 import * as App from '../../../wailsjs/go/backend/App'
 
 const props = defineProps<{ connectionId: string; index: string }>()
+
+// 新增文档成功后的全局轻提示。
+const toast = useToastStore()
 
 // 每页行数与后端 ESPageRows 的 limit 对齐(后端换算为 from/size)。
 const PAGE_SIZE = 200
@@ -40,6 +45,12 @@ const app = App as unknown as {
   EsRefreshIndex(req: { connection_id: string; index: string }): Promise<void>
   ESGetDoc(req: { connection_id: string; index: string; id: string }): Promise<{ doc_json: string }>
   ESPutDoc(req: { connection_id: string; index: string; id: string; doc_json: string }): Promise<void>
+  EsCreateDoc(req: {
+    connection_id: string
+    index: string
+    id?: string
+    doc_json: string
+  }): Promise<{ id: string; source: string }>
   ESUpdateCell(req: {
     connection_id: string
     index: string
@@ -77,6 +88,11 @@ const editValue = ref('')
 // 行首操作按钮(JSON 编辑/删除)也挂在该列;缺失时整表只读。
 const hasIdColumn = computed(() => columns.value[0]?.type === '_id')
 const page = computed(() => Math.floor(offset.value / PAGE_SIZE) + 1)
+
+// mappingFields 映射字段(剔除 _id 列):新增文档骨架的生成来源。
+const mappingFields = computed(() =>
+  columns.value.filter((c) => c.type !== '_id').map((c) => ({ name: c.name, type: c.type })),
+)
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
@@ -299,12 +315,20 @@ function onEditCancel(): void {
   editError.value = null
 }
 
-// --- 整文档 JSON 编辑:行首「JSON」按钮 → 弹窗 textarea → 保存整文档替换。 ---
+// --- 整文档 JSON 弹窗:编辑(查看/替换已有文档)与新增(骨架草稿创建,
+//     可指定 _id 覆盖)双模式,共用 jsonOpen/jsonDraft 状态。 ---
 
 const jsonOpen = ref(false)
 const jsonSaving = ref(false)
 const jsonId = ref('')
 const jsonDraft = ref('')
+// 弹窗模式:edit = 编辑已有文档(ESPutDoc);create = 新增(EsCreateDoc,
+// _id 留空自动生成、非空指定写入/覆盖)。
+const jsonMode = ref<'edit' | 'create'>('edit')
+// 新增模式下的 _id 输入草稿(与编辑模式的 jsonId 分离,避免混淆)。
+const jsonNewId = ref('')
+// 弹窗内错误:前端 JSON 校验失败与服务端错误统一展示在此,并同步页面错误区。
+const jsonError = ref<string | null>(null)
 
 // prettyJson 将后端返回的 doc_json 格式化为两空格缩进;解析失败原样展示。
 function prettyJson(s: string): string {
@@ -320,29 +344,109 @@ async function openJson(ri: number): Promise<void> {
   if (id === null || loading.value || jsonOpen.value) return
   try {
     const res = await app.ESGetDoc({ connection_id: props.connectionId, index: props.index, id })
+    jsonMode.value = 'edit'
     jsonId.value = id
     jsonDraft.value = prettyJson(res.doc_json ?? '')
+    jsonNewId.value = ''
+    jsonError.value = null
     jsonOpen.value = true
   } catch (e) {
     error.value = errMsg(e)
   }
 }
 
-// saveJson 整文档替换(PUT _doc);语法错误等后端 400 时弹窗保持打开,
-// 错误进错误区供修正后重试。
+// openCreateDoc 进入新增模式:draft 由映射字段骨架生成(数值 0/布尔
+// false/其余 null,object 由点路径子字段成形),_id 留给用户选择。
+function openCreateDoc(): void {
+  if (jsonOpen.value) return
+  jsonMode.value = 'create'
+  jsonId.value = ''
+  jsonNewId.value = ''
+  jsonDraft.value = buildDocSkeleton(mappingFields.value)
+  jsonError.value = null
+  jsonOpen.value = true
+}
+
+// duplicateDoc 另存为新文档:保留当前弹窗内容(格式化 JSON),清空 _id
+// 进入新增模式,后续保存走 EsCreateDoc(留空自动生成 / 填写指定新 _id)。
+function duplicateDoc(): void {
+  if (jsonMode.value !== 'edit') return
+  jsonMode.value = 'create'
+  jsonNewId.value = ''
+  jsonError.value = null
+}
+
+// 弹窗标题:编辑态含文档 _id;新增态固定「新增文档」。
+const jsonTitle = computed(() => (jsonMode.value === 'create' ? '新增文档' : '编辑文档 JSON'))
+
+// 保存按钮文案/提示:编辑态「保存」;新增态 _id 留空「创建」、填写
+// 「创建/覆盖」(title 注明同 _id 已存在会被整体覆盖)。
+const saveBtnText = computed(() => {
+  if (jsonSaving.value) return '保存中…'
+  if (jsonMode.value === 'create') return jsonNewId.value.trim() ? '创建/覆盖' : '创建'
+  return '保存'
+})
+
+const saveBtnTitle = computed(() => {
+  if (jsonMode.value !== 'create') return undefined
+  const id = jsonNewId.value.trim()
+  return id
+    ? `将以 PUT /${props.index}/_doc/${id} 写入:同 _id 文档已存在时被整体覆盖`
+    : `POST /${props.index}/_doc,_id 由 Elasticsearch 自动生成`
+})
+
+// jsonHint 弹窗底部提示:编辑态沿用整文档替换说明;新增态说明 _id 语义。
+const jsonHint = computed(() => {
+  if (jsonMode.value === 'edit') {
+    return `保存将以该 JSON 整体替换文档(PUT /${props.index}/_doc/${jsonId.value})`
+  }
+  return `留空 _id 自动生成(POST /${props.index}/_doc);填写 _id 时同 ID 文档将被整体覆盖(PUT /${props.index}/_doc/<_id>)`
+})
+
+// saveJson 双模式保存:edit = 整文档替换(ESPutDoc);create = 先前端校验
+// JSON 语法(json.Valid 等价,非法不发请求),_id 留空走 EsCreateDoc
+// (POST 自动生成),非空带 id(后端 PUT,同 _id 已存在则覆盖)。
+// 失败弹窗保持,错误显示在弹窗内并同步页面错误区。
 async function saveJson(): Promise<void> {
-  if (!jsonOpen.value || jsonSaving.value || !jsonId.value) return
+  if (!jsonOpen.value || jsonSaving.value) return
+  if (jsonMode.value === 'edit' && !jsonId.value) return
   jsonSaving.value = true
+  jsonError.value = null
   try {
-    await app.ESPutDoc({
-      connection_id: props.connectionId,
-      index: props.index,
-      id: jsonId.value,
-      doc_json: jsonDraft.value,
-    })
+    if (jsonMode.value === 'create') {
+      try {
+        JSON.parse(jsonDraft.value)
+      } catch (pe) {
+        throw new Error(`JSON 语法错误:${errMsg(pe)}`)
+      }
+      const id = jsonNewId.value.trim()
+      if (id) {
+        await app.EsCreateDoc({
+          connection_id: props.connectionId,
+          index: props.index,
+          id,
+          doc_json: jsonDraft.value,
+        })
+      } else {
+        await app.EsCreateDoc({
+          connection_id: props.connectionId,
+          index: props.index,
+          doc_json: jsonDraft.value,
+        })
+      }
+    } else {
+      await app.ESPutDoc({
+        connection_id: props.connectionId,
+        index: props.index,
+        id: jsonId.value,
+        doc_json: jsonDraft.value,
+      })
+    }
     jsonOpen.value = false
+    if (jsonMode.value === 'create') toast.show('文档已创建')
     void refreshThenFetch()
   } catch (e) {
+    jsonError.value = errMsg(e)
     error.value = errMsg(e)
   } finally {
     jsonSaving.value = false
@@ -351,8 +455,11 @@ async function saveJson(): Promise<void> {
 
 function closeJson(): void {
   jsonOpen.value = false
+  jsonMode.value = 'edit'
   jsonId.value = ''
+  jsonNewId.value = ''
   jsonDraft.value = ''
+  jsonError.value = null
 }
 
 // --- 删除文档:行首 ✕ → 危险确认(含 _id)→ 执行并刷新当前页。 ---
@@ -430,6 +537,7 @@ async function doClear(): Promise<void> {
       <button class="btn ghost" type="button" data-test="es-refresh" :disabled="loading" @click="refresh">
         {{ loading ? '加载中…' : '刷新' }}
       </button>
+      <button class="btn ghost" type="button" data-test="es-doc-create" title="新增文档(按映射字段生成 JSON 骨架)" @click="openCreateDoc">➕ 新增文档</button>
       <button class="btn ghost danger" type="button" data-test="btn-es-clear" @click="confirmClear = true">清空文档</button>
     </div>
 
@@ -573,15 +681,36 @@ async function doClear(): Promise<void> {
       @cancel="onEditCancel"
     />
 
-    <!-- 整文档 JSON 编辑弹窗:保存即整文档替换(PUT _doc)。 -->
+    <!-- 整文档 JSON 弹窗:编辑模式保存即整文档替换(PUT _doc);新增模式
+         由映射字段骨架起步,_id 留空自动生成 / 填写指定写入(覆盖)。 -->
     <Teleport to="body">
       <div v-if="jsonOpen" class="modal-backdrop" data-test="es-doc-json-modal" @click.self="closeJson">
         <div class="modal json-modal">
           <div class="modal-header">
-            <span class="modal-title">编辑文档 JSON <span class="mono doc-id">{{ jsonId }}</span></span>
+            <span class="modal-title" data-test="es-doc-json-title">
+              <template v-if="jsonMode === 'create'">{{ jsonTitle }}</template>
+              <template v-else>{{ jsonTitle }} <span class="mono doc-id">{{ jsonId }}</span></template>
+            </span>
             <button class="modal-close" type="button" data-test="es-doc-json-close" @click="closeJson">✕</button>
           </div>
           <div class="modal-body">
+            <div v-if="jsonError" class="msg err json-error" data-test="es-json-error">{{ jsonError }}</div>
+            <div v-if="jsonMode === 'create'" class="doc-id-row">
+              <label class="doc-id-label" for="es-doc-create-id">_id</label>
+              <input
+                id="es-doc-create-id"
+                v-model="jsonNewId"
+                class="doc-id-input"
+                type="text"
+                data-test="es-doc-create-id"
+                placeholder="留空自动生成"
+                autocapitalize="off"
+                autocorrect="off"
+                autocomplete="off"
+                spellcheck="false"
+                title="留空 = POST 自动生成;填写 = PUT 指定写入,同 _id 已存在则覆盖"
+              />
+            </div>
             <textarea
               v-model="jsonDraft"
               class="json-editor"
@@ -592,12 +721,22 @@ async function doClear(): Promise<void> {
               autocomplete="off"
               spellcheck="false"
             ></textarea>
-            <div class="json-hint">保存将以该 JSON 整体替换文档(PUT /{{ props.index }}/_doc/{{ jsonId }})</div>
+            <div class="json-hint">{{ jsonHint }}</div>
           </div>
           <div class="modal-footer">
+            <button
+              v-if="jsonMode === 'edit'"
+              class="btn ghost"
+              type="button"
+              data-test="es-doc-duplicate"
+              title="以当前内容另存为新文档(_id 留空自动生成)"
+              @click="duplicateDoc"
+            >
+              另存为新文档
+            </button>
             <button class="btn ghost" type="button" data-test="es-doc-json-cancel" @click="closeJson">取消</button>
-            <button class="btn primary" type="button" data-test="es-doc-json-save" :disabled="jsonSaving" @click="saveJson">
-              {{ jsonSaving ? '保存中…' : '保存' }}
+            <button class="btn primary" type="button" data-test="es-doc-json-save" :disabled="jsonSaving" :title="saveBtnTitle" @click="saveJson">
+              {{ saveBtnText }}
             </button>
           </div>
         </div>
@@ -723,6 +862,17 @@ async function doClear(): Promise<void> {
 }
 .json-editor:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .json-hint { margin-top: 8px; font-size: 11px; color: var(--text-tertiary); }
+/* 弹窗内错误:与页面错误区同一视觉语言,置于弹窗体顶部(错误即点可见)。 */
+.json-error { margin: 0 0 8px; }
+/* 新增模式 _id 行:单行紧凑,等宽字体与文档标识一致。 */
+.doc-id-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.doc-id-label { font-size: 12px; font-family: var(--mono); color: var(--text-secondary); }
+.doc-id-input {
+  flex: 1; box-sizing: border-box;
+  background: var(--bg-subtle); border: 1px solid var(--border); color: var(--text);
+  border-radius: 7px; padding: 5px 9px; font-size: 13px; font-family: var(--mono);
+}
+.doc-id-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .btn.primary { background: var(--accent); color: #fff; }
 .btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
 </style>

@@ -236,7 +236,7 @@ func TestAppListDriversStatic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListDrivers: %v", err)
 	}
-	if len(drivers) != 6 {
+	if len(drivers) != 7 {
 		t.Fatalf("expected 6 builtin drivers, got %+v", drivers)
 	}
 	want := map[string]DriverInfo{
@@ -245,6 +245,7 @@ func TestAppListDriversStatic(t *testing.T) {
 		"ClickHouse":    {Name: "ClickHouse", Library: "clickhouse-go", Version: "v2.48.0", DefaultPort: 9000},
 		"Elasticsearch": {Name: "Elasticsearch", Library: "net/http + encoding/json", Version: "v8.x", DefaultPort: 9200},
 		"MySQL":         {Name: "MySQL", Library: "go-sql-driver/mysql", Version: "v1.10.1", DefaultPort: 3306},
+		"PostgreSQL":    {Name: "PostgreSQL", Library: "pgx", Version: "v5.11.0", DefaultPort: 5432},
 		"TiDB":          {Name: "TiDB", Library: "go-sql-driver/mysql", Version: "v1.10.1", DefaultPort: 4000},
 	}
 	for _, d := range drivers {

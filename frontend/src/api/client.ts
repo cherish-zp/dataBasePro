@@ -80,6 +80,17 @@ import type {
   MysqlTruncateTableRequest,
   MysqlCellUpdateRequest,
   MysqlCellUpdatePreview,
+  PostgresConfigShape,
+  PostgresListSchemasRequest,
+  PostgresListTablesRequest,
+  PostgresRelationInfo,
+  PostgresPageRowsRequest,
+  PostgresPageRowsResult,
+  PostgresExecuteRequest,
+  PostgresStatementResult,
+  PostgresTruncateTableRequest,
+  PostgresCellUpdateRequest,
+  PostgresCellUpdatePreview,
   EsConfigShape,
   EsIndexInfo,
   EsColumn,
@@ -89,6 +100,7 @@ import type {
   EsExecuteRequest,
   EsStatementResult,
   EsCellUpdateRequest,
+  EsCreateDocRequest,
   EsGetDocRequest,
   EsDoc,
   EsPutDocRequest,
@@ -184,6 +196,15 @@ export interface Api {
   mysqlPreviewCellUpdate?(req: MysqlCellUpdateRequest): Promise<MysqlCellUpdatePreview>
   mysqlUpdateCell?(req: MysqlCellUpdateRequest): Promise<void>
   mysqlTruncateTable?(req: MysqlTruncateTableRequest): Promise<void>
+  testPostgresConnection?(cfg: PostgresConfigShape): Promise<void>
+  listPostgresDatabases?(id: string): Promise<string[]>
+  listPostgresSchemas?(req: PostgresListSchemasRequest): Promise<string[]>
+  listPostgresTables?(req: PostgresListTablesRequest): Promise<PostgresRelationInfo[]>
+  postgresPageRows?(req: PostgresPageRowsRequest): Promise<PostgresPageRowsResult>
+  postgresExecute?(req: PostgresExecuteRequest): Promise<PostgresStatementResult[]>
+  postgresTruncateTable?(req: PostgresTruncateTableRequest): Promise<void>
+  postgresPreviewCellUpdate?(req: PostgresCellUpdateRequest): Promise<PostgresCellUpdatePreview>
+  postgresUpdateCell?(req: PostgresCellUpdateRequest): Promise<void>
   // Elasticsearch 系列:后端绑定尚未由 wails generate 生成,同样声明为可选
   // 成员(全仓既有 fakeApi 零改动);调用方用可选链(?.)访问。
   testEsConnection?(cfg: EsConfigShape): Promise<void>
@@ -196,6 +217,9 @@ export interface Api {
   esUpdateCell?(req: EsCellUpdateRequest): Promise<void>
   esDeleteDoc?(req: EsDeleteDocRequest): Promise<void>
   esDeleteByQuery?(req: EsDeleteByQueryRequest): Promise<number>
+  // 新增文档(ESCreateDoc):绑定尚未由 wails generate 生成(主控稍后重生
+  // 成),声明为可选成员;调用方用可选链(?.)访问。
+  esCreateDoc?(req: EsCreateDocRequest): Promise<EsDoc>
   // ES 集合编辑系列(索引/模板的新建、删除与设置修改):后端绑定尚未由
   // wails generate 生成,同样声明为可选成员;调用方用可选链(?.)访问。
   esCreateIndex?(req: EsCreateIndexRequest): Promise<void>
@@ -450,6 +474,36 @@ export class WailsApi implements Api {
   mysqlTruncateTable(req: MysqlTruncateTableRequest): Promise<void> {
     return (App as unknown as { MysqlTruncateTable: (req: never) => Promise<void> }).MysqlTruncateTable(req as unknown as never)
   }
+  // 以下 PostgreSQL API 的后端绑定尚未由 wails generate 生成,先对模块形状
+  // 断言,待主会话生成绑定后即可直接调用(接口侧为可选成员,fake 无需实现)。
+  testPostgresConnection(cfg: PostgresConfigShape): Promise<void> {
+    return (App as unknown as { TestPostgresConnection: (cfg: never) => Promise<void> }).TestPostgresConnection(cfg as unknown as never)
+  }
+  listPostgresDatabases(id: string): Promise<string[]> {
+    return (App as unknown as { ListPostgresDatabases: (id: string) => Promise<string[]> }).ListPostgresDatabases(id) as unknown as Promise<string[]>
+  }
+  listPostgresSchemas(req: PostgresListSchemasRequest): Promise<string[]> {
+    return (App as unknown as { ListPostgresSchemas: (req: never) => Promise<string[]> }).ListPostgresSchemas(req as unknown as never) as unknown as Promise<string[]>
+  }
+  listPostgresTables(req: PostgresListTablesRequest): Promise<PostgresRelationInfo[]> {
+    return (App as unknown as { ListPostgresTables: (req: never) => Promise<PostgresRelationInfo[]> }).ListPostgresTables(req as unknown as never)
+  }
+  postgresPageRows(req: PostgresPageRowsRequest): Promise<PostgresPageRowsResult> {
+    return (App as unknown as { PostgresPageRows: (req: never) => Promise<PostgresPageRowsResult> }).PostgresPageRows(req as unknown as never)
+  }
+  postgresExecute(req: PostgresExecuteRequest): Promise<PostgresStatementResult[]> {
+    return (App as unknown as { PostgresExecute: (req: never) => Promise<PostgresStatementResult[]> }).PostgresExecute(req as unknown as never)
+  }
+  postgresTruncateTable(req: PostgresTruncateTableRequest): Promise<void> {
+    return (App as unknown as { PostgresTruncateTable: (req: never) => Promise<void> }).PostgresTruncateTable(req as unknown as never)
+  }
+  postgresPreviewCellUpdate(req: PostgresCellUpdateRequest): Promise<PostgresCellUpdatePreview> {
+    return (App as unknown as { PostgresPreviewCellUpdate: (req: never) => Promise<PostgresCellUpdatePreview> }).PostgresPreviewCellUpdate(req as unknown as never)
+  }
+  postgresUpdateCell(req: PostgresCellUpdateRequest): Promise<void> {
+    return (App as unknown as { PostgresUpdateCell: (req: never) => Promise<void> }).PostgresUpdateCell(req as unknown as never)
+  }
+
   // 以下 Elasticsearch API 的后端绑定尚未由 wails generate 生成,先对模块形状
   // 断言,待主会话生成绑定后即可直接调用(接口侧为可选成员,fake 无需实现)。
   testEsConnection(cfg: EsConfigShape): Promise<void> {
@@ -472,6 +526,12 @@ export class WailsApi implements Api {
   }
   esPutDoc(req: EsPutDocRequest): Promise<void> {
     return (App as unknown as { ESPutDoc: (req: never) => Promise<void> }).ESPutDoc(req as unknown as never)
+  }
+
+  esCreateDoc(req: EsCreateDocRequest): Promise<EsDoc> {
+    // ESCreateDoc 绑定尚未由 wailsjs 生成,先按模块形状断言直连(主控稍后
+    // 重生成,生成后签名一致无需改动)。
+    return (App as unknown as { ESCreateDoc: (req: never) => Promise<EsDoc> }).ESCreateDoc(req as unknown as never)
   }
   esUpdateCell(req: EsCellUpdateRequest): Promise<void> {
     return (App as unknown as { ESUpdateCell: (req: never) => Promise<void> }).ESUpdateCell(req as unknown as never)

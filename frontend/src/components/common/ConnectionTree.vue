@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
-import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo, CHTableInfo, MysqlTableInfo, EsIndexInfo, EsTemplateInfo } from '@/api/types'
+import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo, CHTableInfo, MysqlTableInfo, PostgresRelationInfo, EsIndexInfo, EsTemplateInfo } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
 import { formatCount } from '@/utils/format'
 import { formatBytes } from '@/utils/bytes'
@@ -22,6 +22,7 @@ const emit = defineEmits<{
   (e: 'open-health', connectionId: string): void
   (e: 'open-ch-table', connectionId: string, database: string, table: string): void
   (e: 'open-mysql-table', connectionId: string, database: string, table: string): void
+  (e: 'open-postgres-table', connectionId: string, database: string, schema: string, relation: string, relationType: 'table' | 'view' | 'materialized_view'): void
   (e: 'open-es-index', connectionId: string, index: string): void
   (e: 'open-es-template', connectionId: string, template: string): void
   (e: 'open-es-template-create', connectionId: string): void
@@ -41,6 +42,7 @@ const TYPE_META: Record<string, { label: string; icon: string }> = {
   mysql: { label: 'MySQL', icon: '🐬' },
   tidb: { label: 'TiDB', icon: '🌿' },
   es: { label: 'ES', icon: '🔎' },
+  postgres: { label: 'PostgreSQL', icon: '🐘' },
 }
 
 function typeMeta(conn: Connection): { label: string; icon: string } {
@@ -130,6 +132,17 @@ const mysqlTablesByDb = ref<Record<string, MysqlTableInfo[]>>({})
 const mysqlTableLoadingByDb = ref<Record<string, boolean>>({})
 const mysqlExpandedByDb = ref<Record<string, boolean>>({})
 const mysqlTableFilterByDb = ref<Record<string, string>>({})
+// --- PostgreSQL 三级树:数据库 → schema → relation(逐级懒加载并缓存) ---
+const pgDBs = ref<Record<string, string[]>>({})
+// 键 `${connId}/${db}`:每个数据库节点独立的 schema 清单与展开状态。
+const pgSchemasByDb = ref<Record<string, string[]>>({})
+const pgSchemaLoadingByDb = ref<Record<string, boolean>>({})
+const pgExpandedByDb = ref<Record<string, boolean>>({})
+// 键 `${connId}/${db}/${schema}`:每个 schema 节点独立的 relation 清单与展开状态。
+const pgRelationsBySchema = ref<Record<string, PostgresRelationInfo[]>>({})
+const pgRelationLoadingBySchema = ref<Record<string, boolean>>({})
+const pgExpandedBySchema = ref<Record<string, boolean>>({})
+const pgRelationFilterBySchema = ref<Record<string, string>>({})
 // --- Elasticsearch 一级树(连接 → 索引;系统索引由后端过滤,无二级展开) ---
 const esIndices = ref<Record<string, EsIndexInfo[]>>({})
 // ES 一级树的索引名模糊过滤词(按连接缓存)。
@@ -160,9 +173,9 @@ async function toggle(conn: Connection): Promise<void> {
     void loadEsTemplates(id)
   }
   if (
-    !topicsByConn.value[id] && !redisDBs.value[id] && !chDBs.value[id] && !mysqlDBs.value[id] && !esIndices.value[id]
+    !topicsByConn.value[id] && !redisDBs.value[id] && !chDBs.value[id] && !mysqlDBs.value[id] && !esIndices.value[id] && !pgDBs.value[id]
     && (conn.type === 'kafka' || conn.type === 'redis' || conn.type === 'clickhouse'
-      || conn.type === 'mysql' || conn.type === 'tidb' || conn.type === 'es')
+      || conn.type === 'mysql' || conn.type === 'tidb' || conn.type === 'es' || conn.type === 'postgres')
   ) {
     await load(id)
   }
@@ -188,6 +201,10 @@ async function load(connId: string): Promise<void> {
     } else if (type === 'es') {
       // 后端默认已过滤系统索引(.kibana* 等)。
       esIndices.value[connId] = (await getApi().listEsIndices?.(connId)) ?? []
+      connStore.setStatus(connId, 'connected')
+    } else if (type === 'postgres') {
+      // 后端默认已过滤模板库等系统数据库。
+      pgDBs.value[connId] = (await getApi().listPostgresDatabases?.(connId)) ?? []
       connStore.setStatus(connId, 'connected')
     } else {
       const [topics, groups] = await Promise.all([
@@ -312,6 +329,92 @@ function mysqlDbCountLabel(connId: string, db: string): string {
   const q = mysqlTableFilterOf(connId, db)
   if (!q) return String(total)
   return `${filteredMysqlTables(connId, db).length}/${total}`
+}
+
+// --- PostgreSQL 三级树:数据库 → schema → relation ---
+
+function pgDbKey(connId: string, db: string): string {
+  return `${connId}/${db}`
+}
+
+function pgSchemaKey(connId: string, db: string, schema: string): string {
+  return `${connId}/${db}/${schema}`
+}
+
+function isPgDbExpanded(connId: string, db: string): boolean {
+  return !!pgExpandedByDb.value[pgDbKey(connId, db)]
+}
+
+// togglePgDb 展开/收起数据库节点;首次展开懒加载 schema 清单。
+async function togglePgDb(connId: string, db: string): Promise<void> {
+  const key = pgDbKey(connId, db)
+  pgExpandedByDb.value[key] = !pgExpandedByDb.value[key]
+  if (!pgExpandedByDb.value[key] || pgSchemasByDb.value[key]) return
+  pgSchemaLoadingByDb.value[key] = true
+  try {
+    pgSchemasByDb.value[key] = (await getApi().listPostgresSchemas?.({
+      connection_id: connId,
+      database: db,
+    })) ?? []
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    pgSchemaLoadingByDb.value[key] = false
+  }
+}
+
+function isPgSchemaExpanded(connId: string, db: string, schema: string): boolean {
+  return !!pgExpandedBySchema.value[pgSchemaKey(connId, db, schema)]
+}
+
+// togglePgSchema 展开/收起 schema 节点;首次展开懒加载 relation 清单(系统
+// schema 由后端过滤)。
+async function togglePgSchema(connId: string, db: string, schema: string): Promise<void> {
+  const key = pgSchemaKey(connId, db, schema)
+  pgExpandedBySchema.value[key] = !pgExpandedBySchema.value[key]
+  if (!pgExpandedBySchema.value[key] || pgRelationsBySchema.value[key]) return
+  pgRelationLoadingBySchema.value[key] = true
+  try {
+    pgRelationsBySchema.value[key] = (await getApi().listPostgresTables?.({
+      connection_id: connId,
+      database: db,
+      schema,
+    })) ?? []
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    pgRelationLoadingBySchema.value[key] = false
+  }
+}
+
+function pgRelationFilterOf(connId: string, db: string, schema: string): string {
+  return (pgRelationFilterBySchema.value[pgSchemaKey(connId, db, schema)] ?? '').trim()
+}
+
+// openPgRelation 打开 PG relation 详情页;双击与键盘(Enter/Space)共用入口。
+function openPgRelation(connId: string, db: string, r: PostgresRelationInfo): void {
+  emit('open-postgres-table', connId, db, r.schema, r.relation, r.relation_type)
+}
+
+// filteredPgRelations 对 relation 名做本地模糊过滤(fuzzyScore),按相关度排序。
+function filteredPgRelations(connId: string, db: string, schema: string): PostgresRelationInfo[] {
+  const list = pgRelationsBySchema.value[pgSchemaKey(connId, db, schema)] ?? []
+  const q = pgRelationFilterOf(connId, db, schema)
+  if (!q) return list
+  return list
+    .map((r) => ({ r, score: fuzzyScore(q, r.relation) }))
+    .filter((x) => x.score !== Infinity)
+    .sort((a, b) => a.score - b.score)
+    .map((x) => x.r)
+}
+
+// pgSchemaCountLabel schema 节点的 relation 计数徽标:未过滤显示总数,
+// 过滤中显示「可见/总数」(与 MySQL 库节点徽标同构)。
+function pgSchemaCountLabel(connId: string, db: string, schema: string): string {
+  const total = (pgRelationsBySchema.value[pgSchemaKey(connId, db, schema)] ?? []).length
+  const q = pgRelationFilterOf(connId, db, schema)
+  if (!q) return String(total)
+  return `${filteredPgRelations(connId, db, schema).length}/${total}`
 }
 
 // --- ES 索引过滤(一级树,过滤词按连接缓存,与 MySQL 表过滤同构) ---
@@ -1285,6 +1388,99 @@ function exportTopics(conn: Connection): void {
             </template>
           </template>
           <div v-if="(mysqlDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="mysql-db-empty">（无数据库）</div>
+        </template>
+      </div>
+      <div v-else-if="isExpanded(conn.id) && conn.type === 'postgres'" class="conn-children">
+        <div v-if="loadingByConn[conn.id]" class="conn-loading" data-test="tree-loading">加载中…</div>
+        <div v-else-if="errorByConn[conn.id]" class="conn-error" data-test="tree-error">{{ errorByConn[conn.id] }}</div>
+        <template v-else>
+          <template v-for="db in pgDBs[conn.id] ?? []" :key="db">
+            <div class="leaf ch-db-node" data-test="pg-db-node" :title="`数据库 ${db}`" @click="togglePgDb(conn.id, db)">
+              <span class="caret" :class="{ open: isPgDbExpanded(conn.id, db) }" data-test="pg-db-caret">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                  <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              <span class="leaf-name" data-test="pg-db-name">{{ db }}</span>
+              <span
+                v-if="pgSchemasByDb[pgDbKey(conn.id, db)]"
+                class="leaf-badge"
+                data-test="pg-db-count"
+              >{{ (pgSchemasByDb[pgDbKey(conn.id, db)] ?? []).length }}</span>
+            </div>
+            <template v-if="isPgDbExpanded(conn.id, db)">
+              <div
+                v-if="pgSchemaLoadingByDb[pgDbKey(conn.id, db)]"
+                class="leaf muted"
+                data-test="pg-schemas-loading"
+              >加载中…</div>
+              <template v-else>
+                <template v-for="schema in pgSchemasByDb[pgDbKey(conn.id, db)] ?? []" :key="schema">
+                  <div class="leaf ch-db-node pg-schema-node-inner" data-test="pg-schema-node" :title="`Schema ${schema}`" @click="togglePgSchema(conn.id, db, schema)">
+                    <span class="caret" :class="{ open: isPgSchemaExpanded(conn.id, db, schema) }" data-test="pg-schema-caret">
+                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                        <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
+                    <span class="leaf-name" data-test="pg-schema-name">{{ schema }}</span>
+                    <span
+                      v-if="pgRelationsBySchema[pgSchemaKey(conn.id, db, schema)]"
+                      class="leaf-badge"
+                      data-test="pg-schema-count"
+                    >{{ pgSchemaCountLabel(conn.id, db, schema) }}</span>
+                  </div>
+                  <template v-if="isPgSchemaExpanded(conn.id, db, schema)">
+                    <div class="ch-table-filter">
+                      <input
+                        v-model="pgRelationFilterBySchema[pgSchemaKey(conn.id, db, schema)]"
+                        class="search-input ch-filter-input"
+                        type="search"
+                        data-test="pg-relation-filter"
+                        placeholder="🔍 模糊搜索表…"
+                        autocapitalize="off"
+                        autocorrect="off"
+                        autocomplete="off"
+                        spellcheck="false"
+                      />
+                    </div>
+                    <div
+                      v-if="pgRelationLoadingBySchema[pgSchemaKey(conn.id, db, schema)]"
+                      class="leaf muted"
+                      data-test="pg-relations-loading"
+                    >加载中…</div>
+                    <template v-else>
+                      <div
+                        v-for="r in filteredPgRelations(conn.id, db, schema)"
+                        :key="`${r.relation_type}:${r.relation}`"
+                        class="leaf ch-table"
+                        data-test="pg-relation-node"
+                        role="button"
+                        tabindex="0"
+                        :title="`${r.relation}(${r.relation_type})`"
+                        @dblclick="openPgRelation(conn.id, db, r)"
+                        @keydown.enter.prevent="openPgRelation(conn.id, db, r)"
+                        @keydown.space.prevent="openPgRelation(conn.id, db, r)"
+                      >
+                        <span class="leaf-name" data-test="pg-relation-name">{{ r.relation }}</span>
+                        <span class="leaf-badge engine" data-test="pg-relation-type">{{ r.relation_type }}</span>
+                      </div>
+                      <div
+                        v-if="filteredPgRelations(conn.id, db, schema).length === 0"
+                        class="leaf muted"
+                        data-test="pg-relation-empty"
+                      >{{ (pgRelationsBySchema[pgSchemaKey(conn.id, db, schema)] ?? []).length === 0 ? '（无表）' : '无匹配表' }}</div>
+                    </template>
+                  </template>
+                </template>
+                <div
+                  v-if="(pgSchemasByDb[pgDbKey(conn.id, db)] ?? []).length === 0"
+                  class="leaf muted"
+                  data-test="pg-schema-empty"
+                >（无 schema）</div>
+              </template>
+            </template>
+          </template>
+          <div v-if="(pgDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="pg-db-empty">（无数据库）</div>
         </template>
       </div>
       <div v-else-if="isExpanded(conn.id) && conn.type === 'es'" class="conn-children">

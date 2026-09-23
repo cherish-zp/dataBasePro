@@ -358,6 +358,24 @@ export namespace backend {
 	        this.connection_id = source["connection_id"];
 	    }
 	}
+	export class EsCreateDocRequest {
+	    connection_id: string;
+	    index: string;
+	    id: string;
+	    doc_json: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsCreateDocRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	        this.id = source["id"];
+	        this.doc_json = source["doc_json"];
+	    }
+	}
 	export class EsCreateIndexRequest {
 	    connection_id: string;
 	    index: string;
@@ -686,6 +704,104 @@ export namespace backend {
 	        this.table = source["table"];
 	    }
 	}
+	export class PostgresExecuteRequest {
+	    connection_id: string;
+	    database?: string;
+	    schema?: string;
+	    sql: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresExecuteRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.sql = source["sql"];
+	    }
+	}
+	export class PostgresPageRowsRequest {
+	    connection_id: string;
+	    database: string;
+	    schema: string;
+	    relation: string;
+	    relation_kind?: string;
+	    where?: string;
+	    order_by?: string;
+	    asc: boolean;
+	    limit: number;
+	    offset: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresPageRowsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.relation = source["relation"];
+	        this.relation_kind = source["relation_kind"];
+	        this.where = source["where"];
+	        this.order_by = source["order_by"];
+	        this.asc = source["asc"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class PostgresSchemasRequest {
+	    connection_id: string;
+	    database: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresSchemasRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	    }
+	}
+	export class PostgresTablesRequest {
+	    connection_id: string;
+	    database: string;
+	    schema: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresTablesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	    }
+	}
+	export class PostgresTruncateTableRequest {
+	    connection_id: string;
+	    database: string;
+	    schema: string;
+	    relation: string;
+	    relation_kind: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresTruncateTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.relation = source["relation"];
+	        this.relation_kind = source["relation_kind"];
+	    }
+	}
 	export class ProduceRequest {
 	    connection_id: string;
 	    topic: string;
@@ -710,6 +826,7 @@ export namespace backend {
 	    content: string;
 	    connection_id: string;
 	    database: string;
+	    schema: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new QueryFileContent(source);
@@ -720,6 +837,7 @@ export namespace backend {
 	        this.content = source["content"];
 	        this.connection_id = source["connection_id"];
 	        this.database = source["database"];
+	        this.schema = source["schema"];
 	    }
 	}
 	export class QueryFileDeleteRequest {
@@ -767,6 +885,7 @@ export namespace backend {
 	    name: string;
 	    content: string;
 	    connection_id?: string;
+	    schema?: string;
 	    database?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -779,6 +898,7 @@ export namespace backend {
 	        this.name = source["name"];
 	        this.content = source["content"];
 	        this.connection_id = source["connection_id"];
+	        this.schema = source["schema"];
 	        this.database = source["database"];
 	    }
 	}
@@ -2137,6 +2257,7 @@ export namespace model {
 	    error?: string;
 	    columns?: MysqlColumn[];
 	    rows?: string[][];
+	    primary_key?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new MysqlStatementResult(source);
@@ -2149,6 +2270,7 @@ export namespace model {
 	        this.error = source["error"];
 	        this.columns = this.convertValues(source["columns"], MysqlColumn);
 	        this.rows = source["rows"];
+	        this.primary_key = source["primary_key"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2227,6 +2349,223 @@ export namespace model {
 	        this.member_id = source["member_id"];
 	        this.client_id = source["client_id"];
 	        this.client_host = source["client_host"];
+	    }
+	}
+	export class PostgresCellUpdatePreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresCellUpdatePreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class PostgresCellValue {
+	    column: string;
+	    value?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresCellValue(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.column = source["column"];
+	        this.value = source["value"];
+	    }
+	}
+	export class PostgresCellUpdateRequest {
+	    connection_id: string;
+	    database: string;
+	    schema: string;
+	    relation: string;
+	    relation_kind: string;
+	    set: PostgresCellValue;
+	    where: PostgresCellValue[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresCellUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.relation = source["relation"];
+	        this.relation_kind = source["relation_kind"];
+	        this.set = this.convertValues(source["set"], PostgresCellValue);
+	        this.where = this.convertValues(source["where"], PostgresCellValue);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class PostgresColumn {
+	    name: string;
+	    type: string;
+	    is_in_primary_key: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresColumn(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.is_in_primary_key = source["is_in_primary_key"];
+	    }
+	}
+	export class PostgresConfig {
+	    host: string;
+	    port: number;
+	    username: string;
+	    password?: string;
+	    database: string;
+	    tls_mode: string;
+	    search_path: string;
+	    connect_timeout_ms: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.database = source["database"];
+	        this.tls_mode = source["tls_mode"];
+	        this.search_path = source["search_path"];
+	        this.connect_timeout_ms = source["connect_timeout_ms"];
+	    }
+	}
+	export class PostgresPageRowsResult {
+	    columns: PostgresColumn[];
+	    rows: string[][];
+	    primary_key: string[];
+	    total_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresPageRowsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = this.convertValues(source["columns"], PostgresColumn);
+	        this.rows = source["rows"];
+	        this.primary_key = source["primary_key"];
+	        this.total_rows = source["total_rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PostgresStatementResult {
+	    statement: string;
+	    has_rows: boolean;
+	    duration_ms: number;
+	    error?: string;
+	    columns?: PostgresColumn[];
+	    rows?: string[][];
+	    primary_key?: string[];
+	    affected_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresStatementResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.has_rows = source["has_rows"];
+	        this.duration_ms = source["duration_ms"];
+	        this.error = source["error"];
+	        this.columns = this.convertValues(source["columns"], PostgresColumn);
+	        this.rows = source["rows"];
+	        this.primary_key = source["primary_key"];
+	        this.affected_rows = source["affected_rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PostgresTableInfo {
+	    relation: string;
+	    schema: string;
+	    relation_type: string;
+	    relation_kind: string;
+	    raw_relation_type?: string;
+	    primary_key: string[];
+	    comment?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresTableInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.relation = source["relation"];
+	        this.schema = source["schema"];
+	        this.relation_type = source["relation_type"];
+	        this.relation_kind = source["relation_kind"];
+	        this.raw_relation_type = source["raw_relation_type"];
+	        this.primary_key = source["primary_key"];
+	        this.comment = source["comment"];
 	    }
 	}
 	export class ProduceResult {

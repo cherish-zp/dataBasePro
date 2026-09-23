@@ -43,6 +43,13 @@ var builtinDrivers = []DriverInfo{
 		Description: "ClickHouse 库表浏览、分页查询与 SQL 控制台(原生 TCP 协议)",
 	},
 	{
+		Name:        "PostgreSQL",
+		Library:     "pgx",
+		Version:     "v5.11.0",
+		DefaultPort: 5432,
+		Description: "PostgreSQL 库/模式浏览、分页查询与 SQL 控制台(原生 TCP 协议)",
+	},
+	{
 		Name:        "Elasticsearch",
 		Library:     "net/http + encoding/json",
 		Version:     "v8.x",

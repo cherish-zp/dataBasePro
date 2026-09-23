@@ -1,6 +1,6 @@
 // Types mirroring the Go model package (snake_case JSON fields).
 
-export type ConnectionType = 'kafka' | 'mysql' | 'tidb' | 'es' | 'redis' | 'clickhouse'
+export type ConnectionType = 'kafka' | 'mysql' | 'tidb' | 'es' | 'redis' | 'clickhouse' | 'postgres'
 
 export interface SASLConfig {
   enabled: boolean
@@ -36,7 +36,7 @@ export interface Connection {
   type: ConnectionType
   // 按类型多态:kafka → KafkaConfig,redis → RedisConfigShape,
   // clickhouse → CHConfigShape,mysql/tidb → MysqlConfigShape,es → EsConfigShape
-  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape
+  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape | PostgresConfigShape
   created_at: number
   updated_at: number
 }
@@ -50,7 +50,7 @@ export interface UpdateConnectionRequest {
   id: string
   name: string
   type?: ConnectionType
-  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape
+  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape | PostgresConfigShape
 }
 
 export interface Partition {
@@ -811,6 +811,16 @@ export interface EsPutDocRequest {
   doc: string
 }
 
+// 新增文档:id 留空 = POST /{index}/_doc 由 ES 自动生成;非空 = PUT
+// /{index}/_doc/{id} 指定写入(同 _id 已存在则整文档覆盖)。doc_json 为
+// 完整 _source 的 JSON 文本(合法性由前端 json.Valid 等价校验 + 服务端把关)。
+export interface EsCreateDocRequest {
+  connection_id: string
+  index: string
+  id?: string
+  doc_json: string
+}
+
 export interface EsDeleteDocRequest {
   connection_id: string
   index: string
@@ -953,4 +963,122 @@ export interface UpdateSavedQueryRequest {
 
 export interface DeleteSavedQueryRequest {
   id: string
+}
+
+// --- PostgreSQL(镜像 backend/model/postgres.go) ---
+
+// PG 连接配置:tls_mode 对应 libpq sslmode 的四档;search_path 为可选的
+// 默认 schema 搜索路径;connect_timeout_ms 为连接超时(毫秒),前端按 5000 预填。
+export interface PostgresConfigShape {
+  host: string
+  port: number
+  username: string
+  password: string
+  database: string
+  tls_mode: 'disable' | 'require' | 'verify-ca' | 'verify-full'
+  search_path?: string
+  connect_timeout_ms?: number
+}
+
+// 树节点与补全用的 relation 信息:与后端 model.PostgresTableInfo 对齐。
+// relation_type/relation_kind 为语义类型,raw_relation_type 保留 pg_class
+// relkind 原码;primary_key 供表浏览器行内编辑定位(视图无主键,缺省省略)。
+export interface PostgresRelationInfo {
+  schema: string
+  relation: string
+  relation_type: 'table' | 'view' | 'materialized_view'
+  relation_kind: 'table' | 'view' | 'materialized_view'
+  raw_relation_type?: string
+  primary_key?: string[]
+  comment?: string
+}
+
+export interface PostgresListSchemasRequest {
+  connection_id: string
+  database: string
+}
+
+export interface PostgresListTablesRequest {
+  connection_id: string
+  database: string
+  schema: string
+  // 是否包含系统 schema(默认 false,后端过滤 pg_catalog/information_schema)。
+  include_system?: boolean
+}
+
+export interface PostgresColumn {
+  name: string
+  type: string
+  // 该列是否属于主键(镜像 information_schema 约束信息),驱动表格编辑与角标。
+  is_in_primary_key: boolean
+}
+
+export interface PostgresPageRowsRequest {
+  connection_id: string
+  database: string
+  schema: string
+  relation: string
+  // 用户输入的原生 WHERE 片段(不带 WHERE 关键字),空省略。
+  where?: string
+  order_by?: string
+  asc?: boolean
+  limit: number
+  offset: number
+}
+
+// rows 单元格为 string 或 null(NULL);primary_key 按定义序(空数组=无主键)。
+export interface PostgresPageRowsResult {
+  columns: PostgresColumn[]
+  rows: (string | null)[][]
+  primary_key: string[]
+  total_rows: number
+}
+
+export interface PostgresExecuteRequest {
+  connection_id: string
+  sql: string
+  database?: string
+  schema?: string
+}
+
+// 多语句逐条返回:失败语句带 error;成功语句带列与行,单表 SELECT 附主键。
+export interface PostgresStatementResult {
+  statement: string
+  duration_ms: number
+  error?: string
+  columns?: PostgresColumn[]
+  rows?: (string | null)[][]
+  affected_rows?: number
+  has_rows: boolean
+  primary_key?: string[]
+}
+
+export interface PostgresTruncateTableRequest {
+  connection_id: string
+  database: string
+  schema: string
+  relation: string
+  // relation 类型:后端按类型生成 TRUNCATE/UPDATE 目标(视图不允许 TRUNCATE)。
+  relation_kind: 'table' | 'view' | 'materialized_view'
+}
+
+// 单元格行内编辑的定位/写入描述;where 只允许引用主键列(后端强制)。
+export interface PostgresCellValue {
+  column: string
+  value: string | null
+}
+
+export interface PostgresCellUpdateRequest {
+  connection_id: string
+  database: string
+  schema: string
+  relation: string
+  relation_kind: 'table' | 'view' | 'materialized_view'
+  set: PostgresCellValue
+  where: PostgresCellValue[]
+}
+
+export interface PostgresCellUpdatePreview {
+  statement: string
+  matched_rows: number
 }

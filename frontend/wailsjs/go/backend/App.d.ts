@@ -76,6 +76,8 @@ export function ESUpdateCell(arg1:backend.EsCellUpdateRequest):Promise<void>;
 
 export function EsClusterStats(arg1:backend.EsClusterStatsRequest):Promise<model.EsClusterStats>;
 
+export function EsCreateDoc(arg1:backend.EsCreateDocRequest):Promise<model.EsDoc>;
+
 export function EsCreateIndex(arg1:backend.EsCreateIndexRequest):Promise<void>;
 
 export function EsDeleteIndex(arg1:backend.EsDeleteIndexRequest):Promise<void>;
@@ -116,6 +118,12 @@ export function ListMysqlDatabases(arg1:string):Promise<Array<string>>;
 
 export function ListMysqlTables(arg1:backend.MysqlTablesRequest):Promise<Array<model.MysqlTableInfo>>;
 
+export function ListPostgresDatabases(arg1:string):Promise<Array<string>>;
+
+export function ListPostgresSchemas(arg1:backend.PostgresSchemasRequest):Promise<Array<string>>;
+
+export function ListPostgresTables(arg1:backend.PostgresTablesRequest):Promise<Array<model.PostgresTableInfo>>;
+
 export function ListQueryFiles(arg1:backend.QueryFileListRequest):Promise<Array<store.QueryFileInfo>>;
 
 export function ListRedisDBs(arg1:string):Promise<Array<model.RedisDBInfo>>;
@@ -135,6 +143,16 @@ export function MysqlTruncateTable(arg1:backend.MysqlTruncateTableRequest):Promi
 export function MysqlUpdateCell(arg1:model.MysqlCellUpdateRequest):Promise<void>;
 
 export function OpenURL(arg1:string):Promise<void>;
+
+export function PostgresExecute(arg1:backend.PostgresExecuteRequest):Promise<Array<model.PostgresStatementResult>>;
+
+export function PostgresPageRows(arg1:backend.PostgresPageRowsRequest):Promise<model.PostgresPageRowsResult>;
+
+export function PostgresPreviewCellUpdate(arg1:model.PostgresCellUpdateRequest):Promise<model.PostgresCellUpdatePreview>;
+
+export function PostgresTruncateTable(arg1:backend.PostgresTruncateTableRequest):Promise<void>;
+
+export function PostgresUpdateCell(arg1:model.PostgresCellUpdateRequest):Promise<void>;
 
 export function PreviewResetOffset(arg1:backend.ResetOffsetRequest):Promise<Record<number, number>>;
 
@@ -195,6 +213,8 @@ export function TestConnection(arg1:model.KafkaConfig):Promise<void>;
 export function TestESConnection(arg1:model.EsConfig):Promise<void>;
 
 export function TestMysqlConnection(arg1:model.MysqlConfig):Promise<void>;
+
+export function TestPostgresConnection(arg1:model.PostgresConfig):Promise<void>;
 
 export function TestRedisConnection(arg1:model.RedisConfig):Promise<void>;
 

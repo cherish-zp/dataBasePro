@@ -109,6 +109,8 @@ func (s *Service) ConnectConnection(ctx context.Context, id string) error {
 		ds, err = s.buildEsClient(c)
 	case model.ConnectionTypeMySQL, model.ConnectionTypeTiDB:
 		ds, err = s.buildMysqlClient(c)
+	case model.ConnectionTypePostgres:
+		ds, err = s.buildPostgresClient(c)
 	default:
 		ds, err = s.buildClient(ctx, c)
 	}
@@ -167,6 +169,22 @@ func (s *Service) buildEsClient(c *model.Connection) (*EsClient, error) {
 		return nil, fmt.Errorf("decode es config: %w", err)
 	}
 	return NewEsClient(cfg)
+}
+
+// buildPostgresClient creates the PostgreSQL client for the connection. It
+// does not eagerly ping every potential database; Connect pings the default.
+func (s *Service) buildPostgresClient(c *model.Connection) (*PostgresClient, error) {
+	if c.Type != model.ConnectionTypePostgres {
+		return nil, fmt.Errorf("connection %q is not a PostgreSQL source (type %q)", c.ID, c.Type)
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	cfg, err := c.PostgresConfig()
+	if err != nil {
+		return nil, fmt.Errorf("decode postgres config: %w", err)
+	}
+	return NewPostgresClient(cfg)
 }
 
 // buildMysqlClient creates the MySQL/TiDB client for the connection (it pings
@@ -555,6 +573,23 @@ func (s *Service) EsPutDoc(ctx context.Context, id, index, docID, docJSON string
 	return e.PutDoc(ctx, index, docID, docJSON)
 }
 
+// EsCreateDoc indexes one document (dangerous, audited by the app layer): an
+// empty docID lets the server generate the _id, a non-empty docID upserts
+// under that id (an existing document is overwritten). The returned doc
+// carries the _id resolved from the response and the request docJSON verbatim
+// as source.
+func (s *Service) EsCreateDoc(ctx context.Context, id, index, docID, docJSON string) (model.EsDoc, error) {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return model.EsDoc{}, err
+	}
+	createdID, err := e.CreateDoc(ctx, index, docID, docJSON)
+	if err != nil {
+		return model.EsDoc{}, err
+	}
+	return model.EsDoc{ID: createdID, Source: docJSON}, nil
+}
+
 // EsUpdateCell patches one document field (dangerous, audited by the app layer).
 func (s *Service) EsUpdateCell(ctx context.Context, id, index, docID, column string, value *string) error {
 	e, err := s.es(ctx, id)
@@ -705,6 +740,114 @@ func (s *Service) mysql(ctx context.Context, id string) (MysqlDataSource, error)
 		return nil, fmt.Errorf("connection %q is not a MySQL source", id)
 	}
 	return m, nil
+}
+
+// PostgresTestConnection validates and pings a PostgreSQL configuration.
+func (s *Service) PostgresTestConnection(ctx context.Context, cfg model.PostgresConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	client, err := NewPostgresClient(cfg)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.Connect(ctx)
+}
+
+// postgres returns the pooled PostgreSQL client, auto-connecting on first use.
+func (s *Service) postgres(ctx context.Context, id string) (PostgresDataSource, error) {
+	if ds, err := s.pool.Get(id); err == nil {
+		pg, ok := ds.(PostgresDataSource)
+		if !ok {
+			return nil, fmt.Errorf("connection %q is not a PostgreSQL source", id)
+		}
+		return pg, nil
+	}
+	if err := s.ConnectConnection(ctx, id); err != nil {
+		return nil, err
+	}
+	ds, err := s.pool.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	pg, ok := ds.(PostgresDataSource)
+	if !ok {
+		return nil, fmt.Errorf("connection %q is not a PostgreSQL source", id)
+	}
+	return pg, nil
+}
+
+// PostgresDatabases lists the PostgreSQL databases visible to the connection.
+func (s *Service) PostgresDatabases(ctx context.Context, id string) ([]string, error) {
+	pg, err := s.postgres(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return pg.Databases(ctx)
+}
+
+// PostgresSchemas lists user schemas in the requested database.
+func (s *Service) PostgresSchemas(ctx context.Context, id, database string) ([]string, error) {
+	pg, err := s.postgres(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return pg.Schemas(ctx, database)
+}
+
+// PostgresTables lists relations in the requested schema.
+func (s *Service) PostgresTables(ctx context.Context, id, database, schema string) ([]model.PostgresTableInfo, error) {
+	pg, err := s.postgres(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return pg.Tables(ctx, database, schema)
+}
+
+// PostgresPageRows returns one page of relation rows.
+func (s *Service) PostgresPageRows(ctx context.Context, id, database, schema, relation, relationKind, where, orderBy string, asc bool, limit, offset int) (model.PostgresPageRowsResult, error) {
+	pg, err := s.postgres(ctx, id)
+	if err != nil {
+		return model.PostgresPageRowsResult{}, err
+	}
+	return pg.PageRows(ctx, database, schema, relation, relationKind, where, orderBy, asc, limit, offset)
+}
+
+// PostgresExecute runs a SQL script statement by statement.
+func (s *Service) PostgresExecute(ctx context.Context, id, database, schema, sqlText string) ([]model.PostgresStatementResult, error) {
+	pg, err := s.postgres(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return pg.Execute(ctx, database, schema, sqlText)
+}
+
+// PostgresTruncateTable empties an ordinary table (audited upstream).
+func (s *Service) PostgresTruncateTable(ctx context.Context, id, database, schema, relation, relationKind string) error {
+	pg, err := s.postgres(ctx, id)
+	if err != nil {
+		return err
+	}
+	return pg.TruncateTable(ctx, database, schema, relation, relationKind)
+}
+
+// PostgresPreviewCellUpdate previews a parameterized primary-key update.
+func (s *Service) PostgresPreviewCellUpdate(ctx context.Context, req model.PostgresCellUpdateRequest) (model.PostgresCellUpdatePreview, error) {
+	pg, err := s.postgres(ctx, req.ConnectionID)
+	if err != nil {
+		return model.PostgresCellUpdatePreview{}, err
+	}
+	return pg.PreviewCellUpdate(ctx, req)
+}
+
+// PostgresUpdateCell executes a parameterized primary-key update.
+func (s *Service) PostgresUpdateCell(ctx context.Context, req model.PostgresCellUpdateRequest) error {
+	pg, err := s.postgres(ctx, req.ConnectionID)
+	if err != nil {
+		return err
+	}
+	return pg.UpdateCell(ctx, req)
 }
 
 // CloseConnection removes a connection from the pool and closes it.

@@ -2,7 +2,7 @@
 import { reactive, ref, computed, watch } from 'vue'
 import { getApi } from '@/api/client'
 import { useConnectionsStore, type NewConnectionInput } from '@/store/connections'
-import type { Connection, CHConfigShape, EsConfigShape, KafkaConfig, MysqlConfigShape, RedisConfigShape, SASLConfig, TLSConfig } from '@/api/types'
+import type { Connection, CHConfigShape, EsConfigShape, KafkaConfig, MysqlConfigShape, PostgresConfigShape, RedisConfigShape, SASLConfig, TLSConfig } from '@/api/types'
 
 const props = defineProps<{ show: boolean; connection?: Connection | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -12,7 +12,7 @@ const store = useConnectionsStore()
 const SECURITY_PROTOCOLS = ['PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'] as const
 
 // 两段式第一段:数据库类型卡片。数据来自本地常量数组,后续可换驱动管理页数据。
-type CardType = 'kafka' | 'redis' | 'clickhouse' | 'mysql' | 'tidb' | 'es'
+type CardType = 'kafka' | 'redis' | 'clickhouse' | 'mysql' | 'tidb' | 'es' | 'postgres'
 const TYPE_CARDS: { type: CardType; label: string; icon: string }[] = [
   { type: 'kafka', label: 'Kafka', icon: '⚡' },
   { type: 'redis', label: 'Redis', icon: '🧱' },
@@ -20,6 +20,7 @@ const TYPE_CARDS: { type: CardType; label: string; icon: string }[] = [
   { type: 'mysql', label: 'MySQL', icon: '🐬' },
   { type: 'tidb', label: 'TiDB', icon: '🌿' },
   { type: 'es', label: 'Elasticsearch', icon: '🔎' },
+  { type: 'postgres', label: 'PostgreSQL', icon: '🐘' },
 ]
 
 // createDefaultForm 表单初始值工厂:每次「新建连接」打开都从空白开始,
@@ -63,6 +64,15 @@ function createDefaultForm() {
     esApiKey: '',
     esAuthMode: 'none' as EsConfigShape['auth_mode'],
     esTlsMode: 'disabled' as EsConfigShape['tls_mode'],
+    // postgres:独立一套字段;search_path 可选,超时默认 5000ms。
+    pgHost: '',
+    pgPort: 5432,
+    pgUsername: 'postgres',
+    pgPassword: '',
+    pgDatabase: '',
+    pgTlsMode: 'disable' as PostgresConfigShape['tls_mode'],
+    pgSearchPath: '',
+    pgConnectTimeoutMs: 5000,
   }
 }
 
@@ -77,6 +87,7 @@ const showRedisPassword = ref(false)
 const showChPassword = ref(false)
 const showMysqlPassword = ref(false)
 const showEsPassword = ref(false)
+const showPgPassword = ref(false)
 
 const editing = computed(() => !!props.connection)
 
@@ -103,6 +114,10 @@ function pickType(t: CardType): void {
   } else if (t === 'tidb') {
     form.mysqlPort = 4000
     form.mysqlTlsMode = 'disabled'
+  } else if (t === 'postgres') {
+    form.pgPort = 5432
+    form.pgTlsMode = 'disable'
+    form.pgConnectTimeoutMs = 5000
   }
 }
 
@@ -142,6 +157,20 @@ function fillFrom(conn: Connection): void {
     form.mysqlDatabase = cfg.database
     // 旧配置缺省 tls_mode 时按 disabled 回填。
     form.mysqlTlsMode = cfg.tls_mode ?? 'disabled'
+    return
+  }
+  if (conn.type === 'postgres') {
+    const cfg = conn.config as PostgresConfigShape
+    form.connType = 'postgres'
+    form.pgHost = cfg.host
+    form.pgPort = cfg.port
+    form.pgUsername = cfg.username
+    form.pgPassword = cfg.password
+    form.pgDatabase = cfg.database
+    // 旧配置缺省 tls_mode/timeout 时按 disable/5000 回填。
+    form.pgTlsMode = cfg.tls_mode ?? 'disable'
+    form.pgSearchPath = cfg.search_path ?? ''
+    form.pgConnectTimeoutMs = cfg.connect_timeout_ms ?? 5000
     return
   }
   if (conn.type === 'es') {
@@ -220,7 +249,7 @@ const tls = computed<TLSConfig | undefined>(() => {
   if (!isTLS.value && !form.caCert && !form.insecureSkipVerify) return undefined
   return { enabled: isTLS.value, ca_cert: form.caCert, insecure_skip_verify: form.insecureSkipVerify }
 })
-const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape>(() => {
+const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape | PostgresConfigShape>(() => {
   if (form.connType === 'redis') {
     return {
       addr: form.addr,
@@ -248,6 +277,18 @@ const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape | MysqlCo
       password: form.mysqlPassword,
       database: form.mysqlDatabase,
       tls_mode: form.mysqlTlsMode,
+    }
+  }
+  if (form.connType === 'postgres') {
+    return {
+      host: form.pgHost,
+      port: Number(form.pgPort) || 0,
+      username: form.pgUsername,
+      password: form.pgPassword,
+      database: form.pgDatabase,
+      tls_mode: form.pgTlsMode,
+      ...(form.pgSearchPath.trim() !== '' ? { search_path: form.pgSearchPath.trim() } : {}),
+      connect_timeout_ms: Number(form.pgConnectTimeoutMs) || 5000,
     }
   }
   if (form.connType === 'es') {
@@ -278,9 +319,13 @@ const mysqlHostInvalid = computed(() => isMysqlFamily.value && form.mysqlHost.tr
 const mysqlPortInvalid = computed(() => isMysqlFamily.value && (Number(form.mysqlPort) < 1 || Number(form.mysqlPort) > 65535))
 // ES 地址任一非空即可(逗号/空格不算有效地址)。
 const esHostsInvalid = computed(() => form.connType === 'es' && esHosts.value.length === 0)
-const saveInvalid = computed(() => nameInvalid.value || brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value || esHostsInvalid.value)
+const pgHostInvalid = computed(() => form.connType === 'postgres' && form.pgHost.trim() === '')
+const pgPortInvalid = computed(() => form.connType === 'postgres' && (Number(form.pgPort) < 1 || Number(form.pgPort) > 65535))
+// PG 数据库名必填(连接串必须携带 db,后端无法从空库推导默认库)。
+const pgDatabaseInvalid = computed(() => form.connType === 'postgres' && form.pgDatabase.trim() === '')
+const saveInvalid = computed(() => nameInvalid.value || brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value || esHostsInvalid.value || pgHostInvalid.value || pgPortInvalid.value || pgDatabaseInvalid.value)
 // 测试连接不需要名称,只校验目标地址。
-const targetInvalid = computed(() => brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value || esHostsInvalid.value)
+const targetInvalid = computed(() => brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value || esHostsInvalid.value || pgHostInvalid.value || pgPortInvalid.value || pgDatabaseInvalid.value)
 
 async function runTest(): Promise<void> {
   if (targetInvalid.value) return
@@ -297,6 +342,8 @@ async function runTest(): Promise<void> {
       await getApi().testCHConnection(config.value as CHConfigShape)
     } else if (form.connType === 'mysql' || form.connType === 'tidb') {
       await getApi().testMysqlConnection?.(config.value as MysqlConfigShape)
+    } else if (form.connType === 'postgres') {
+      await getApi().testPostgresConnection?.(config.value as PostgresConfigShape)
     } else if (form.connType === 'es') {
       await getApi().testEsConnection?.(config.value as EsConfigShape)
     } else {
@@ -499,6 +546,70 @@ function close(): void {
               <option value="verify-full">启用（校验证书）</option>
             </select>
             <p class="hint" data-test="mysql-tls-hint">自建 MySQL/TiDB 默认禁用即可;TiDB Cloud 等托管服务需选择启用</p>
+          </div>
+        </template>
+        <template v-else-if="form.connType === 'postgres'">
+          <div class="field">
+            <label class="label">主机 <span class="req">*</span></label>
+            <input v-model="form.pgHost" data-test="input-postgres-host" class="input" placeholder="127.0.0.1" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            <span v-if="pgHostInvalid" class="err">主机不能为空</span>
+          </div>
+          <div class="field">
+            <label class="label">端口</label>
+            <input v-model.number="form.pgPort" data-test="input-postgres-port" class="input" type="number" min="1" max="65535" />
+            <span v-if="pgPortInvalid" class="err">端口需为 1-65535</span>
+            <span class="hint" data-test="postgres-port-hint">PostgreSQL 默认 5432</span>
+          </div>
+          <div class="field">
+            <label class="label">用户名</label>
+            <input v-model="form.pgUsername" data-test="input-postgres-username" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label class="label">密码</label>
+            <div class="password-wrap">
+              <input v-model="form.pgPassword" :type="showPgPassword ? 'text' : 'password'" data-test="input-postgres-password" class="input password-input" />
+              <button
+                type="button"
+                class="eye-btn"
+                tabindex="-1"
+                data-test="toggle-password-postgres"
+                :aria-label="showPgPassword ? '隐藏密码' : '显示密码'"
+                @click="showPgPassword = !showPgPassword"
+              >
+                <svg v-if="showPgPassword" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label">数据库 <span class="req">*</span></label>
+            <input v-model="form.pgDatabase" data-test="input-postgres-database" class="input" placeholder="postgres" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            <span v-if="pgDatabaseInvalid" class="err" data-test="postgres-database-err">数据库不能为空</span>
+          </div>
+          <div class="field">
+            <label class="label">search_path(可选)</label>
+            <input v-model="form.pgSearchPath" data-test="input-postgres-search-path" class="input" placeholder="public" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            <span class="hint">留空时使用 PostgreSQL 默认搜索路径</span>
+          </div>
+          <div class="field">
+            <label class="label">连接超时(ms)</label>
+            <input v-model.number="form.pgConnectTimeoutMs" data-test="input-postgres-timeout" class="input" type="number" min="1000" />
+          </div>
+          <div class="field">
+            <label class="label">TLS</label>
+            <select v-model="form.pgTlsMode" class="input" data-test="input-postgres-tls-mode">
+              <option value="disable">禁用</option>
+              <option value="require">启用（不校验证书）</option>
+              <option value="verify-ca">启用（校验证书颁发方）</option>
+              <option value="verify-full">启用（校验证书与主机名）</option>
+            </select>
+            <p class="hint" data-test="postgres-tls-hint">自建 PostgreSQL 默认禁用即可;托管服务通常需选择启用</p>
           </div>
         </template>
         <template v-else-if="form.connType === 'es'">

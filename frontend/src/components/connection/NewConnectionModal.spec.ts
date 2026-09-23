@@ -455,9 +455,9 @@ describe('NewConnectionModal', () => {
     expect(mountWith({ bootstrap_servers: ['h:1'] })).resolves.toBe('PLAINTEXT')
   })
 
-  it('renders the two-stage type grid with five selectable cards', async () => {
+  it('renders the two-stage type grid with selectable cards', async () => {
     const wrapper = mountModal()
-    for (const t of ['kafka', 'redis', 'clickhouse', 'mysql', 'tidb']) {
+    for (const t of ['kafka', 'redis', 'clickhouse', 'mysql', 'tidb', 'postgres']) {
       expect(wrapper.find(`[data-test="type-card-${t}"]`).exists()).toBe(true)
     }
     // 默认选中 kafka,下方渲染 kafka 表单。
@@ -982,6 +982,104 @@ describe('NewConnectionModal', () => {
           config: expect.objectContaining({ hosts: ['10.0.0.1:9200', '10.0.0.2:9200'], auth_mode: 'apikey', tls_mode: 'skip-verify' }),
         }),
       )
+    })
+  })
+})
+
+describe('PostgreSQL 连接卡片', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+  afterEach(() => document.body.innerHTML = '')
+
+  function mountModal() {
+    return mount(NewConnectionModal, { props: { show: true }, attachTo: document.body })
+  }
+
+  it('渲染 PostgreSQL 类型卡片,选中后显示 PG 字段与默认值(5432 / disable / 超时 5000)', async () => {
+    const wrapper = mountModal()
+    expect(wrapper.find('[data-test="type-card-postgres"]').exists()).toBe(true)
+    await wrapper.find('[data-test="type-card-postgres"]').trigger('click')
+    for (const f of ['input-postgres-host', 'input-postgres-port', 'input-postgres-username', 'input-postgres-password', 'input-postgres-database', 'input-postgres-tls-mode']) {
+      expect(wrapper.find(`[data-test="${f}"]`).exists()).toBe(true)
+    }
+    expect((wrapper.find('[data-test="input-postgres-port"]').element as HTMLInputElement).value).toBe('5432')
+    expect((wrapper.find('[data-test="input-postgres-tls-mode"]').element as HTMLSelectElement).value).toBe('disable')
+  })
+
+  it('测试连接走 testPostgresConnection 并携带完整配置(含 connect_timeout_ms)', async () => {
+    const api2 = fakeApi({ testPostgresConnection: vi.fn(async () => {}) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-postgres"]').trigger('click')
+    await wrapper.find('[data-test="input-postgres-host"]').setValue('127.0.0.1')
+    await wrapper.find('[data-test="input-postgres-username"]').setValue('postgres')
+    await wrapper.find('[data-test="input-postgres-password"]').setValue('pw')
+    await wrapper.find('[data-test="input-postgres-database"]').setValue('shop')
+    await wrapper.find('[data-test="btn-test"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.testPostgresConnection).toHaveBeenCalledWith({
+        host: '127.0.0.1',
+        port: 5432,
+        username: 'postgres',
+        password: 'pw',
+        database: 'shop',
+        tls_mode: 'disable',
+        connect_timeout_ms: 5000,
+      })
+    })
+  })
+
+  it('保存连接时 type 为 postgres 且配置含 search_path 可选项', async () => {
+    const api2 = fakeApi({ createConnection: vi.fn(async (c: never) => c) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-postgres"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('pg-local')
+    await wrapper.find('[data-test="input-postgres-host"]').setValue('127.0.0.1')
+    await wrapper.find('[data-test="input-postgres-username"]').setValue('postgres')
+    await wrapper.find('[data-test="input-postgres-database"]').setValue('shop')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'pg-local',
+          type: 'postgres',
+          config: expect.objectContaining({ host: '127.0.0.1', port: 5432, database: 'shop', tls_mode: 'disable', connect_timeout_ms: 5000 }),
+        }),
+      )
+    })
+  })
+})
+
+describe('PostgreSQL database 必填校验', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+  afterEach(() => document.body.innerHTML = '')
+
+  it('database 为空时保存与测试按钮禁用,填写后恢复', async () => {
+    const wrapper = mount(NewConnectionModal, { props: { show: true } })
+    await wrapper.find('[data-test="type-card-postgres"]').trigger('click')
+    await wrapper.find('[data-test="input-postgres-host"]').setValue('127.0.0.1')
+    await wrapper.find('[data-test="input-postgres-username"]').setValue('postgres')
+    await wrapper.find('[data-test="input-name"]').setValue('pg-local')
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(true)
+      expect((wrapper.find('[data-test="btn-test"]').element as HTMLButtonElement).disabled).toBe(true)
+    })
+    await wrapper.find('[data-test="input-postgres-database"]').setValue('shop')
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(false)
+      expect((wrapper.find('[data-test="btn-test"]').element as HTMLButtonElement).disabled).toBe(false)
+    })
+    // 模板展示必填标记与错误提示。
+    expect(wrapper.find('[data-test="postgres-database-err"]').exists()).toBe(false)
+    await wrapper.find('[data-test="input-postgres-database"]').setValue('')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="postgres-database-err"]').exists()).toBe(true)
     })
   })
 })

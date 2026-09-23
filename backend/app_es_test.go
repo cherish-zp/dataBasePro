@@ -63,6 +63,12 @@ type fakeESApp struct {
 	updateSettingsErr error
 	// 集群监控聚合。
 	clusterStats model.EsClusterStats
+	// 创建文档。
+	createDocIndex  string
+	createDocIDArg  string
+	createDocBody   string
+	createDocRespID string
+	createDocErr    error
 }
 
 func (f *fakeESApp) Connect(context.Context) error { return nil }
@@ -144,6 +150,10 @@ func (f *fakeESApp) UpdateIndexSettings(_ context.Context, index, settingsJSON s
 }
 func (f *fakeESApp) ClusterStats(context.Context) (model.EsClusterStats, error) {
 	return f.clusterStats, nil
+}
+func (f *fakeESApp) CreateDoc(_ context.Context, index, id, docJSON string) (string, error) {
+	f.createDocIndex, f.createDocIDArg, f.createDocBody = index, id, docJSON
+	return f.createDocRespID, f.createDocErr
 }
 
 var _ service.EsDataSource = (*fakeESApp)(nil)
@@ -360,6 +370,74 @@ func TestAppESPutDocDelegatesAndAudits(t *testing.T) {
 	}
 	if list[0].Action != "es_put_doc" || list[0].Result != "error" || list[0].Detail == "" {
 		t.Fatalf("failed put must be audited: %+v", list[0])
+	}
+}
+
+// EsCreateDoc:自动 _id(空 id)与指定 _id 两形态都委托到池内客户端,返回
+// 响应 _id 与 doc_json 原文;审计 es_create_doc 的 target 区分两形态
+// (自动=index,指定=index/id),失败审计为 error。
+func TestAppEsCreateDocDelegatesAndAudits(t *testing.T) {
+	fake := &fakeESApp{createDocRespID: "auto-1"}
+	app, connID := newESApp(t, fake)
+
+	// 自动 _id:target=index。
+	doc, err := app.EsCreateDoc(EsCreateDocRequest{ConnectionID: connID, Index: "logs", DocJSON: `{"title":"a"}`})
+	if err != nil || doc.ID != "auto-1" || doc.Source != `{"title":"a"}` {
+		t.Fatalf("EsCreateDoc auto: %v %+v", err, doc)
+	}
+	if fake.createDocIndex != "logs" || fake.createDocIDArg != "" || fake.createDocBody != `{"title":"a"}` {
+		t.Fatalf("auto args must pass through: %+v", fake)
+	}
+	audits, err := app.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if audits[0].Action != "es_create_doc" || audits[0].Target != "logs" || audits[0].Result != "ok" ||
+		audits[0].ConnectionID != connID {
+		t.Fatalf("unexpected auto audit: %+v", audits[0])
+	}
+
+	// 指定 _id:target=index/id。
+	if _, err := app.EsCreateDoc(EsCreateDocRequest{ConnectionID: connID, Index: "logs", ID: "1", DocJSON: `{"title":"b"}`}); err != nil {
+		t.Fatalf("EsCreateDoc specified: %v", err)
+	}
+	if fake.createDocIDArg != "1" {
+		t.Fatalf("specified id must pass through, got %q", fake.createDocIDArg)
+	}
+	audits, err = app.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if audits[0].Action != "es_create_doc" || audits[0].Target != "logs/1" || audits[0].Result != "ok" {
+		t.Fatalf("unexpected specified audit: %+v", audits[0])
+	}
+
+	// 失败同样审计为 error(target 仍按形态区分)。
+	failApp, failID := newESApp(t, &fakeESApp{createDocErr: errors.New("boom")})
+	if _, err := failApp.EsCreateDoc(EsCreateDocRequest{ConnectionID: failID, Index: "logs", ID: "1", DocJSON: "{}"}); err == nil {
+		t.Fatal("create failure must surface")
+	}
+	audits, err = failApp.ListAudit(10)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if audits[0].Action != "es_create_doc" || audits[0].Target != "logs/1" ||
+		audits[0].Result != "error" || audits[0].Detail == "" {
+		t.Fatalf("failed create must be audited: %+v", audits[0])
+	}
+}
+
+// TestAppEsCreateDocRequestJSONShapes 锁定创建文档请求模型的 wire 契约:
+// 字段全部 snake_case。
+func TestAppEsCreateDocRequestJSONShapes(t *testing.T) {
+	b, err := json.Marshal(EsCreateDocRequest{ConnectionID: "c", Index: "i", ID: "1", DocJSON: "{}"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"connection_id", "index", "id", "doc_json"} {
+		if !strings.Contains(string(b), `"`+key+`"`) {
+			t.Fatalf("EsCreateDocRequest JSON must expose %q, got %s", key, b)
+		}
 	}
 }
 

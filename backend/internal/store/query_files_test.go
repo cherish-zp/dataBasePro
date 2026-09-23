@@ -104,10 +104,10 @@ func TestQueryFileReadRoundTripsHeaderAndBody(t *testing.T) {
 	s := NewQueryFileStore(dir)
 	header := "-- connection: conn-9\n-- database: 订单库\n"
 	body := "SELECT count(*) FROM events;\n"
-	if err := s.Write("消费统计.sql", body, "conn-9", "订单库"); err != nil {
+	if err := s.Write("消费统计.sql", body, "conn-9", "订单库", ""); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	content, connectionID, database, err := s.Read("消费统计.sql")
+	content, connectionID, database, _, err := s.Read("消费统计.sql")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestQueryFileReadLegacyFileWithoutHeader(t *testing.T) {
 	raw := "SELECT 1;\n-- connection: 不在头部,不算数\n"
 	writeQueryFileRaw(t, dir, "legacy.sql", raw, time.Now())
 
-	content, connectionID, database, err := NewQueryFileStore(dir).Read("legacy.sql")
+	content, connectionID, database, _, err := NewQueryFileStore(dir).Read("legacy.sql")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestQueryFileReadLegacyFileWithoutHeader(t *testing.T) {
 
 func TestQueryFileReadMissing(t *testing.T) {
 	s := NewQueryFileStore(t.TempDir())
-	_, _, _, err := s.Read("missing.sql")
+	_, _, _, _, err := s.Read("missing.sql")
 	if err == nil {
 		t.Fatal("reading a missing query file must fail")
 	}
@@ -154,7 +154,7 @@ func TestQueryFileWriteCreatesDirAndPersistsHeader(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "queries")
 	s := NewQueryFileStore(dir)
 	// database 为空时不写 database 行(与既有文件格式保持兼容)。
-	if err := s.Write("订单查询.sql", "SELECT * FROM orders;\n", "conn-1", ""); err != nil {
+	if err := s.Write("订单查询.sql", "SELECT * FROM orders;\n", "conn-1", "", ""); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "订单查询.sql"))
@@ -176,7 +176,7 @@ func TestQueryFileWriteCreatesDirAndPersistsHeader(t *testing.T) {
 func TestQueryFileWriteWithoutConnectionKeepsContentVerbatim(t *testing.T) {
 	dir := t.TempDir()
 	s := NewQueryFileStore(dir)
-	if err := s.Write("plain.sql", "SELECT 2;\n", "", ""); err != nil {
+	if err := s.Write("plain.sql", "SELECT 2;\n", "", "", ""); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "plain.sql"))
@@ -191,7 +191,7 @@ func TestQueryFileWriteWithoutConnectionKeepsContentVerbatim(t *testing.T) {
 func TestQueryFileWriteDatabaseOnlyHeader(t *testing.T) {
 	dir := t.TempDir()
 	s := NewQueryFileStore(dir)
-	if err := s.Write("仅库.sql", "SELECT 3;\n", "", "报表库"); err != nil {
+	if err := s.Write("仅库.sql", "SELECT 3;\n", "", "报表库", ""); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "仅库.sql"))
@@ -201,7 +201,7 @@ func TestQueryFileWriteDatabaseOnlyHeader(t *testing.T) {
 	if string(raw) != "-- database: 报表库\nSELECT 3;\n" {
 		t.Fatalf("database-only write must emit only the database line, got %q", string(raw))
 	}
-	_, _, database, err := s.Read("仅库.sql")
+	_, _, database, _, err := s.Read("仅库.sql")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -213,10 +213,10 @@ func TestQueryFileWriteDatabaseOnlyHeader(t *testing.T) {
 func TestQueryFileWriteOverwritesSameName(t *testing.T) {
 	dir := t.TempDir()
 	s := NewQueryFileStore(dir)
-	if err := s.Write("同名.sql", "SELECT 1;\n", "conn-1", "db1"); err != nil {
+	if err := s.Write("同名.sql", "SELECT 1;\n", "conn-1", "db1", ""); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
-	if err := s.Write("同名.sql", "SELECT 22;\n", "conn-2", "db2"); err != nil {
+	if err := s.Write("同名.sql", "SELECT 22;\n", "conn-2", "db2", ""); err != nil {
 		t.Fatalf("second write must overwrite: %v", err)
 	}
 	list, err := s.List()
@@ -226,7 +226,7 @@ func TestQueryFileWriteOverwritesSameName(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("overwrite must not create extra files, got %+v", list)
 	}
-	content, connectionID, database, err := s.Read("同名.sql")
+	content, connectionID, database, _, err := s.Read("同名.sql")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestQueryFileWriteOverwritesSameName(t *testing.T) {
 func TestQueryFileWriteRejectsIllegalNames(t *testing.T) {
 	s := NewQueryFileStore(t.TempDir())
 	for _, name := range []string{"../x.sql", "a/b.sql", `a\b.sql`, "noext", "x.txt"} {
-		if err := s.Write(name, "SELECT 1", "conn-1", ""); err == nil {
+		if err := s.Write(name, "SELECT 1", "conn-1", "", ""); err == nil {
 			t.Fatalf("illegal name %q must be rejected", name)
 		}
 	}
@@ -254,13 +254,13 @@ func TestQueryFileWriteRejectsIllegalNames(t *testing.T) {
 func TestQueryFileDelete(t *testing.T) {
 	dir := t.TempDir()
 	s := NewQueryFileStore(dir)
-	if err := s.Write("待删.sql", "SELECT 1;\n", "conn-1", ""); err != nil {
+	if err := s.Write("待删.sql", "SELECT 1;\n", "conn-1", "", ""); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if err := s.Delete("待删.sql"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, _, _, err := s.Read("待删.sql"); err == nil {
+	if _, _, _, _, err := s.Read("待删.sql"); err == nil {
 		t.Fatal("file must be gone after delete")
 	}
 	entries, err := os.ReadDir(dir)
@@ -371,7 +371,7 @@ func TestParseQueryFileHeader(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.label, func(t *testing.T) {
-			id, database, body := ParseQueryFileHeader(tc.content)
+			id, database, _, body := ParseQueryFileHeader(tc.content)
 			if id != tc.wantID || database != tc.wantDB || body != tc.wantBody {
 				t.Fatalf("ParseQueryFileHeader(%q) = (%q, %q, %q), want (%q, %q, %q)",
 					tc.content, id, database, body, tc.wantID, tc.wantDB, tc.wantBody)

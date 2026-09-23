@@ -2049,3 +2049,119 @@ describe('client ES template & cluster-stats bindings', () => {
     expect(esClusterStats).toHaveBeenCalledWith({ connection_id: 'es' })
   })
 })
+
+describe('PostgreSQL 数据库 → schema → relation 树', () => {
+  const pgConn = (id: string): Connection => ({
+    id, name: `conn-${id}`, type: 'postgres',
+    config: { host: 'h', port: 5432, username: 'u', password: '', database: 'postgres', tls_mode: 'disable' },
+    created_at: 1, updated_at: 1,
+  })
+
+  function fakePg(overrides: Partial<Api> = {}): Api {
+    return fakeApi({
+      listPostgresDatabases: vi.fn(async () => ['shop']),
+      listPostgresSchemas: vi.fn(async () => ['public', 'app']),
+      listPostgresTables: vi.fn(async () => [
+        { schema: 'public', relation: 'users', relation_type: 'table' as const, relation_kind: 'table' as const },
+        { schema: 'public', relation: 'user_view', relation_type: 'view' as const, relation_kind: 'view' as const },
+      ]),
+      ...overrides,
+    })
+  }
+
+  it('展开连接时列出数据库', async () => {
+    const api2 = fakePg()
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [pgConn('pg')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="pg-db-node"]')).toHaveLength(1)
+    })
+    expect(api2.listPostgresDatabases).toHaveBeenCalledWith('pg')
+    expect(wrapper.find('[data-test="pg-db-name"]').text()).toBe('shop')
+  })
+
+  it('展开数据库节点时懒加载 schema 清单', async () => {
+    const api2 = fakePg()
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [pgConn('pg')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-db-node"]').exists()).toBe(true)
+    })
+    expect(api2.listPostgresSchemas).not.toHaveBeenCalled()
+    await wrapper.find('[data-test="pg-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="pg-schema-node"]')).toHaveLength(2)
+    })
+    expect(api2.listPostgresSchemas).toHaveBeenCalledWith({ connection_id: 'pg', database: 'shop' })
+    expect(wrapper.findAll('[data-test="pg-schema-name"]').map((n) => n.text())).toEqual(['public', 'app'])
+  })
+
+  it('展开 schema 节点时懒加载 relation 并按类型标注', async () => {
+    const api2 = fakePg()
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [pgConn('pg')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="pg-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-schema-node"]').exists()).toBe(true)
+    })
+    expect(api2.listPostgresTables).not.toHaveBeenCalled()
+    await wrapper.findAll('[data-test="pg-schema-node"]')[0].trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="pg-relation-node"]')).toHaveLength(2)
+    })
+    expect(api2.listPostgresTables).toHaveBeenCalledWith({ connection_id: 'pg', database: 'shop', schema: 'public' })
+    expect(wrapper.findAll('[data-test="pg-relation-name"]').map((n) => n.text())).toEqual(['users', 'user_view'])
+    expect(wrapper.findAll('[data-test="pg-relation-type"]').map((n) => n.text())).toEqual(['table', 'view'])
+  })
+
+  it('双击 relation 节点触发 open-postgres-table', async () => {
+    const api2 = fakePg()
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [pgConn('pg')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="pg-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-schema-node"]').exists()).toBe(true)
+    })
+    await wrapper.findAll('[data-test="pg-schema-node"]')[0].trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-relation-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="pg-relation-node"]').trigger('dblclick')
+    expect(wrapper.emitted('open-postgres-table')?.[0]).toEqual(['pg', 'shop', 'public', 'users', 'table'])
+  })
+
+  it('relation 节点支持键盘打开:role/tabindex 与 Enter/Space 触发', async () => {
+    const api2 = fakePg()
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [pgConn('pg')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="pg-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-schema-node"]').exists()).toBe(true)
+    })
+    await wrapper.findAll('[data-test="pg-schema-node"]')[0].trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-relation-node"]').exists()).toBe(true)
+    })
+    const node = wrapper.find('[data-test="pg-relation-node"]')
+    expect(node.attributes('role')).toBe('button')
+    expect(node.attributes('tabindex')).toBe('0')
+    await node.trigger('keydown.enter')
+    expect(wrapper.emitted('open-postgres-table')?.[0]).toEqual(['pg', 'shop', 'public', 'users', 'table'])
+    await node.trigger('keydown.space')
+    expect(wrapper.emitted('open-postgres-table')?.[1]).toEqual(['pg', 'shop', 'public', 'users', 'table'])
+  })
+})

@@ -149,7 +149,7 @@ func sampleConn() *model.Connection {
 	return &model.Connection{
 		Name: "local",
 		Type: model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {
+		Config: model.MustConfigJSON(model.KafkaConfig{
 			BootstrapServers: []string{"localhost:9092"},
 		}),
 	}

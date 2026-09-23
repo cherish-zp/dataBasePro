@@ -15,7 +15,11 @@ import (
 )
 
 func TestParseVersion(t *testing.T) {
-	cases := []struct{ tag string; ok bool; v version }{
+	cases := []struct {
+		tag string
+		ok  bool
+		v   version
+	}{
 		{"v1.0.0", true, version{1, 0, 0}},
 		{"1.2.3", true, version{1, 2, 3}},
 		{"v1.0", true, version{1, 0, 0}},

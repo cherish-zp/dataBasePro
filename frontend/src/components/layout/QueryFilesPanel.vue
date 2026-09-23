@@ -33,6 +33,7 @@ const TYPE_LABELS: Record<ConnectionType, string> = {
   kafka: 'Kafka',
   mysql: 'MySQL',
   tidb: 'TiDB',
+  postgres: 'PostgreSQL',
   es: 'ES',
   redis: 'Redis',
   clickhouse: 'ClickHouse',

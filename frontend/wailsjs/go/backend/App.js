@@ -146,6 +146,10 @@ export function EsClusterStats(arg1) {
   return window['go']['backend']['App']['EsClusterStats'](arg1);
 }
 
+export function EsCreateDoc(arg1) {
+  return window['go']['backend']['App']['EsCreateDoc'](arg1);
+}
+
 export function EsCreateIndex(arg1) {
   return window['go']['backend']['App']['EsCreateIndex'](arg1);
 }
@@ -226,6 +230,18 @@ export function ListMysqlTables(arg1) {
   return window['go']['backend']['App']['ListMysqlTables'](arg1);
 }
 
+export function ListPostgresDatabases(arg1) {
+  return window['go']['backend']['App']['ListPostgresDatabases'](arg1);
+}
+
+export function ListPostgresSchemas(arg1) {
+  return window['go']['backend']['App']['ListPostgresSchemas'](arg1);
+}
+
+export function ListPostgresTables(arg1) {
+  return window['go']['backend']['App']['ListPostgresTables'](arg1);
+}
+
 export function ListQueryFiles(arg1) {
   return window['go']['backend']['App']['ListQueryFiles'](arg1);
 }
@@ -264,6 +280,26 @@ export function MysqlUpdateCell(arg1) {
 
 export function OpenURL(arg1) {
   return window['go']['backend']['App']['OpenURL'](arg1);
+}
+
+export function PostgresExecute(arg1) {
+  return window['go']['backend']['App']['PostgresExecute'](arg1);
+}
+
+export function PostgresPageRows(arg1) {
+  return window['go']['backend']['App']['PostgresPageRows'](arg1);
+}
+
+export function PostgresPreviewCellUpdate(arg1) {
+  return window['go']['backend']['App']['PostgresPreviewCellUpdate'](arg1);
+}
+
+export function PostgresTruncateTable(arg1) {
+  return window['go']['backend']['App']['PostgresTruncateTable'](arg1);
+}
+
+export function PostgresUpdateCell(arg1) {
+  return window['go']['backend']['App']['PostgresUpdateCell'](arg1);
 }
 
 export function PreviewResetOffset(arg1) {
@@ -384,6 +420,10 @@ export function TestESConnection(arg1) {
 
 export function TestMysqlConnection(arg1) {
   return window['go']['backend']['App']['TestMysqlConnection'](arg1);
+}
+
+export function TestPostgresConnection(arg1) {
+  return window['go']['backend']['App']['TestPostgresConnection'](arg1);
 }
 
 export function TestRedisConnection(arg1) {

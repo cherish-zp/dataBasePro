@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys' | 'ch-table' | 'ch-sql' | 'mysql-table' | 'mysql-sql' | 'es-index' | 'es-sql' | 'es-templates' | 'es-monitor'
+export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys' | 'ch-table' | 'ch-sql' | 'mysql-table' | 'mysql-sql' | 'es-index' | 'es-sql' | 'es-templates' | 'es-monitor' | 'postgres-table' | 'postgres-sql'
 
 export interface Tab {
   id: string
@@ -14,6 +14,10 @@ export interface Tab {
   // ClickHouse 表浏览器 / SQL 控制台携带的库与表名。
   database?: string
   table?: string
+  // PostgreSQL 表浏览器 / SQL 控制台携带的 schema 与 relation 类型
+  // (relation_type 仅 postgres-table 使用;postgres-sql 只带 database/schema)。
+  schema?: string
+  relationType?: 'table' | 'view' | 'materialized_view'
   // Elasticsearch 索引浏览器携带的索引名。
   index?: string
   // es-templates tab 携带的定位/新建标记:template 指向待选中的模板名(树模板
@@ -240,6 +244,61 @@ export const useTabsStore = defineStore('tabs', () => {
     return tab
   }
 
+  // openPostgresTable opens a PostgreSQL relation browser keyed by connection +
+  // database + schema + relation;去重 key 与树节点定位一一对应。同名 relation
+  // 跨 schema 不冲突;标题携带 schema 前缀消歧。
+  function openPostgresTable(
+    connectionId: string,
+    database: string,
+    schema: string,
+    relation: string,
+    relationType: 'table' | 'view' | 'materialized_view',
+  ): Tab {
+    const id = `postgres:${connectionId}:${database}:${schema}:${relation}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'postgres-table',
+      title: `表 · ${database}.${schema}.${relation}`,
+      connectionId,
+      database,
+      schema,
+      table: relation,
+      relationType,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  // openPostgresSql opens the PostgreSQL SQL console. One console per
+  // connection + database + schema:db/schema 为空表示「不限定」的通用控制台,
+  // id 对应段置空串(去重 key: postgres-sql:{conn}:{db}:{schema})。
+  function openPostgresSql(connectionId: string, database?: string, schema?: string): Tab {
+    const id = `postgres-sql:${connectionId}:${database ?? ''}:${schema ?? ''}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'postgres-sql',
+      // 携带库/schema 时标题区分上下文,便于区分同一连接的多个控制台。
+      title: database && schema ? `SQL · ${database}.${schema}` : database ? `SQL · ${database}` : 'SQL 控制台',
+      connectionId,
+      database,
+      schema,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
   // openEsIndex opens an Elasticsearch index browser keyed by connection +
   // index (dedupe rules copied from openMysqlTable); reopening an already
   // open index only focuses it.
@@ -395,6 +454,8 @@ export const useTabsStore = defineStore('tabs', () => {
     openCHSql,
     openMysqlTable,
     openMysqlSql,
+    openPostgresTable,
+    openPostgresSql,
     openEsIndex,
     openEsSql,
     openEsTemplates,

@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
 import { mount, DOMWrapper, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { useToastStore } from '@/store/toast'
 import EsTableBrowser from './EsTableBrowser.vue'
 
 // Es* 绑定尚未由 wails generate module 生成:组件按显式形状断言直连
@@ -20,6 +22,8 @@ const wailsMocks = vi.hoisted(() => ({
   ESGetDoc: vi.fn(),
   // 整文档替换(PUT _doc)。
   ESPutDoc: vi.fn(),
+  // 新增文档(id 留空 = POST 自动生成;非空 = PUT 指定/覆盖)。
+  EsCreateDoc: vi.fn(),
   // 字段级部分更新(POST _update)。
   ESUpdateCell: vi.fn(),
   // 删除单文档。
@@ -92,6 +96,8 @@ function mountBrowser(
 
 describe('EsTableBrowser', () => {
   beforeEach(() => {
+    // 新增文档成功后的 toast 走全局 Pinia store:挂载前激活独立实例。
+    setActivePinia(createPinia())
     document.body.innerHTML = ''
     for (const fn of Object.values(wailsMocks)) fn.mockReset()
   })
@@ -515,6 +521,168 @@ describe('EsTableBrowser', () => {
     })
     expect(wailsMocks.ESPutDoc).not.toHaveBeenCalled()
     expect(pageRows.mock.calls.length).toBe(1)
+  })
+
+  it('新增文档:工具栏按钮打开新增弹窗,draft 由映射字段骨架生成', async () => {
+    pageRows.mockResolvedValue(page())
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    expect(wrapper.find('[data-test="es-doc-create"]').exists()).toBe(true)
+    await wrapper.find('[data-test="es-doc-create"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(bodyDialog('es-doc-json-modal')).not.toBeNull()
+    })
+    // 标题为「新增文档」(编辑态为「编辑文档 JSON」)。
+    expect(bodyDialog('es-doc-json-title')?.textContent).toContain('新增文档')
+    // 骨架:name(text)→ null,age(long)→ 0,_id 列不进入骨架。
+    expect((bodyDialog('es-doc-json-editor') as HTMLTextAreaElement).value).toBe(
+      '{\n  "name": null,\n  "age": 0\n}',
+    )
+    // _id 输入框:placeholder「留空自动生成」,初始为空。
+    const idInput = bodyDialog('es-doc-create-id') as HTMLInputElement
+    expect(idInput).not.toBeNull()
+    expect(idInput.value).toBe('')
+    expect(idInput.placeholder).toContain('留空自动生成')
+    // 保存按钮文案:_id 留空 → 「创建」。
+    expect(bodyDialog('es-doc-json-save')?.textContent).toContain('创建')
+  })
+
+  it('新增文档:_id 留空保存走 EsCreateDoc(不带 id),成功后 toast、关弹窗并刷新', async () => {
+    pageRows.mockResolvedValue(page())
+    wailsMocks.EsCreateDoc.mockResolvedValue({ id: 'auto-1', source: '{}' })
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await wrapper.find('[data-test="es-doc-create"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(bodyDialog('es-doc-json-modal')).not.toBeNull()
+    })
+    await new DOMWrapper(bodyDialog('es-doc-json-editor') as HTMLTextAreaElement).setValue(
+      '{"name":"bob","age":1}',
+    )
+    clickBody('es-doc-json-save')
+    await vi.waitFor(() => {
+      // id 留空:请求不带 id 字段(POST 自动生成)。
+      expect(wailsMocks.EsCreateDoc).toHaveBeenCalledWith({
+        connection_id: 'es1',
+        index: 'users-index',
+        doc_json: '{"name":"bob","age":1}',
+      })
+    })
+    // 成功:关弹窗 + toast + refreshThenFetch(先 _refresh 再重取当前页)。
+    await vi.waitFor(() => {
+      expect(bodyDialog('es-doc-json-modal')).toBeNull()
+    })
+    expect(useToastStore().message).toBe('文档已创建')
+    expect(wailsMocks.EsRefreshIndex).toHaveBeenCalledWith({ connection_id: 'es1', index: 'users-index' })
+    expect(wailsMocks.EsRefreshIndex.mock.invocationCallOrder[0]).toBeLessThan(
+      pageRows.mock.invocationCallOrder[pageRows.mock.invocationCallOrder.length - 1],
+    )
+    await vi.waitFor(() => {
+      expect(pageRows.mock.calls.length).toBe(2)
+    })
+  })
+
+  it('新增文档:填写 _id 后按钮文案「创建/覆盖」并带覆盖 title,保存走 EsCreateDoc 指定 id', async () => {
+    pageRows.mockResolvedValue(page())
+    wailsMocks.EsCreateDoc.mockResolvedValue({ id: 'u-1', source: '{}' })
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await wrapper.find('[data-test="es-doc-create"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(bodyDialog('es-doc-json-modal')).not.toBeNull()
+    })
+    expect(bodyDialog('es-doc-json-save')?.textContent).not.toContain('覆盖')
+    await new DOMWrapper(bodyDialog('es-doc-create-id') as HTMLInputElement).setValue('u-1')
+    const saveBtn = bodyDialog('es-doc-json-save') as HTMLElement
+    expect(saveBtn.textContent).toContain('创建/覆盖')
+    // title 注明覆盖行为。
+    expect(saveBtn.getAttribute('title')).toContain('覆盖')
+    await new DOMWrapper(bodyDialog('es-doc-json-editor') as HTMLTextAreaElement).setValue('{"name":"bob"}')
+    clickBody('es-doc-json-save')
+    await vi.waitFor(() => {
+      expect(wailsMocks.EsCreateDoc).toHaveBeenCalledWith({
+        connection_id: 'es1',
+        index: 'users-index',
+        id: 'u-1',
+        doc_json: '{"name":"bob"}',
+      })
+    })
+    expect(wailsMocks.ESPutDoc).not.toHaveBeenCalled()
+  })
+
+  it('新增文档:非法 JSON 前端校验失败,错误在弹窗内展示且不发请求', async () => {
+    pageRows.mockResolvedValue(page())
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await wrapper.find('[data-test="es-doc-create"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(bodyDialog('es-doc-json-modal')).not.toBeNull()
+    })
+    await new DOMWrapper(bodyDialog('es-doc-json-editor') as HTMLTextAreaElement).setValue('{invalid')
+    clickBody('es-doc-json-save')
+    await flushPromises()
+    // 前端校验错误显示在弹窗内,弹窗保持打开。
+    expect(bodyDialog('es-json-error')).not.toBeNull()
+    expect(bodyDialog('es-json-error')?.textContent).toContain('JSON 语法错误')
+    expect(bodyDialog('es-doc-json-modal')).not.toBeNull()
+    expect(wailsMocks.EsCreateDoc).not.toHaveBeenCalled()
+    expect(pageRows.mock.calls.length).toBe(1)
+  })
+
+  it('新增文档:保存失败弹窗保持,错误在弹窗内并同步页面错误区,不刷新', async () => {
+    pageRows.mockResolvedValue(page())
+    wailsMocks.EsCreateDoc.mockRejectedValue(new Error('mapper_parsing_exception'))
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await wrapper.find('[data-test="es-doc-create"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(bodyDialog('es-doc-json-modal')).not.toBeNull()
+    })
+    clickBody('es-doc-json-save')
+    await vi.waitFor(() => {
+      expect(bodyDialog('es-json-error')).not.toBeNull()
+      expect(bodyDialog('es-json-error')?.textContent).toContain('mapper_parsing_exception')
+    })
+    // 弹窗保持打开以便修正,页面错误区同步一份。
+    expect(bodyDialog('es-doc-json-modal')).not.toBeNull()
+    expect(wrapper.find('[data-test="es-error"]').text()).toContain('mapper_parsing_exception')
+    expect(wailsMocks.EsRefreshIndex).not.toHaveBeenCalled()
+    expect(pageRows.mock.calls.length).toBe(1)
+  })
+
+  it('另存为新文档:编辑弹窗保留原文档内容,清空 _id 进入新增态,保存走 EsCreateDoc', async () => {
+    pageRows.mockResolvedValue(page())
+    wailsMocks.ESGetDoc.mockResolvedValue({ doc_json: '{"name":"alice","age":30}' })
+    wailsMocks.EsCreateDoc.mockResolvedValue({ id: 'copy-1', source: '{}' })
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await wrapper.find('[data-test="es-doc-json-0"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(bodyDialog('es-doc-json-modal')).not.toBeNull()
+    })
+    // 编辑态提供「另存为新文档」按钮。
+    expect(bodyDialog('es-doc-duplicate')).not.toBeNull()
+    await new DOMWrapper(bodyDialog('es-doc-duplicate') as HTMLElement).trigger('click')
+    // 进入新增态:标题、_id 输入框清空可填、保存按钮为「创建」。
+    expect(bodyDialog('es-doc-json-title')?.textContent).toContain('新增文档')
+    expect((bodyDialog('es-doc-create-id') as HTMLInputElement).value).toBe('')
+    expect(bodyDialog('es-doc-json-save')?.textContent).toContain('创建')
+    // 内容保留原文档(格式化 JSON)。
+    expect((bodyDialog('es-doc-json-editor') as HTMLTextAreaElement).value).toBe(
+      JSON.stringify({ name: 'alice', age: 30 }, null, 2),
+    )
+    // 填新 _id 后保存:走 EsCreateDoc 指定 id,而非 ESPutDoc。
+    await new DOMWrapper(bodyDialog('es-doc-create-id') as HTMLInputElement).setValue('copy-1')
+    clickBody('es-doc-json-save')
+    await vi.waitFor(() => {
+      expect(wailsMocks.EsCreateDoc).toHaveBeenCalledWith({
+        connection_id: 'es1',
+        index: 'users-index',
+        id: 'copy-1',
+        doc_json: JSON.stringify({ name: 'alice', age: 30 }, null, 2),
+      })
+    })
+    expect(wailsMocks.ESPutDoc).not.toHaveBeenCalled()
   })
 
   it('删除文档:危险确认含 _id,确认后 ESDeleteDoc 并刷新', async () => {

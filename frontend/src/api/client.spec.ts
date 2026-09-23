@@ -22,6 +22,15 @@ vi.mock('../../wailsjs/go/backend/App', () => ({
   ListConnections: vi.fn(async () => []),
   DescribeGroup: vi.fn(async () => ({ group: 'g1', state: 'Stable', protocol_type: 'consumer', members: [] })),
   DeleteTopics: vi.fn(async () => [{ name: 't1', error: '' }]),
+  TestPostgresConnection: vi.fn(async () => {}),
+  ListPostgresDatabases: vi.fn(async () => ['postgres']),
+  ListPostgresSchemas: vi.fn(async () => ['public']),
+  ListPostgresTables: vi.fn(async () => []),
+  PostgresPageRows: vi.fn(async () => ({ columns: [], rows: [], primary_key: [], total_rows: 0 })),
+  PostgresExecute: vi.fn(async () => []),
+  PostgresTruncateTable: vi.fn(async () => {}),
+  PostgresPreviewCellUpdate: vi.fn(async () => ({ statement: '', matched_rows: 0 })),
+  PostgresUpdateCell: vi.fn(async () => {}),
   ListAudit: vi.fn(async () => [
     { connection_id: 'c1', action: 'create_topic', target: 't1', result: 'ok', timestamp: 1700000000000 },
   ]),
@@ -128,5 +137,48 @@ describe('api holder', () => {
     setApi(fake)
     expect(getApi()).toBe(fake)
     setApi(new WailsApi())
+  })
+})
+
+describe('WailsApi postgres delegation', () => {
+  const api = new WailsApi()
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('delegates testPostgresConnection with the config shape', async () => {
+    const cfg = { host: 'h', port: 5432, username: 'u', password: 'p', database: 'd', tls_mode: 'disable' as const }
+    await api.testPostgresConnection(cfg)
+    expect((mocked as unknown as { TestPostgresConnection: ReturnType<typeof vi.fn> }).TestPostgresConnection).toHaveBeenCalledWith(cfg)
+  })
+
+  it('delegates listPostgresDatabases / listPostgresSchemas / listPostgresTables', async () => {
+    const m = mocked as unknown as Record<string, ReturnType<typeof vi.fn>>
+    await api.listPostgresDatabases('pg1')
+    expect(m.ListPostgresDatabases).toHaveBeenCalledWith('pg1')
+    await api.listPostgresSchemas({ connection_id: 'pg1', database: 'postgres' })
+    expect(m.ListPostgresSchemas).toHaveBeenCalledWith({ connection_id: 'pg1', database: 'postgres' })
+    const tablesReq = { connection_id: 'pg1', database: 'postgres', schema: 'public' }
+    await api.listPostgresTables(tablesReq)
+    expect(m.ListPostgresTables).toHaveBeenCalledWith(tablesReq)
+  })
+
+  it('delegates postgres page rows / execute / truncate / cell update', async () => {
+    const m = mocked as unknown as Record<string, ReturnType<typeof vi.fn>>
+    const pageReq = { connection_id: 'pg1', database: 'db', schema: 'public', relation: 'users', limit: 200, offset: 0 }
+    await api.postgresPageRows(pageReq)
+    expect(m.PostgresPageRows).toHaveBeenCalledWith(pageReq)
+    const execReq = { connection_id: 'pg1', database: 'db', sql: 'select 1' }
+    await api.postgresExecute(execReq)
+    expect(m.PostgresExecute).toHaveBeenCalledWith(execReq)
+    const truncReq = { connection_id: 'pg1', database: 'db', schema: 'public', relation: 'users', relation_kind: 'table' as const }
+    await api.postgresTruncateTable(truncReq)
+    expect(m.PostgresTruncateTable).toHaveBeenCalledWith(truncReq)
+    const cellReq = { connection_id: 'pg1', database: 'db', schema: 'public', relation: 'users', relation_kind: 'table' as const, set: { column: 'name', value: 'x' }, where: [{ column: 'id', value: '1' }] }
+    await api.postgresPreviewCellUpdate(cellReq)
+    expect(m.PostgresPreviewCellUpdate).toHaveBeenCalledWith(cellReq)
+    await api.postgresUpdateCell(cellReq)
+    expect(m.PostgresUpdateCell).toHaveBeenCalledWith(cellReq)
   })
 })

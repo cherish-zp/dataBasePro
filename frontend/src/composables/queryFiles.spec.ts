@@ -433,3 +433,41 @@ describe('多实例共享', () => {
     expect(a.fileError.value).toBeNull()
   })
 })
+
+describe('schema 支持', () => {
+  it('保存时把 getSchema 的返回写入 payload 的 schema 字段', async () => {
+    const { opts, qf } = setup({
+      getDatabase: vi.fn(() => 'shop'),
+      getSchema: vi.fn(() => 'public'),
+    })
+    await qf.saveToFile('pg-query')
+    expect(queryFileApp.WriteQueryFile).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'pg-query.sql', connection_id: 'conn-1', database: 'shop', schema: 'public' }),
+    )
+    expect(opts.getSchema).toHaveBeenCalled()
+  })
+
+  it('未提供 getSchema 时 payload 不带 schema 字段', async () => {
+    const { qf } = setup({ getDatabase: vi.fn(() => 'shop') })
+    await qf.saveToFile('no-schema')
+    const payload = queryFileApp.WriteQueryFile.mock.calls[0][0] as Record<string, unknown>
+    expect('schema' in payload).toBe(false)
+  })
+
+  it('载入文件时把文件头记录的 schema 回传给 setSchema', async () => {
+    queryFileApp.ReadQueryFile.mockResolvedValue({ content: 'select 1', connection_id: 'conn-1', database: 'shop', schema: 'app' })
+    const setSchema = vi.fn()
+    const { qf } = setup({ setDatabase: vi.fn(), setSchema })
+    await qf.loadQueryFile('pg.sql')
+    expect(setSchema).toHaveBeenCalledWith('app')
+    expect(qf.currentFile.value).toBe('pg.sql')
+  })
+
+  it('文件头缺省 schema 时 setSchema 收到空串', async () => {
+    queryFileApp.ReadQueryFile.mockResolvedValue({ content: 'select 1', connection_id: 'conn-1', database: 'shop' })
+    const setSchema = vi.fn()
+    const { qf } = setup({ setDatabase: vi.fn(), setSchema })
+    await qf.loadQueryFile('old.sql')
+    expect(setSchema).toHaveBeenCalledWith('')
+  })
+})

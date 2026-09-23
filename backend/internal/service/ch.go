@@ -159,7 +159,7 @@ func (c *CHClient) rowFormat() string {
 
 func (c *CHClient) Databases(ctx context.Context) ([]string, error) {
 	rows, err := c.db.QueryContext(ctx,
-		"SELECT name FROM system.databases WHERE name != 'system' AND name != 'INFORMATION_SCHEMA' ORDER BY name" + c.rowFormat())
+		"SELECT name FROM system.databases WHERE name != 'system' AND name != 'INFORMATION_SCHEMA' ORDER BY name"+c.rowFormat())
 	if err != nil {
 		return nil, fmt.Errorf("list databases: %w", err)
 	}
@@ -277,7 +277,7 @@ func (c *CHClient) PageRows(ctx context.Context, database, table, where, orderBy
 // Nullable so it maps to *int64 (nil = engine cannot report it).
 func (c *CHClient) tableMeta(ctx context.Context, database, table string) (string, *int64, error) {
 	rows, err := c.db.QueryContext(ctx,
-		"SELECT engine, total_rows FROM system.tables WHERE database = ? AND name = ?" + c.rowFormat() + "", database, table)
+		"SELECT engine, total_rows FROM system.tables WHERE database = ? AND name = ?"+c.rowFormat()+"", database, table)
 	if err != nil {
 		return "", nil, fmt.Errorf("table meta: %w", err)
 	}
@@ -392,7 +392,7 @@ func (c *CHClient) TruncateTable(ctx context.Context, database, table string, on
 // system.clusters as the ON CLUSTER target heuristic.
 func (c *CHClient) largestCluster(ctx context.Context) (string, error) {
 	rows, err := c.db.QueryContext(ctx,
-		"SELECT cluster FROM system.clusters GROUP BY cluster ORDER BY count() DESC LIMIT 1" + c.rowFormat())
+		"SELECT cluster FROM system.clusters GROUP BY cluster ORDER BY count() DESC LIMIT 1"+c.rowFormat())
 	if err != nil {
 		return "", err
 	}

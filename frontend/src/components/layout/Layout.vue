@@ -15,6 +15,8 @@ import CHTableBrowser from '@/components/kafka/CHTableBrowser.vue'
 import CHSqlConsole from '@/components/kafka/CHSqlConsole.vue'
 import MysqlTableBrowser from '@/components/kafka/MysqlTableBrowser.vue'
 import MysqlSqlConsole from '@/components/kafka/MysqlSqlConsole.vue'
+import PostgresTableBrowser from '@/components/kafka/PostgresTableBrowser.vue'
+import PostgresSqlConsole from '@/components/kafka/PostgresSqlConsole.vue'
 import EsTableBrowser from '@/components/kafka/EsTableBrowser.vue'
 import EsSqlConsole from '@/components/kafka/EsSqlConsole.vue'
 import EsTemplatesPanel from '@/components/kafka/EsTemplatesPanel.vue'
@@ -129,7 +131,7 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
     toast.show('未找到文件关联的数据源,无法打开 SQL 控制台')
     return
   }
-  const target: 'sql' | 'ch-sql' | 'mysql-sql' | 'es-sql' | null =
+  const target: 'sql' | 'ch-sql' | 'mysql-sql' | 'es-sql' | 'postgres-sql' | null =
     conn.type === 'kafka'
       ? 'sql'
       : conn.type === 'clickhouse'
@@ -138,7 +140,9 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
           ? 'mysql-sql'
           : conn.type === 'es'
             ? 'es-sql'
-            : null
+            : conn.type === 'postgres'
+              ? 'postgres-sql'
+              : null
   if (!target) {
     toast.show('该数据源类型暂不支持 SQL 控制台')
     return
@@ -152,6 +156,8 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
     tabs.openCHSql(connectionId)
   } else if (target === 'mysql-sql') {
     tabs.openMysqlSql(connectionId)
+  } else if (target === 'postgres-sql') {
+    tabs.openPostgresSql(connectionId)
   } else if (target === 'es-sql') {
     tabs.openEsSql(connectionId)
   } else {
@@ -191,6 +197,7 @@ const activeTopic = computed<Tab | null>(() => (active.value?.kind === 'topic' ?
 const sqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const chSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const mysqlSqlConsoleRef = ref<SqlConsoleApi | null>(null)
+const pgSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const esSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 
 const activeConsoleApi = computed<SqlConsoleApi | null>(() => {
@@ -199,6 +206,7 @@ const activeConsoleApi = computed<SqlConsoleApi | null>(() => {
   if (a.kind === 'sql') return sqlConsoleRef.value
   if (a.kind === 'ch-sql') return chSqlConsoleRef.value
   if (a.kind === 'mysql-sql') return mysqlSqlConsoleRef.value
+  if (a.kind === 'postgres-sql') return pgSqlConsoleRef.value
   if (a.kind === 'es-sql') return esSqlConsoleRef.value
   return null
 })
@@ -218,6 +226,11 @@ function openNewQuery(): void {
   const kind = a.kind
   if (kind === 'mysql-table' || kind === 'mysql-sql') {
     tabs.openMysqlSql(a.connectionId, a.database ?? '')
+    return
+  }
+  // PG 系 tab 打开 PG SQL 控制台,并带上当前库与 schema(缺省 = 通用控制台)。
+  if (kind === 'postgres-table' || kind === 'postgres-sql') {
+    tabs.openPostgresSql(a.connectionId, a.database ?? '', a.schema ?? '')
     return
   }
   // ES 系 tab 打开 ES SQL 控制台(ES 无库概念,不携带 database)。
@@ -255,6 +268,17 @@ function openCHTable(connectionId: string, database: string, table: string): voi
 // MySQL 表浏览器:双击树上的表节点打开/聚焦对应 tab。
 function openMysqlTable(connectionId: string, database: string, table: string): void {
   tabs.openMysqlTable(connectionId, database, table)
+}
+
+// PostgreSQL relation 浏览器:双击树上的 relation 节点打开/聚焦对应 tab。
+function openPostgresTable(
+  connectionId: string,
+  database: string,
+  schema: string,
+  relation: string,
+  relationType: 'table' | 'view' | 'materialized_view',
+): void {
+  tabs.openPostgresTable(connectionId, database, schema, relation, relationType)
 }
 
 // ES 索引浏览器:双击树上的索引节点打开/聚焦对应 tab。
@@ -304,6 +328,7 @@ function refreshActive(): void {
     active.value.kind === 'sql' ||
     active.value.kind === 'ch-sql' ||
     active.value.kind === 'mysql-sql' ||
+    active.value.kind === 'postgres-sql' ||
     active.value.kind === 'es-sql'
   ) {
     return
@@ -501,6 +526,7 @@ function onTabDragEnd(): void {
           @open-health="openHealth"
           @open-ch-table="openCHTable"
           @open-mysql-table="openMysqlTable"
+          @open-postgres-table="openPostgresTable"
           @open-es-index="openEsIndex"
           @open-es-template="openEsTemplate"
           @open-es-template-create="openEsTemplateCreate"
@@ -618,6 +644,26 @@ function onTabDragEnd(): void {
               :database="active.database ?? ''"
             />
           </template>
+          <template v-else-if="active.kind === 'postgres-table'">
+            <PostgresTableBrowser
+              :key="active.id"
+              :connection-id="active.connectionId"
+              :database="active.database ?? ''"
+              :schema="active.schema ?? ''"
+              :relation="active.table ?? ''"
+              :relation-type="active.relationType ?? 'table'"
+            />
+          </template>
+          <template v-else-if="active.kind === 'postgres-sql'">
+            <PostgresSqlConsole
+              ref="pgSqlConsoleRef"
+              :key="active.id"
+              :tab-id="active.id"
+              :connection-id="active.connectionId"
+              :database="active.database ?? ''"
+              :schema="active.schema ?? ''"
+            />
+          </template>
           <template v-else-if="active.kind === 'es-index'">
             <EsTableBrowser
               :key="active.id"
@@ -706,7 +752,7 @@ function onTabDragEnd(): void {
         </button>
         <button class="context-item" type="button" data-test="context-close-all" @click="contextCloseAll">关闭全部</button>
         <button
-          v-if="contextTab.kind !== 'sql' && contextTab.kind !== 'ch-sql' && contextTab.kind !== 'mysql-sql' && contextTab.kind !== 'es-sql'"
+          v-if="contextTab.kind !== 'sql' && contextTab.kind !== 'ch-sql' && contextTab.kind !== 'mysql-sql' && contextTab.kind !== 'postgres-sql' && contextTab.kind !== 'es-sql'"
           class="context-item"
           type="button"
           data-test="context-refresh"

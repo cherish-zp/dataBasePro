@@ -21,7 +21,7 @@ type RedisScanRequest struct {
 
 // RedisScanResult is one SCAN page: the next cursor plus key metadata.
 type RedisScanResult struct {
-	Cursor uint64              `json:"cursor"`
+	Cursor uint64               `json:"cursor"`
 	Keys   []model.RedisKeyInfo `json:"keys"`
 }
 

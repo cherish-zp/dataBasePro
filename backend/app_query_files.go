@@ -29,6 +29,8 @@ type QueryFileWriteRequest struct {
 	Name         string `json:"name"`
 	Content      string `json:"content"`
 	ConnectionID string `json:"connection_id,omitempty"`
+	// Schema is the schema context selected at save time; empty omits it.
+	Schema string `json:"schema,omitempty"`
 	// Database is the database context selected at save time; empty omits the
 	// header line so reopening falls back to no database.
 	Database string `json:"database,omitempty"`
@@ -48,6 +50,8 @@ type QueryFileContent struct {
 	// Database is the `-- database: <db>` header value; empty when the file
 	// was saved without a database context.
 	Database string `json:"database"`
+	// Schema is the `-- schema: <schema>` header value; empty for legacy files.
+	Schema string `json:"schema"`
 }
 
 // expandQueryDir expands a leading `~`/`~/` to the user's home directory and
@@ -83,18 +87,18 @@ func (a *App) ListQueryFiles(req QueryFileListRequest) ([]store.QueryFileInfo, e
 // ReadQueryFile loads one query file's full content plus its header connection
 // id and database (read-only, not audited).
 func (a *App) ReadQueryFile(req QueryFileReadRequest) (QueryFileContent, error) {
-	content, connectionID, database, err := store.NewQueryFileStore(expandQueryDir(req.Dir)).Read(queryFileName(req.Name))
+	content, connectionID, database, schema, err := store.NewQueryFileStore(expandQueryDir(req.Dir)).Read(queryFileName(req.Name))
 	if err != nil {
 		return QueryFileContent{}, err
 	}
-	return QueryFileContent{Content: content, ConnectionID: connectionID, Database: database}, nil
+	return QueryFileContent{Content: content, ConnectionID: connectionID, Database: database, Schema: schema}, nil
 }
 
 // WriteQueryFile saves one query as a .sql file in the configured directory
 // (a plain local file operation, not audited).
 func (a *App) WriteQueryFile(req QueryFileWriteRequest) error {
 	return store.NewQueryFileStore(expandQueryDir(req.Dir)).
-		Write(queryFileName(req.Name), req.Content, req.ConnectionID, req.Database)
+		Write(queryFileName(req.Name), req.Content, req.ConnectionID, req.Database, req.Schema)
 }
 
 // DeleteQueryFile removes one query file (not audited: it only deletes a

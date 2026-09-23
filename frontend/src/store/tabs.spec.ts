@@ -437,3 +437,68 @@ describe('tabs store', () => {
     expect(store.activeTabId).toBe(tab.id)
   })
 })
+
+describe('postgres tabs', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('opens a postgres table tab keyed by conn/db/schema/relation', () => {
+    const store = useTabsStore()
+    const tab = store.openPostgresTable('pg1', 'shop', 'public', 'users', 'table')
+    expect(tab.kind).toBe('postgres-table')
+    expect(tab.id).toBe('postgres:pg1:shop:public:users')
+    expect(tab.database).toBe('shop')
+    expect(tab.schema).toBe('public')
+    expect(tab.table).toBe('users')
+    expect(tab.relationType).toBe('table')
+    expect(store.activeTabId).toBe(tab.id)
+  })
+
+  it('dedupes an already open postgres table tab and focuses it', () => {
+    const store = useTabsStore()
+    store.openPostgresTable('pg1', 'shop', 'public', 'users', 'table')
+    const again = store.openPostgresTable('pg1', 'shop', 'public', 'users', 'table')
+    expect(store.openTabs).toHaveLength(1)
+    expect(again.id).toBe(store.openTabs[0].id)
+  })
+
+  it('keeps same-named relations across schemas distinct', () => {
+    const store = useTabsStore()
+    store.openPostgresTable('pg1', 'shop', 'public', 'users', 'table')
+    store.openPostgresTable('pg1', 'shop', 'app', 'users', 'table')
+    expect(store.openTabs).toHaveLength(2)
+  })
+
+  it('opens a postgres sql console keyed by conn/db/schema', () => {
+    const store = useTabsStore()
+    const tab = store.openPostgresSql('pg1', 'shop', 'public')
+    expect(tab.kind).toBe('postgres-sql')
+    expect(tab.id).toBe('postgres-sql:pg1:shop:public')
+    expect(tab.database).toBe('shop')
+    expect(tab.schema).toBe('public')
+    const again = store.openPostgresSql('pg1', 'shop', 'public')
+    expect(again.id).toBe(tab.id)
+    expect(store.openTabs).toHaveLength(1)
+  })
+
+  it('omits the db/schema segment when opening a generic postgres sql console', () => {
+    const store = useTabsStore()
+    const tab = store.openPostgresSql('pg1')
+    expect(tab.id).toBe('postgres-sql:pg1::')
+    expect(tab.database).toBeUndefined()
+    expect(tab.schema).toBeUndefined()
+  })
+})
+
+describe('postgres-sql tab 标题', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('携带 database/schema 时标题区分上下文', () => {
+    const store = useTabsStore()
+    const tab = store.openPostgresSql('pg1', 'shop', 'public')
+    expect(tab.title).toBe('SQL · shop.public')
+    const tabDbOnly = store.openPostgresSql('pg1', 'analytics')
+    expect(tabDbOnly.title).toBe('SQL · analytics')
+    const tabGeneric = store.openPostgresSql('pg1')
+    expect(tabGeneric.title).toBe('SQL 控制台')
+  })
+})

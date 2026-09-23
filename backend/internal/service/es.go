@@ -1074,6 +1074,82 @@ func (c *EsClient) PutDoc(ctx context.Context, index, id, docJSON string) error 
 	return nil
 }
 
+// esDocCreatePath renders the auto-id create path (no id segment, unlike
+// esDocPath): typeless → /{index}/_doc; typed (5.x/6.x) → /{index}/{type}.
+func esDocCreatePath(index, base string, typed bool) string {
+	if base == "_doc" && !typed {
+		return "/" + url.PathEscape(index) + "/_doc"
+	}
+	return "/" + url.PathEscape(index) + "/" + url.PathEscape(base)
+}
+
+// createDocRequest performs the auto-id create, transparently falling back to
+// the typed 5.x/6.x path (POST /{index}/{type} — still no id segment) when
+// "_doc" meets a no-handler/invalid-type-name response; the resolved base is
+// remembered per index (same pattern as docRequest).
+func (c *EsClient) createDocRequest(ctx context.Context, index string, body []byte) (int, []byte, error) {
+	base, typed := c.docBase(index)
+	status, respBody, err := c.doRequest(ctx, http.MethodPost, esDocCreatePath(index, base, typed), body)
+	if err != nil {
+		return 0, nil, err
+	}
+	if (esIsNoHandler(status, respBody) || esIsInvalidTypeName(status, respBody)) && base == "_doc" {
+		typ, terr := c.resolveDocType(ctx, index)
+		if terr == nil && typ != "" {
+			s2, b2, err2 := c.doRequest(ctx, http.MethodPost, esDocCreatePath(index, typ, true), body)
+			if err2 != nil {
+				return 0, nil, err2
+			}
+			if !esIsNoHandler(s2, b2) {
+				c.mu.Lock()
+				c.docBases[index] = typ
+				c.docBasesTyped[index] = true
+				c.mu.Unlock()
+			}
+			return s2, b2, nil
+		}
+	}
+	return status, respBody, nil
+}
+
+// CreateDoc indexes a document: an empty id posts to /{index}/_doc (the
+// server generates the _id), a non-empty id PUTs to /{index}/_doc/{id}
+// (upsert — an existing document is overwritten, reusing docRequest's typed
+// fallback). docJSON must be a JSON object and is sent verbatim; the _id from
+// the response is returned.
+func (c *EsClient) CreateDoc(ctx context.Context, index, id, docJSON string) (string, error) {
+	trimmed := strings.TrimSpace(docJSON)
+	if !json.Valid([]byte(trimmed)) {
+		return "", errors.New("文档 JSON 不合法")
+	}
+	if !strings.HasPrefix(trimmed, "{") {
+		return "", errors.New("文档 JSON 必须是 JSON 对象")
+	}
+	var (
+		status int
+		body   []byte
+		err    error
+	)
+	if strings.TrimSpace(id) == "" {
+		status, body, err = c.createDocRequest(ctx, index, []byte(trimmed))
+	} else {
+		status, body, err = c.docRequest(ctx, http.MethodPut, index, id, "", []byte(trimmed))
+	}
+	if err != nil {
+		return "", fmt.Errorf("elasticsearch create doc: %w", err)
+	}
+	if status < 200 || status > 299 {
+		return "", fmt.Errorf("elasticsearch create doc: HTTP %d: %s", status, truncateBody(string(body), 300))
+	}
+	var resp struct {
+		ID string `json:"_id"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("elasticsearch create doc: 解析响应失败: %w", err)
+	}
+	return resp.ID, nil
+}
+
 // UpdateCell patches one field via POST /{index}/_update/{id} with
 // {"doc":{"col":val}}; a nil value writes JSON null. Fields prefixed with "_"
 // are document metadata and rejected.

@@ -19,6 +19,9 @@ const connHeaderPrefix = "-- connection: "
 // was selected at save time; legacy files stay without the line.
 const dbHeaderPrefix = "-- database: "
 
+// schemaHeaderPrefix is the optional schema context line.
+const schemaHeaderPrefix = "-- schema: "
+
 // QueryFileInfo describes one saved .sql query file in the query repository.
 // The JSON shape is the wire shape handed to the frontend (snake_case).
 type QueryFileInfo struct {
@@ -65,7 +68,7 @@ func ValidateQueryFileName(name string) error {
 // the first non-comment line count, so the same comments inside the SQL body
 // are ignored. The body is the original content minus the consumed header
 // lines, byte for byte.
-func ParseQueryFileHeader(content string) (connectionID, database, body string) {
+func ParseQueryFileHeader(content string) (connectionID, database, schema, body string) {
 	rest := content
 	for {
 		line, next, found := strings.Cut(rest, "\n")
@@ -79,13 +82,16 @@ func ParseQueryFileHeader(content string) (connectionID, database, body string) 
 		if value, ok := strings.CutPrefix(trimmed, dbHeaderPrefix); ok {
 			database = strings.TrimSpace(value)
 		}
+		if value, ok := strings.CutPrefix(trimmed, schemaHeaderPrefix); ok {
+			schema = strings.TrimSpace(value)
+		}
 		if !found {
 			rest = ""
 			break
 		}
 		rest = next
 	}
-	return connectionID, database, rest
+	return connectionID, database, schema, rest
 }
 
 // List returns every .sql file in the directory, newest first (ties broken by
@@ -123,7 +129,7 @@ func (s *QueryFileStore) List() ([]QueryFileInfo, error) {
 		// Best effort header parse: a file that disappears mid-scan still
 		// lists, just without a connection id.
 		if raw, err := os.ReadFile(filepath.Join(s.Dir, name)); err == nil {
-			item.ConnectionID, _, _ = ParseQueryFileHeader(string(raw))
+			item.ConnectionID, _, _, _ = ParseQueryFileHeader(string(raw))
 		}
 		out = append(out, item)
 	}
@@ -138,20 +144,20 @@ func (s *QueryFileStore) List() ([]QueryFileInfo, error) {
 
 // Read returns the full original content of <name> plus the connection id and
 // database parsed from the header comments (empty for legacy files).
-func (s *QueryFileStore) Read(name string) (content, connectionID, database string, err error) {
+func (s *QueryFileStore) Read(name string) (content, connectionID, database, schema string, err error) {
 	if err := ValidateQueryFileName(name); err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	raw, err := os.ReadFile(filepath.Join(s.Dir, name))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", "", "", fmt.Errorf("查询文件不存在: %s", name)
+			return "", "", "", "", fmt.Errorf("查询文件不存在: %s", name)
 		}
-		return "", "", "", fmt.Errorf("read query file: %w", err)
+		return "", "", "", "", fmt.Errorf("read query file: %w", err)
 	}
 	content = string(raw)
-	connectionID, database, _ = ParseQueryFileHeader(content)
-	return content, connectionID, database, nil
+	connectionID, database, schema, _ = ParseQueryFileHeader(content)
+	return content, connectionID, database, schema, nil
 }
 
 // Write stores content as <name>, prepending header comments inside the
@@ -159,7 +165,7 @@ func (s *QueryFileStore) Read(name string) (content, connectionID, database stri
 // only when non-empty; with neither the content is stored verbatim (legacy
 // files stay header-free). An existing file of the same name is overwritten,
 // and a missing directory is created.
-func (s *QueryFileStore) Write(name, content, connectionID, database string) error {
+func (s *QueryFileStore) Write(name, content, connectionID, database, schema string) error {
 	if err := ValidateQueryFileName(name); err != nil {
 		return err
 	}
@@ -169,6 +175,9 @@ func (s *QueryFileStore) Write(name, content, connectionID, database string) err
 	}
 	if database != "" {
 		header.WriteString(dbHeaderPrefix + database + "\n")
+	}
+	if schema != "" {
+		header.WriteString(schemaHeaderPrefix + schema + "\n")
 	}
 	if header.Len() > 0 {
 		content = header.String() + content

@@ -43,6 +43,17 @@ type EsPutDocRequest struct {
 	Doc          string `json:"doc"`
 }
 
+// EsCreateDocRequest creates one document: an empty id lets the server
+// generate the _id (POST /{index}/_doc); a non-empty id indexes under that id
+// (PUT /{index}/_doc/{id} — an existing document is overwritten). doc_json is
+// the JSON object text sent verbatim as the request body.
+type EsCreateDocRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Index        string `json:"index"`
+	ID           string `json:"id"`
+	DocJSON      string `json:"doc_json"`
+}
+
 // EsCellUpdateRequest patches one field of a document; a nil (null) value
 // clears the field (writes JSON null).
 type EsCellUpdateRequest struct {
@@ -194,6 +205,22 @@ func (a *App) ESPutDoc(req EsPutDocRequest) error {
 	err := a.svc.EsPutDoc(ctx, req.ConnectionID, req.Index, req.ID, req.Doc)
 	a.audit(req.ConnectionID, "es_put_doc", req.Index+"/"+req.ID, auditResult(err), auditDetail(err))
 	return err
+}
+
+// EsCreateDoc creates one document (dangerous, audited): the audit target
+// distinguishes the auto-id form (index) from the specified-id form
+// (index/id). The returned doc carries the _id resolved from the response and
+// the request doc_json verbatim as source.
+func (a *App) EsCreateDoc(req EsCreateDocRequest) (model.EsDoc, error) {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	doc, err := a.svc.EsCreateDoc(ctx, req.ConnectionID, req.Index, req.ID, req.DocJSON)
+	target := req.Index
+	if strings.TrimSpace(req.ID) != "" {
+		target = req.Index + "/" + req.ID
+	}
+	a.audit(req.ConnectionID, "es_create_doc", target, auditResult(err), auditDetail(err))
+	return doc, err
 }
 
 // ESUpdateCell patches one document field (dangerous, audited).

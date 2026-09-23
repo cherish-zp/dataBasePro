@@ -119,6 +119,21 @@ type MysqlDataSource interface {
 	UpdateCell(ctx context.Context, database, table string, set model.MysqlCellValue, where []model.MysqlCellValue) error
 }
 
+// PostgresDataSource extends DataSource with PostgreSQL browser operations.
+// Databases are addressed per call so one pooled client can browse beyond its
+// configured default database.
+type PostgresDataSource interface {
+	DataSource
+	Databases(ctx context.Context) ([]string, error)
+	Schemas(ctx context.Context, database string) ([]string, error)
+	Tables(ctx context.Context, database, schema string) ([]model.PostgresTableInfo, error)
+	PageRows(ctx context.Context, database, schema, relation, relationKind, where, orderBy string, asc bool, limit, offset int) (model.PostgresPageRowsResult, error)
+	Execute(ctx context.Context, database, schema, sqlText string) ([]model.PostgresStatementResult, error)
+	TruncateTable(ctx context.Context, database, schema, relation, relationKind string) error
+	PreviewCellUpdate(ctx context.Context, req model.PostgresCellUpdateRequest) (model.PostgresCellUpdatePreview, error)
+	UpdateCell(ctx context.Context, req model.PostgresCellUpdateRequest) error
+}
+
 // EsDataSource extends DataSource with the Elasticsearch/OpenSearch browser
 // operations: index listing, paged document rows over REST (_search), mapping
 // inspection, document CRUD and a SQL console (endpoint auto-probed per
@@ -136,6 +151,12 @@ type EsDataSource interface {
 	GetDoc(ctx context.Context, index, id string) (string, error)
 	// PutDoc replaces the document identified by id with docJSON.
 	PutDoc(ctx context.Context, index, id, docJSON string) error
+	// CreateDoc indexes a document: an empty id posts to /{index}/_doc (the
+	// server generates the _id), a non-empty id PUTs to /{index}/_doc/{id}
+	// (upsert — an existing document is overwritten). docJSON must be a JSON
+	// object and is sent verbatim; the _id resolved from the response is
+	// returned.
+	CreateDoc(ctx context.Context, index, id, docJSON string) (string, error)
 	// UpdateCell patches one field of the document (value nil → JSON null).
 	UpdateCell(ctx context.Context, index, id, column string, value *string) error
 	// DeleteDoc removes one document.

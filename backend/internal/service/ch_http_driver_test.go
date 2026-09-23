@@ -17,7 +17,6 @@ import (
 // UNKNOWN_SETTING——因此 HTTP 协议模式绕开驱动传输,以 database/sql
 // 驱动形式直发 POST(与 redis-cli/http 工具同款,老服务器全兼容)。
 
-
 // chRoutingHandler 按查询命中的系统表路由响应:tables/columns 返回合法
 // JSONCompact(names+types 行),其余交给 default。
 func chRoutingHandler(tablesJSON string, def func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {

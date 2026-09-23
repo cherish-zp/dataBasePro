@@ -237,6 +237,23 @@ func (s *Store) marshalConfig(typ model.ConnectionType, raw json.RawMessage) (st
 			return "", fmt.Errorf("marshal config: %w", err)
 		}
 		return string(b), nil
+	case model.ConnectionTypePostgres:
+		var cfg model.PostgresConfig
+		if err := json.Unmarshal(raw, &cfg); err != nil {
+			return "", fmt.Errorf("unmarshal postgres config: %w", err)
+		}
+		if cfg.Password != "" {
+			enc, err := s.crypto.Encrypt(cfg.Password)
+			if err != nil {
+				return "", fmt.Errorf("encrypt password: %w", err)
+			}
+			cfg.Password = enc
+		}
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return "", fmt.Errorf("marshal config: %w", err)
+		}
+		return string(b), nil
 	case model.ConnectionTypeClickHouse:
 		var cfg model.ClickHouseConfig
 		if err := json.Unmarshal(raw, &cfg); err != nil {
@@ -326,6 +343,24 @@ func (s *Store) unmarshalConfig(typ string, raw string) (json.RawMessage, error)
 			return nil, fmt.Errorf("unmarshal mysql config: %w", err)
 		}
 		if cfg.Password != "" && strings.HasPrefix(cfg.Password, encPrefix+cryptoVersion+":") {
+			dec, err := s.crypto.Decrypt(cfg.Password)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt password: %w", err)
+			}
+			cfg.Password = dec
+		}
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(b), nil
+	case model.ConnectionTypePostgres:
+		var cfg model.PostgresConfig
+		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+			return nil, fmt.Errorf("unmarshal postgres config: %w", err)
+		}
+		encPrefixFull := encPrefix + cryptoVersion + ":"
+		if cfg.Password != "" && strings.HasPrefix(cfg.Password, encPrefixFull) {
 			dec, err := s.crypto.Decrypt(cfg.Password)
 			if err != nil {
 				return nil, fmt.Errorf("decrypt password: %w", err)
