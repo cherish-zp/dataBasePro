@@ -92,6 +92,7 @@ import type {
   EsGetDocRequest,
   EsDoc,
   EsPutDocRequest,
+  EsCreateDocRequest,
   EsDeleteDocRequest,
   EsDeleteByQueryRequest,
   EsCreateIndexRequest,
@@ -193,6 +194,8 @@ export interface Api {
   esExecute?(req: EsExecuteRequest): Promise<EsStatementResult[]>
   esGetDoc?(req: EsGetDocRequest): Promise<EsDoc>
   esPutDoc?(req: EsPutDocRequest): Promise<void>
+  // 新增文档(ESCreateDoc):id 留空由服务端自动生成 _id;可选成员,fake 无需实现。
+  esCreateDoc?(req: EsCreateDocRequest): Promise<EsDoc>
   esUpdateCell?(req: EsCellUpdateRequest): Promise<void>
   esDeleteDoc?(req: EsDeleteDocRequest): Promise<void>
   esDeleteByQuery?(req: EsDeleteByQueryRequest): Promise<number>
@@ -472,6 +475,9 @@ export class WailsApi implements Api {
   }
   esPutDoc(req: EsPutDocRequest): Promise<void> {
     return (App as unknown as { ESPutDoc: (req: never) => Promise<void> }).ESPutDoc(req as unknown as never)
+  }
+  esCreateDoc(req: EsCreateDocRequest): Promise<EsDoc> {
+    return (App as unknown as { EsCreateDoc: (req: never) => Promise<EsDoc> }).EsCreateDoc(req as unknown as never)
   }
   esUpdateCell(req: EsCellUpdateRequest): Promise<void> {
     return (App as unknown as { ESUpdateCell: (req: never) => Promise<void> }).ESUpdateCell(req as unknown as never)

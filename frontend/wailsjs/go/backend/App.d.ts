@@ -76,6 +76,8 @@ export function ESUpdateCell(arg1:backend.EsCellUpdateRequest):Promise<void>;
 
 export function EsClusterStats(arg1:backend.EsClusterStatsRequest):Promise<model.EsClusterStats>;
 
+export function EsCreateDoc(arg1:backend.EsCreateDocRequest):Promise<model.EsDoc>;
+
 export function EsCreateIndex(arg1:backend.EsCreateIndexRequest):Promise<void>;
 
 export function EsDeleteIndex(arg1:backend.EsDeleteIndexRequest):Promise<void>;

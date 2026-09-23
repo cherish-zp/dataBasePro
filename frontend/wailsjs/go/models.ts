@@ -358,6 +358,24 @@ export namespace backend {
 	        this.connection_id = source["connection_id"];
 	    }
 	}
+	export class EsCreateDocRequest {
+	    connection_id: string;
+	    index: string;
+	    id: string;
+	    doc_json: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EsCreateDocRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.index = source["index"];
+	        this.id = source["id"];
+	        this.doc_json = source["doc_json"];
+	    }
+	}
 	export class EsCreateIndexRequest {
 	    connection_id: string;
 	    index: string;
@@ -2137,6 +2155,7 @@ export namespace model {
 	    error?: string;
 	    columns?: MysqlColumn[];
 	    rows?: string[][];
+	    primary_key?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new MysqlStatementResult(source);
@@ -2149,6 +2168,7 @@ export namespace model {
 	        this.error = source["error"];
 	        this.columns = this.convertValues(source["columns"], MysqlColumn);
 	        this.rows = source["rows"];
+	        this.primary_key = source["primary_key"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

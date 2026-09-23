@@ -811,6 +811,16 @@ export interface EsPutDocRequest {
   doc: string
 }
 
+// 新增文档:id 留空 = POST /{index}/_doc 由 ES 自动生成;非空 = PUT
+// /{index}/_doc/{id} 指定写入(同 _id 已存在则整文档覆盖)。doc_json 为
+// 完整 _source 的 JSON 文本(合法性由前端 json.Valid 等价校验 + 服务端把关)。
+export interface EsCreateDocRequest {
+  connection_id: string
+  index: string
+  id?: string
+  doc_json: string
+}
+
 export interface EsDeleteDocRequest {
   connection_id: string
   index: string

@@ -136,6 +136,10 @@ type EsDataSource interface {
 	GetDoc(ctx context.Context, index, id string) (string, error)
 	// PutDoc replaces the document identified by id with docJSON.
 	PutDoc(ctx context.Context, index, id, docJSON string) error
+	// CreateDoc indexes a new document: an empty id lets the server generate
+	// the _id; a non-empty id indexes under that id (overwrites if present).
+	// Returns the resulting _id.
+	CreateDoc(ctx context.Context, index, id, docJSON string) (string, error)
 	// UpdateCell patches one field of the document (value nil → JSON null).
 	UpdateCell(ctx context.Context, index, id, column string, value *string) error
 	// DeleteDoc removes one document.

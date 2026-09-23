@@ -843,6 +843,152 @@ func TestEsPutDocReplaces(t *testing.T) {
 	}
 }
 
+// --- 创建文档(自动 _id 与指定 _id 两形态) ---
+
+// 自动 _id:POST /{index}/_doc(无 id 段),body 原样透传,响应 _id 解析为
+// 返回值。
+func TestEsCreateDocAutoIDPostsToDocPath(t *testing.T) {
+	var postBody string
+	cl, rec := newEsTestClient(t, esRootInfo("8.11.0", ""), func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/logs/_doc" {
+			postBody = readAllString(r)
+			writeJSON(w, `{"_index":"logs","_id":"auto-1","_version":1,"result":"created"}`)
+			return
+		}
+		http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
+	})
+	id, err := cl.CreateDoc(context.Background(), "logs", "", `{"title":"new"}`)
+	if err != nil {
+		t.Fatalf("CreateDoc auto: %v", err)
+	}
+	if id != "auto-1" {
+		t.Fatalf("CreateDoc must return the generated _id, got %q", id)
+	}
+	if postBody != `{"title":"new"}` {
+		t.Fatalf("CreateDoc must send the doc verbatim, got %q", postBody)
+	}
+	got := rec.paths()
+	if !strings.Contains(got, "POST /logs/_doc") || strings.Contains(got, "POST /logs/_doc/") {
+		t.Fatalf("auto id must POST /{index}/_doc without an id segment, got %v", got)
+	}
+}
+
+// 自动 _id 的 5.x typed 回退:POST /{index}/_doc 遇 400 no-handler 时
+// resolveDocType 解析类型并重试 POST /{index}/{type}(无 id 段),回退结果
+// 被记住(第二次不再尝试 _doc)。
+func TestEsCreateDocAutoIDFallsBackToTypedPath(t *testing.T) {
+	cl, rec := newEsTestClient(t, esRootInfo("5.6.16", ""), func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/logs/_doc":
+			http.Error(w, `{"error":"no handler found for uri [/logs/_doc] and method [POST]"}`, http.StatusBadRequest)
+		case r.Method == http.MethodGet && r.URL.Path == "/logs/_mapping":
+			writeJSON(w, `{"logs":{"mappings":{"mytype":{"properties":{"title":{"type":"text"}}}}}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/logs/mytype":
+			writeJSON(w, `{"_index":"logs","_type":"mytype","_id":"typed-9","result":"created"}`)
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
+		}
+	})
+	id, err := cl.CreateDoc(context.Background(), "logs", "", `{"title":"a"}`)
+	if err != nil || id != "typed-9" {
+		t.Fatalf("typed fallback must return the generated _id: id=%q err=%v", id, err)
+	}
+	// 回退被记住:第二次直接走 typed 路径。
+	if _, err := cl.CreateDoc(context.Background(), "logs", "", `{"title":"b"}`); err != nil {
+		t.Fatalf("second CreateDoc: %v", err)
+	}
+	got := rec.paths()
+	if strings.Count(got, "POST /logs/_doc") != 1 {
+		t.Fatalf("fallback must be remembered per index: %v", got)
+	}
+	if !strings.Contains(got, "POST /logs/mytype") {
+		t.Fatalf("typed create path must be used: %v", got)
+	}
+}
+
+// 指定 _id:PUT /{index}/_doc/{id}(已存在则覆盖,响应仍 200),body 原样
+// 透传,响应 _id 解析为返回值;服务端 4xx 原样成为错误。
+func TestEsCreateDocWithIDPutsToDocPath(t *testing.T) {
+	var putBody string
+	cl, rec := newEsTestClient(t, esRootInfo("8.11.0", ""), func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && r.URL.Path == "/logs/_doc/1" {
+			putBody = readAllString(r)
+			writeJSON(w, `{"_index":"logs","_id":"1","_version":7,"result":"updated"}`)
+			return
+		}
+		http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
+	})
+	id, err := cl.CreateDoc(context.Background(), "logs", "1", `{"title":"upsert"}`)
+	if err != nil || id != "1" {
+		t.Fatalf("CreateDoc with id: id=%q err=%v", id, err)
+	}
+	if putBody != `{"title":"upsert"}` {
+		t.Fatalf("doc must be sent verbatim, got %q", putBody)
+	}
+	if got := rec.paths(); !strings.Contains(got, "PUT /logs/_doc/1") {
+		t.Fatalf("specified id must PUT /{index}/_doc/{id}, got %v", got)
+	}
+
+	// 服务端 4xx:错误必须携带 HTTP 状态与 body 摘要。
+	cl2, _ := newEsTestClient(t, esRootInfo("8.11.0", ""), func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, `{"error":{"type":"mapper_parsing_exception","reason":"bad mapping"}}`)
+	})
+	if _, err := cl2.CreateDoc(context.Background(), "logs", "1", `{"title":"x"}`); err == nil ||
+		!strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "mapper_parsing_exception") {
+		t.Fatalf("server rejection must surface HTTP status and body, got %v", err)
+	}
+}
+
+// 指定 _id 的 5.x typed 回退:复用 docRequest 的既有回退逻辑
+// (PUT /{index}/_doc/{id} → PUT /{index}/{type}/{id})。
+func TestEsCreateDocWithIDFallsBackToTypedPath(t *testing.T) {
+	cl, rec := newEsTestClient(t, esRootInfo("5.6.16", ""), func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && r.URL.Path == "/logs/_doc/1":
+			http.Error(w, `{"error":"no handler found for uri [/logs/_doc/1] and method [PUT]"}`, http.StatusBadRequest)
+		case r.Method == http.MethodGet && r.URL.Path == "/logs/_mapping":
+			writeJSON(w, `{"logs":{"mappings":{"mytype":{"properties":{"title":{"type":"text"}}}}}}`)
+		case r.Method == http.MethodPut && r.URL.Path == "/logs/mytype/1":
+			writeJSON(w, `{"_index":"logs","_type":"mytype","_id":"1","result":"created"}`)
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
+		}
+	})
+	id, err := cl.CreateDoc(context.Background(), "logs", "1", `{"title":"a"}`)
+	if err != nil || id != "1" {
+		t.Fatalf("typed fallback for specified id: id=%q err=%v", id, err)
+	}
+	if got := rec.paths(); !strings.Contains(got, "PUT /logs/mytype/1") {
+		t.Fatalf("typed put path must be used: %v", got)
+	}
+}
+
+// 本地校验:非法 JSON / 非对象(数组)/ 空 body 一律拒绝且不触网;指定 _id
+// 路径同样校验。
+func TestEsCreateDocRejectsInvalidBody(t *testing.T) {
+	cl, rec := newEsTestClient(t, esRootInfo("8.11.0", ""), func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, `{}`)
+	})
+	before := len(rec.all())
+	if _, err := cl.CreateDoc(context.Background(), "logs", "", "not json"); err == nil ||
+		!strings.Contains(err.Error(), "文档 JSON 不合法") {
+		t.Fatalf("invalid JSON must be rejected locally, got %v", err)
+	}
+	if _, err := cl.CreateDoc(context.Background(), "logs", "", "[1,2]"); err == nil {
+		t.Fatal("non-object JSON (array) must be rejected")
+	}
+	if _, err := cl.CreateDoc(context.Background(), "logs", "", ""); err == nil {
+		t.Fatal("empty doc must be rejected")
+	}
+	if _, err := cl.CreateDoc(context.Background(), "logs", "1", "not json"); err == nil {
+		t.Fatal("invalid JSON must be rejected on the specified-id path too")
+	}
+	if len(rec.all()) != before {
+		t.Fatal("local validation failures must not hit the server")
+	}
+}
+
 func TestEsUpdateCellPostsPartialDoc(t *testing.T) {
 	var bodies []string
 	cl, _ := newEsTestClient(t, esRootInfo("8.11.0", ""), func(w http.ResponseWriter, r *http.Request) {
@@ -1158,19 +1304,24 @@ type fakeES struct {
 	docTarget    string
 	putTarget    string
 	putBody      string
-	updateTarget string
-	updateCol    string
-	updateVal    *string
-	deleteTarget string
-	deleted      int64
-	deletedQuery string
-	execSQL      string
-	execResult   []model.EsStatementResult
-	dslMethod    string
-	dslPath      string
-	dslBody      string
-	dsl          model.EsDslResult
-	dslErr       error
+	// 创建文档。
+	createDocIndex  string
+	createDocIDArg  string
+	createDocBody   string
+	createDocRespID string
+	updateTarget    string
+	updateCol       string
+	updateVal       *string
+	deleteTarget    string
+	deleted         int64
+	deletedQuery    string
+	execSQL         string
+	execResult      []model.EsStatementResult
+	dslMethod       string
+	dslPath         string
+	dslBody         string
+	dsl             model.EsDslResult
+	dslErr          error
 	// 索引刷新与模板。
 	refreshIndex       string
 	listTemplates      []model.EsTemplateInfo
@@ -1214,6 +1365,10 @@ func (f *fakeES) PutDoc(_ context.Context, index, id, docJSON string) error {
 	f.putTarget = index + "/" + id
 	f.putBody = docJSON
 	return nil
+}
+func (f *fakeES) CreateDoc(_ context.Context, index, id, docJSON string) (string, error) {
+	f.createDocIndex, f.createDocIDArg, f.createDocBody = index, id, docJSON
+	return f.createDocRespID, nil
 }
 func (f *fakeES) UpdateCell(_ context.Context, index, id, column string, value *string) error {
 	f.updateTarget = index + "/" + id
@@ -1375,6 +1530,32 @@ func TestServiceESDelegates(t *testing.T) {
 	// 池化:再次调用复用同一 fake。
 	if _, err := svc.EsListIndices(ctx, id); err != nil {
 		t.Fatalf("second call: %v", err)
+	}
+}
+
+// 创建文档走池取用(fake 注入):响应 _id 回填 EsDoc.id,source 回填请求的
+// doc_json 原文;自动与指定两形态的参数原样透传。
+func TestServiceEsCreateDocDelegates(t *testing.T) {
+	ctx := context.Background()
+
+	fake := &fakeES{createDocRespID: "auto-1"}
+	svc, id := newTestServiceWithES(t, fake)
+	doc, err := svc.EsCreateDoc(ctx, id, "logs", "", `{"title":"a"}`)
+	if err != nil || doc.ID != "auto-1" || doc.Source != `{"title":"a"}` {
+		t.Fatalf("EsCreateDoc auto: %v %+v", err, doc)
+	}
+	if fake.createDocIndex != "logs" || fake.createDocIDArg != "" || fake.createDocBody != `{"title":"a"}` {
+		t.Fatalf("auto args must pass through: %+v", fake)
+	}
+
+	fake2 := &fakeES{createDocRespID: "fixed-1"}
+	svc2, id2 := newTestServiceWithES(t, fake2)
+	doc, err = svc2.EsCreateDoc(ctx, id2, "logs", "fixed-1", `{"title":"b"}`)
+	if err != nil || doc.ID != "fixed-1" || doc.Source != `{"title":"b"}` {
+		t.Fatalf("EsCreateDoc specified: %v %+v", err, doc)
+	}
+	if fake2.createDocIDArg != "fixed-1" {
+		t.Fatalf("specified id must pass through, got %q", fake2.createDocIDArg)
 	}
 }
 
@@ -2001,7 +2182,7 @@ func TestEsClusterStatsSendsAuthHeaders(t *testing.T) {
 	}
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("elastic:s3cret"))
 	monitored := map[string]bool{
-		"/_cluster/health": false,
+		"/_cluster/health":                  false,
 		"/_cat/indices?format=json&bytes=b": false,
 		"/_cat/nodes?format=json&h=name,ip,heap.percent,disk.used_percent,node.role": false,
 		"/_template": false,

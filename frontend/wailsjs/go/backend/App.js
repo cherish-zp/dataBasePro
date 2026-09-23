@@ -146,6 +146,10 @@ export function EsClusterStats(arg1) {
   return window['go']['backend']['App']['EsClusterStats'](arg1);
 }
 
+export function EsCreateDoc(arg1) {
+  return window['go']['backend']['App']['EsCreateDoc'](arg1);
+}
+
 export function EsCreateIndex(arg1) {
   return window['go']['backend']['App']['EsCreateIndex'](arg1);
 }

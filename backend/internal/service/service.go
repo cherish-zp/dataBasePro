@@ -555,6 +555,20 @@ func (s *Service) EsPutDoc(ctx context.Context, id, index, docID, docJSON string
 	return e.PutDoc(ctx, index, docID, docJSON)
 }
 
+// EsCreateDoc indexes a new document and returns the resulting _id (empty id
+// lets the server generate one).
+func (s *Service) EsCreateDoc(ctx context.Context, id, index, docID, docJSON string) (model.EsDoc, error) {
+	e, err := s.es(ctx, id)
+	if err != nil {
+		return model.EsDoc{}, err
+	}
+	newID, err := e.CreateDoc(ctx, index, docID, docJSON)
+	if err != nil {
+		return model.EsDoc{}, err
+	}
+	return model.EsDoc{ID: newID, Source: docJSON}, nil
+}
+
 // EsUpdateCell patches one document field (dangerous, audited by the app layer).
 func (s *Service) EsUpdateCell(ctx context.Context, id, index, docID, column string, value *string) error {
 	e, err := s.es(ctx, id)
