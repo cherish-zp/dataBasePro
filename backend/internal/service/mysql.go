@@ -630,6 +630,32 @@ func mysqlStatementReturnsRows(stmt string) bool {
 	return false
 }
 
+// mysqlDatetimeLayout 是 DATETIME/TIMESTAMP 单元格的显示布局:本地墙钟、
+// 空格分隔、不带时区后缀。
+const mysqlDatetimeLayout = "2006-01-02 15:04:05"
+
+// mysqlDateLayout 是 DATE 单元格的显示布局:只保留日期部分。
+const mysqlDateLayout = "2006-01-02"
+
+// formatMysqlCell renders one MySQL cell for the wire: time-family values are
+// shown as local wall-clock text (DATETIME/TIMESTAMP "2006-01-02 15:04:05",
+// DATE date-only) instead of RFC3339 with a timezone suffix; everything else
+// delegates to FormatCHCell unchanged.
+func formatMysqlCell(v any, colType string, maxBytes int) *string {
+	if t, ok := v.(time.Time); ok {
+		layout := mysqlDatetimeLayout
+		if strings.EqualFold(colType, "DATE") {
+			layout = mysqlDateLayout
+		}
+		s := t.Format(layout)
+		if maxBytes > 0 && len(s) > maxBytes {
+			s = s[:maxBytes] + CHCellTruncatedSuffix
+		}
+		return &s
+	}
+	return FormatCHCell(v, maxBytes)
+}
+
 // collectMysqlRows drains a result set into wire-shaped columns and
 // pre-formatted string cells (nil = NULL). 列名来自 driver Rows.Columns(),
 // 类型名可能为空(驱动未报告时保持空串)。
@@ -656,7 +682,7 @@ func collectMysqlRows(rows *sql.Rows) ([]model.MysqlColumn, [][]*string, error) 
 		}
 		row := make([]*string, width)
 		for i, v := range values {
-			row[i] = FormatCHCell(v, CHCellMaxBytes)
+			row[i] = formatMysqlCell(v, cols[i].Type, CHCellMaxBytes)
 		}
 		out = append(out, row)
 	}

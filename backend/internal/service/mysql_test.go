@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 
@@ -465,6 +466,9 @@ type fakeMysqlDrvConn struct {
 	pkByTable map[string][]string
 	pkErr     error
 	pkArgs    [][]driver.Value
+	// queryRows 非空时,业务查询(非 information_schema)返回该结果集,
+	// 供 collectMysqlRows 的 wire 形状测试使用。
+	queryRows *fakeMysqlDrvRows
 }
 
 // pkResultRows 把桩数据渲染成 information_schema.columns 形状的结果集
@@ -518,17 +522,30 @@ func (s *fakeMysqlDrvStmt) Query(args []driver.Value) (driver.Rows, error) {
 		return s.conn.pkResultRows(args), nil
 	}
 	s.conn.queries = append(s.conn.queries, s.query)
+	if s.conn.queryRows != nil {
+		return s.conn.queryRows, nil
+	}
 	return &fakeMysqlDrvRows{cols: []string{"1"}}, nil
 }
 
 type fakeMysqlDrvRows struct {
-	cols []string
-	vals [][]driver.Value // 预置数据行(空 = 立即 EOF)
-	pos  int
+	cols  []string
+	types []string         // 按列给出 DatabaseTypeName(缺省空串,模拟未报告类型)
+	vals  [][]driver.Value // 预置数据行(空 = 立即 EOF)
+	pos   int
 }
 
 func (r *fakeMysqlDrvRows) Columns() []string { return r.cols }
-func (r *fakeMysqlDrvRows) Close() error      { return nil }
+
+// ColumnTypeDatabaseTypeName 让 database/sql 的 ColumnTypes 报告列类型名,
+// 供按列类型格式化时间单元格的路径使用。
+func (r *fakeMysqlDrvRows) ColumnTypeDatabaseTypeName(index int) string {
+	if index < 0 || index >= len(r.types) {
+		return ""
+	}
+	return r.types[index]
+}
+func (r *fakeMysqlDrvRows) Close() error { return nil }
 func (r *fakeMysqlDrvRows) Next(dest []driver.Value) error {
 	if r.pos >= len(r.vals) {
 		return io.EOF
@@ -812,5 +829,77 @@ func TestMysqlExecutePerStatementPrimaryKey(t *testing.T) {
 	}
 	if !reflect.DeepEqual(results[2].PrimaryKey, []string{"order_id"}) {
 		t.Fatalf("orders select must carry its own pk, got %+v", results[2].PrimaryKey)
+	}
+}
+
+// --- 纯函数:单元格时间格式化 ---
+
+// TestFormatMysqlCell 验证 MySQL 单元格的时间按本地墙钟文本输出:DATETIME/
+// TIMESTAMP 形如 "2026-09-24 14:52:30",DATE 只保留日期;不再走 FormatCHCell
+// 的 RFC3339(T 分隔符 + 时区后缀)。其余类型委托 FormatCHCell 保持原行为。
+func TestFormatMysqlCell(t *testing.T) {
+	ts := time.Date(2026, 9, 24, 14, 52, 30, 0, time.Local)
+	date := time.Date(2026, 9, 24, 0, 0, 0, 0, time.Local)
+	cases := []struct {
+		name    string
+		in      any
+		colType string
+		want    *string
+	}{
+		{"datetime 去掉 T 与时区", ts, "DATETIME", strPtrOf("2026-09-24 14:52:30")},
+		{"timestamp 同 datetime", ts, "TIMESTAMP", strPtrOf("2026-09-24 14:52:30")},
+		{"列类型小写兼容", ts, "datetime", strPtrOf("2026-09-24 14:52:30")},
+		{"date 只保留日期", date, "DATE", strPtrOf("2026-09-24")},
+		{"列类型未知时按 datetime 布局", ts, "", strPtrOf("2026-09-24 14:52:30")},
+		{"nil 保持 NULL", nil, "DATETIME", nil},
+		{"字符串原样透传", "2026-09-24T14:52:30+08:00", "DATETIME", strPtrOf("2026-09-24T14:52:30+08:00")},
+		{"数值走 FormatCHCell", int64(7), "BIGINT", strPtrOf("7")},
+	}
+	for _, tc := range cases {
+		got := formatMysqlCell(tc.in, tc.colType, CHCellMaxBytes)
+		switch {
+		case tc.want == nil && got != nil:
+			t.Fatalf("%s: got %q, want NULL", tc.name, *got)
+		case tc.want != nil && got == nil:
+			t.Fatalf("%s: got NULL, want %q", tc.name, *tc.want)
+		case tc.want != nil && *got != *tc.want:
+			t.Fatalf("%s: got %q, want %q", tc.name, *got, *tc.want)
+		}
+	}
+}
+
+// TestCollectMysqlRowsFormatsDateTime 验证控制台/表浏览共用的行收集按列类型
+// 格式化时间单元格:DATETIME 输出 "YYYY-MM-DD HH:MM:SS",DATE 只保留日期,
+// NULL 仍为 nil;前端拿到的即最终文本,无需二次处理。
+func TestCollectMysqlRowsFormatsDateTime(t *testing.T) {
+	conn := &fakeMysqlDrvConn{queryRows: &fakeMysqlDrvRows{
+		cols:  []string{"created_at", "birthday", "name"},
+		types: []string{"DATETIME", "DATE", "VARCHAR"},
+		vals: [][]driver.Value{
+			{time.Date(2026, 9, 24, 14, 52, 30, 0, time.Local), time.Date(2026, 9, 24, 0, 0, 0, 0, time.Local), "张三"},
+			{nil, nil, nil},
+		},
+	}}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app", "SELECT created_at, birthday, name FROM users")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	res := results[0]
+	if res.Error != "" {
+		t.Fatalf("statement must succeed, got %q", res.Error)
+	}
+	wantTypes := []string{"DATETIME", "DATE", "VARCHAR"}
+	for i, col := range res.Columns {
+		if col.Type != wantTypes[i] {
+			t.Fatalf("column %d type = %q, want %q", i, col.Type, wantTypes[i])
+		}
+	}
+	wantRows := [][]*string{
+		{strPtrOf("2026-09-24 14:52:30"), strPtrOf("2026-09-24"), strPtrOf("张三")},
+		{nil, nil, nil},
+	}
+	if !reflect.DeepEqual(res.Rows, wantRows) {
+		t.Fatalf("rows must be wall-clock formatted, got %+v", res.Rows)
 	}
 }
