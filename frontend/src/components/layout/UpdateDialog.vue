@@ -7,10 +7,11 @@ import type { UpdateCheckResult } from '@/api/types'
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-// 状态机:checking → up-to-date / available → downloading → apply → close。
+// 状态机:checking → up-to-date / available → downloading → installing →
+// close(installing 期间后端写替换脚本并退出应用,重启后即新版本)。
 // 下载进度靠轮询 UpdateProgress(引擎无关,不依赖 Wails 事件绑定);
 // 任一环节失败进入 error,提供「重试」与「打开下载页」两个出口。
-type Phase = 'checking' | 'uptodate' | 'available' | 'downloading' | 'error'
+type Phase = 'checking' | 'uptodate' | 'available' | 'downloading' | 'installing' | 'error'
 
 const phase = ref<Phase>('checking')
 const result = ref<UpdateCheckResult | null>(null)
@@ -49,7 +50,12 @@ async function check(): Promise<void> {
 const downloadURL = computed(() => result.value?.download_url ?? '')
 
 async function install(): Promise<void> {
-  if (!downloadURL.value) return
+  // 探测结果没有可下载的资产 = 发布里没有适配当前系统/架构的包。
+  if (!downloadURL.value) {
+    phase.value = 'error'
+    errorText.value = '未找到适配当前系统的安装包'
+    return
+  }
   phase.value = 'downloading'
   percent.value = 0
   startPolling()
@@ -67,8 +73,9 @@ async function install(): Promise<void> {
   }
 }
 
-// waitForDone 轮询进度到 done;done 时调用 applyUpdate(后端写脚本、
-// 替换并重启)然后返回 true。error 时写入具体错误并返回 false。
+// waitForDone 轮询进度到 done;done 时先切到 installing(提示即将重启),
+// 再调用 applyUpdate(后端写脚本、原位替换并重启本应用)然后返回 true。
+// error 时写入具体错误并返回 false。
 async function waitForDone(): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
     stopPolling()
@@ -78,6 +85,7 @@ async function waitForDone(): Promise<boolean> {
         percent.value = p.percent
         if (p.phase === 'done') {
           stopPolling()
+          phase.value = 'installing'
           await getApi().applyUpdate({})
           resolve(true)
         } else if (p.phase === 'error') {
@@ -122,6 +130,8 @@ const statusText = computed(() => {
       return `发现新版本 ${result.value?.latest_version ?? ''}`
     case 'downloading':
       return `下载中 ${percent.value}%`
+    case 'installing':
+      return '正在安装，即将重启…'
     default:
       return errorText.value || '更新失败'
   }
@@ -137,7 +147,7 @@ const statusText = computed(() => {
           <button class="close" type="button" data-test="btn-update-close" @click="emit('close')">✕</button>
         </div>
         <div class="status" data-test="update-status">
-          <span v-if="phase === 'checking' || phase === 'downloading'" class="spinner" aria-hidden="true"></span>
+          <span v-if="phase === 'checking' || phase === 'downloading' || phase === 'installing'" class="spinner" aria-hidden="true"></span>
           {{ statusText }}
         </div>
         <div v-if="phase === 'available' && result?.notes" class="notes" data-test="update-notes">{{ result.notes }}</div>

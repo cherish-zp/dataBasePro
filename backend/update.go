@@ -87,19 +87,26 @@ func cmpInt(a, b int) int {
 	}
 }
 
-// pickAssetURL selects the release asset for the current OS: macOS zips
-// carry "macOS" in the name, Windows zips "windows".
-func pickAssetURL(rel giteeRelease, goos string) string {
-	key := "macOS"
-	if goos == "windows" {
-		key = "windows"
-	}
+// pickAssetURL selects the release asset for the current OS+arch. 发布流水线
+// 的资产命名形如 dataBasePro-v1.6.0-darwin-arm64.zip:先精确匹配
+// "<goos>-<goarch>",上游只提供单一架构包时按 "<goos>" 兜底;源码包
+// (不含平台名)永不被选中。
+func pickAssetURL(rel giteeRelease, goos, goarch string) string {
+	exact := goos + "-" + goarch
+	fallback := ""
 	for _, a := range rel.Assets {
-		if strings.Contains(a.Name, key) && a.BrowserDownloadURL != "" {
+		name := strings.ToLower(a.Name)
+		if a.BrowserDownloadURL == "" {
+			continue
+		}
+		if strings.Contains(name, exact) {
 			return a.BrowserDownloadURL
 		}
+		if fallback == "" && strings.Contains(name, goos) {
+			fallback = a.BrowserDownloadURL
+		}
 	}
-	return ""
+	return fallback
 }
 
 // CheckUpdateRequest carries the frontend's current version.
@@ -114,6 +121,12 @@ type UpdateCheckResult struct {
 	Notes         string `json:"notes,omitempty"`
 	DownloadURL   string `json:"download_url,omitempty"`
 }
+
+// 平台探测可注入:测试替换为 darwin/windows 与目标架构。
+var (
+	runtimeGOOS   = goruntime.GOOS
+	runtimeGOARCH = goruntime.GOARCH
+)
 
 // CheckUpdate probes the Gitee latest release and compares it against the
 // running version (strict semantic comparison, pre-releases ignored).
@@ -142,7 +155,7 @@ func (a *App) CheckUpdate(req CheckUpdateRequest) (UpdateCheckResult, error) {
 	res := UpdateCheckResult{LatestVersion: rel.TagName, Notes: rel.Body}
 	if compareVersions(latest, cur) > 0 {
 		res.HasUpdate = true
-		res.DownloadURL = pickAssetURL(rel, goruntime.GOOS)
+		res.DownloadURL = pickAssetURL(rel, runtimeGOOS, runtimeGOARCH)
 	}
 	return res, nil
 }
@@ -201,9 +214,9 @@ type DownloadUpdateRequest struct {
 	URL string `json:"url"`
 }
 
-// DownloadUpdate fetches the release asset and prepares it for install:
-// macOS unzips the .app into a temp staging dir; Windows writes the zip into
-// the user's Downloads and skips extraction (ApplyUpdate reveals it).
+// DownloadUpdate fetches the release asset into a private staging dir and
+// unpacks the payload: macOS zips carry a dataBasePro.app tree, Windows zips
+// the payload exe. 安装位置由 ApplyUpdate 决定(原位替换),与下载无关。
 func (a *App) DownloadUpdate(req DownloadUpdateRequest) error {
 	dl := a.downloadState()
 	dl.phase.Store(1)
@@ -231,28 +244,6 @@ func (a *App) DownloadUpdate(req DownloadUpdateRequest) error {
 	}
 	contentLength := resp.ContentLength
 
-	if goruntime.GOOS == "windows" {
-		name := filepath.Base(req.URL)
-		if !strings.HasSuffix(strings.ToLower(name), ".zip") {
-			name += ".zip"
-		}
-		dir, err := os.UserHomeDir()
-		if err != nil {
-			dl.phase.Store(3)
-			dl.err.Store("无法定位下载目录")
-			return fmt.Errorf("home dir: %w", err)
-		}
-		dest := filepath.Join(dir, "Downloads", name)
-		if err := streamToFile(resp.Body, dest, contentLength, dl); err != nil {
-			dl.err.Store(err.Error())
-			return err
-		}
-		a.downloadPath.Store(dest)
-		dl.phase.Store(2)
-		dl.percent.Store(100)
-		return nil
-	}
-
 	staging := filepath.Join(os.TempDir(), fmt.Sprintf("dataBasePro-update-%d", time.Now().UnixNano()))
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		dl.phase.Store(3)
@@ -264,15 +255,54 @@ func (a *App) DownloadUpdate(req DownloadUpdateRequest) error {
 		dl.err.Store(err.Error())
 		return err
 	}
-	if err := unzipApp(zipPath, staging); err != nil {
+	if err := unzipUpdate(zipPath, staging); err != nil {
 		dl.phase.Store(3)
 		dl.err.Store(fmt.Sprintf("解压更新包失败: %v", err))
+		return err
+	}
+	// 校验暂存产物完整:macOS 要求 .app 树,Windows 要求 exe。
+	if runtimeGOOS == "windows" {
+		if _, err := findStagedExe(staging); err != nil {
+			dl.phase.Store(3)
+			dl.err.Store("更新包缺少 dataBasePro.exe")
+			return err
+		}
+	} else if _, err := os.Stat(filepath.Join(staging, "dataBasePro.app")); err != nil {
+		dl.phase.Store(3)
+		dl.err.Store("更新包缺少 dataBasePro.app")
 		return err
 	}
 	a.stagingDir.Store(staging)
 	dl.phase.Store(2)
 	dl.percent.Store(100)
 	return nil
+}
+
+// findStagedExe locates the payload exe in the staging dir: root
+// dataBasePro.exe first, then the first *.exe found by depth-first walk.
+func findStagedExe(staging string) (string, error) {
+	root := filepath.Join(staging, "dataBasePro.exe")
+	if _, err := os.Stat(root); err == nil {
+		return root, nil
+	}
+	found := ""
+	err := filepath.WalkDir(staging, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if found == "" && !d.IsDir() && strings.EqualFold(filepath.Ext(path), ".exe") {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if found == "" {
+		return "", fmt.Errorf("暂存目录中没有 exe: %s", staging)
+	}
+	return found, nil
 }
 
 // streamToFile copies src to dest while updating the download progress.
@@ -308,17 +338,15 @@ func streamToFile(src io.Reader, dest string, total int64, dl *downloadState) er
 	return nil
 }
 
-// unzipApp extracts a single .app tree from the zip into destDir.
-func unzipApp(zipPath, destDir string) error {
+// unzipUpdate extracts every entry from the release zip into destDir
+// (macOS 包内是 .app 树,Windows 包内是 payload exe),拒绝 zip-slip 路径。
+func unzipUpdate(zipPath, destDir string) error {
 	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return err
 	}
 	defer zr.Close()
 	for _, f := range zr.File {
-		if !strings.HasSuffix(f.Name, ".app/") && !strings.Contains(f.Name, ".app/") && filepath.Ext(f.Name) != "" {
-			continue
-		}
 		target := filepath.Join(destDir, f.Name)
 		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(filepath.Separator)) {
 			return fmt.Errorf("非法压缩包路径: %s", f.Name)
@@ -355,49 +383,126 @@ func unzipApp(zipPath, destDir string) error {
 	return nil
 }
 
-// ApplyUpdateRequest carries nothing for now; the target app is fixed.
+// ApplyUpdateRequest carries nothing for now; the install target is the
+// running app's own location.
 type ApplyUpdateRequest struct{}
 
-// buildUpdaterScript renders the detached shell script that swaps the running
-// app for the staged one and relaunches it (the app quits right after spawn,
-// so the script must wait a beat before touching the bundle).
-func buildUpdaterScript(stagingDir string) string {
-	src := filepath.Join(stagingDir, "dataBasePro.app")
-	return fmt.Sprintf(`#!/bin/bash
-sleep 1
-rm -rf /Applications/dataBasePro.app
-ditto "%s" /Applications/dataBasePro.app
-open /Applications/dataBasePro.app
-`, src)
+// bundleFromExe 反查运行中可执行文件所属的 .app 包目录(装在哪就更新哪):
+// .../Foo.app/Contents/MacOS/bin → .../Foo.app。非 .app 形态(如 go run 的
+// 临时二进制)返回错误,由调用方拒绝安装。
+func bundleFromExe(exe string) (string, error) {
+	dir := filepath.Dir(filepath.Clean(exe))
+	for i := 0; i < 3; i++ {
+		if strings.HasSuffix(dir, ".app") {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "", fmt.Errorf("无法从可执行文件定位 .app 包: %s", exe)
 }
 
-// ApplyUpdate performs the install. macOS: spawn the swap-and-relaunch script
-// detached, then quit the current instance. Windows: reveal the downloaded
-// zip in Explorer (auto-replace ships later).
+// exePath 可注入:测试替换为受控路径。
+var exePath = os.Executable
+
+// buildUpdaterScript renders the detached shell script that swaps the running
+// install for the staged one, in place, and relaunches it. 原位替换语义:
+// 旧包整体改名留作备份(同卷 mv 原子且瞬时),新包复制到原位置,新进程
+// 起来后清理备份,任一步失败自动还原旧包——不允许出现「旧版已删、新版
+// 没装上」的中间态。脚本在应用退出后由系统继续执行,故先等待退出。
+func buildUpdaterScript(stagingDir, target string) string {
+	src := filepath.Join(stagingDir, "dataBasePro.app")
+	return fmt.Sprintf(`#!/bin/bash
+SRC="%s"
+TARGET="%s"
+BACKUP="%s.old"
+sleep 2
+if mv "$TARGET" "$BACKUP"; then
+  if ditto "$SRC" "$TARGET"; then
+    open "$TARGET"
+    sleep 3
+    if pgrep -x dataBasePro >/dev/null 2>&1; then
+      rm -rf "$BACKUP"
+    else
+      rm -rf "$TARGET"
+      mv "$BACKUP" "$TARGET"
+      open "$TARGET"
+    fi
+  else
+    mv "$BACKUP" "$TARGET"
+    open "$TARGET"
+  fi
+fi
+`, src, target, target)
+}
+
+// buildWindowsUpdaterScript renders the detached batch script for Windows.
+// 运行中的 exe 不能覆盖但可以改名:旧 exe 原地改名备份 → 新 exe 复制回
+// 原路径 → start 重启 → 清理备份;复制失败立即还原。等待用 ping(非交互
+// 环境下 timeout 不可用)。
+func buildWindowsUpdaterScript(stagingDir, target string) string {
+	// Windows 路径强制反斜杠拼接:跨平台构建时 filepath.Join 会产出
+	// "C:\stage/dataBasePro.exe" 这类混合分隔符,cmd 会把 / 当参数开关。
+	src := strings.TrimRight(stagingDir, `/\`) + `\dataBasePro.exe`
+	return strings.Join([]string{
+		`@echo off`,
+		`ping -n 3 127.0.0.1 >nul`,
+		fmt.Sprintf(`move /Y "%s" "%s.old"`, target, target),
+		`if errorlevel 1 exit /b 1`,
+		fmt.Sprintf(`copy /Y "%s" "%s"`, src, target),
+		`if errorlevel 1 (`,
+		fmt.Sprintf(`  move /Y "%s.old" "%s"`, target, target),
+		`  exit /b 1`,
+		`)`,
+		fmt.Sprintf(`start "" "%s"`, target),
+		`ping -n 4 127.0.0.1 >nul`,
+		fmt.Sprintf(`del "%s.old"`, target),
+		"",
+	}, "\r\n")
+}
+
+// ApplyUpdate performs the install, in place, from the staged payload:
+// spawn the platform swap-and-relaunch script detached (它等待本进程退出后
+// 动手), then quit the current instance.
 func (a *App) ApplyUpdate(_ ApplyUpdateRequest) error {
-	if goruntime.GOOS == "windows" {
-		p, _ := a.downloadPath.Load().(string)
-		if p == "" {
-			return fmt.Errorf("尚未下载更新包")
-		}
-		if err := exec.Command("explorer", "/select,", p).Start(); err != nil {
-			return fmt.Errorf("打开下载目录失败: %w", err)
-		}
-		return nil
-	}
 	staging, _ := a.stagingDir.Load().(string)
 	if staging == "" {
 		return fmt.Errorf("尚未下载更新包")
 	}
-	appSrc := filepath.Join(staging, "dataBasePro.app")
-	if _, err := os.Stat(appSrc); err != nil {
-		return fmt.Errorf("更新包缺少 dataBasePro.app: %w", err)
+	self, err := exePath()
+	if err != nil {
+		return fmt.Errorf("定位当前程序失败: %w", err)
 	}
-	script := filepath.Join(staging, "apply-update.sh")
-	if err := os.WriteFile(script, []byte(buildUpdaterScript(staging)), 0o755); err != nil {
-		return fmt.Errorf("写入更新脚本失败: %w", err)
+	var script string
+	var cmd *exec.Cmd
+	if runtimeGOOS == "windows" {
+		if _, err := findStagedExe(staging); err != nil {
+			return fmt.Errorf("更新包缺少 dataBasePro.exe: %w", err)
+		}
+		script = filepath.Join(staging, "apply-update.bat")
+		if err := os.WriteFile(script, []byte(buildWindowsUpdaterScript(staging, filepath.Clean(self))), 0o755); err != nil {
+			return fmt.Errorf("写入更新脚本失败: %w", err)
+		}
+		cmd = exec.Command("cmd", "/c", script)
+	} else {
+		appSrc := filepath.Join(staging, "dataBasePro.app")
+		if _, err := os.Stat(appSrc); err != nil {
+			return fmt.Errorf("更新包缺少 dataBasePro.app: %w", err)
+		}
+		target, err := bundleFromExe(self)
+		if err != nil {
+			return err
+		}
+		script = filepath.Join(staging, "apply-update.sh")
+		if err := os.WriteFile(script, []byte(buildUpdaterScript(staging, target)), 0o755); err != nil {
+			return fmt.Errorf("写入更新脚本失败: %w", err)
+		}
+		cmd = exec.Command("/bin/bash", script)
 	}
-	if err := a.apply()(exec.Command("/bin/bash", script)); err != nil {
+	if err := a.apply()(cmd); err != nil {
 		return fmt.Errorf("启动更新脚本失败: %w", err)
 	}
 	if a.ctx != nil {
