@@ -84,6 +84,16 @@ const offset = ref(0)
 const editing = ref<{ row: number; col: number } | null>(null)
 const editValue = ref('')
 
+// 编辑框行数:与展示态一致——单元格按 420px 宽 break-all 换行,按展示
+// 长度(截断后约 200 字符)估算行数;超过 8 行编辑框内滚动。
+const EDITOR_CHARS_PER_LINE = 48
+const EDITOR_MAX_ROWS = 8
+const editorRows = computed(() => {
+  if (!editing.value) return 1
+  const shown = cellDisplay(editValue.value).length
+  return Math.min(EDITOR_MAX_ROWS, Math.max(1, Math.ceil(shown / EDITOR_CHARS_PER_LINE)))
+})
+
 // 首列 _id(columns[0].type === '_id')承载文档标识:只读、不可排序,
 // 行首操作按钮(JSON 编辑/删除)也挂在该列;缺失时整表只读。
 const hasIdColumn = computed(() => columns.value[0]?.type === '_id')
@@ -614,14 +624,20 @@ async function doClear(): Promise<void> {
                   <span class="id-text" data-test="es-id-value">{{ cell ?? '' }}</span>
                 </div>
               </template>
-              <!-- 行内编辑:双击进入,Esc/blur 取消,回车提交预览。 -->
+              <!-- 行内编辑:双击进入,Esc/blur 取消,回车提交预览。
+                   textarea 行数随内容增长,尺寸与展示态一致(长内容多行)。 -->
               <template v-else>
-                <input
+                <textarea
                   v-if="isEditing(ri, ci)"
                   :ref="focusEditor"
                   v-model="editValue"
+                  :rows="editorRows"
                   class="cell-editor"
                   data-test="es-cell-editor"
+                  spellcheck="false"
+                  autocapitalize="off"
+                  autocorrect="off"
+                  autocomplete="off"
                   @blur="cancelEdit"
                   @keydown.enter.prevent="submitEdit"
                   @keydown.esc.prevent="cancelEdit"
@@ -809,12 +825,13 @@ async function doClear(): Promise<void> {
 .mini-btn:hover { background: var(--bg-hover); color: var(--text); }
 .mini-btn.danger { color: var(--danger); border-color: var(--danger); }
 .mini-btn.danger:hover { background: var(--danger-soft); }
-/* 行内编辑输入框:覆盖单元格内容,细边框紧凑,与表格行高一致。 */
+/* 行内编辑输入框:textarea 随内容多行(与展示态一致),细边框。 */
 .cell-editor {
-  box-sizing: border-box; width: 100%; min-width: 80px;
+  box-sizing: border-box; display: block; width: 100%; min-width: 80px;
   background: var(--bg-elevated); color: var(--text);
   border: 1px solid var(--accent); border-radius: 4px;
   padding: 1px 6px; font-size: 13px; font-family: var(--mono);
+  line-height: 1.5; resize: none; overflow-y: auto;
 }
 .cell-editor:focus { outline: none; box-shadow: 0 0 0 2px var(--accent-soft); }
 .mono { font-family: var(--mono); }
