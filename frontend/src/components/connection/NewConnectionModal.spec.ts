@@ -984,6 +984,47 @@ describe('NewConnectionModal', () => {
       )
     })
   })
+
+  it('shows the delete button in edit mode only', () => {
+    expect(mountModal().find('[data-test="btn-delete-connection"]').exists()).toBe(false)
+    const editWrapper = mount(NewConnectionModal, { props: { show: true, connection: gssapiConn } })
+    expect(editWrapper.find('[data-test="btn-delete-connection"]').exists()).toBe(true)
+  })
+
+  it('deletes through a confirmation layer: cancel keeps everything, confirm calls deleteConnection and closes', async () => {
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: gssapiConn } })
+    await wrapper.find('[data-test="btn-delete-connection"]').trigger('click')
+    expect(wrapper.find('[data-test="delete-confirm-dialog"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="delete-confirm-message"]').text()).toContain('kerb-old')
+    // 取消:不删除、确认层关闭、弹窗保持打开。
+    await wrapper.find('[data-test="delete-confirm-cancel"]').trigger('click')
+    expect(wrapper.find('[data-test="delete-confirm-dialog"]').exists()).toBe(false)
+    expect(api.deleteConnection).not.toHaveBeenCalled()
+    expect(wrapper.emitted('close')).toBeFalsy()
+    // 再次打开确认层并确认:调用删除并关闭弹窗。
+    await wrapper.find('[data-test="btn-delete-connection"]').trigger('click')
+    await wrapper.find('[data-test="delete-confirm-ok"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.deleteConnection).toHaveBeenCalledWith('c-1')
+    })
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('shows a delete error inside the confirmation layer and keeps the modal open', async () => {
+    const api2 = fakeApi({
+      deleteConnection: vi.fn(async () => {
+        throw new Error('删除失败:连接仍在使用')
+      }),
+    })
+    setApi(api2)
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: gssapiConn } })
+    await wrapper.find('[data-test="btn-delete-connection"]').trigger('click')
+    await wrapper.find('[data-test="delete-confirm-ok"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="delete-error"]').text()).toBe('删除失败:连接仍在使用')
+    })
+    expect(wrapper.emitted('close')).toBeFalsy()
+  })
 })
 
 describe('PostgreSQL 连接卡片', () => {

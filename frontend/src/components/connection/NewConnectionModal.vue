@@ -81,6 +81,10 @@ const testing = ref(false)
 const tested = ref(false)
 const testError = ref<string | null>(null)
 const saveError = ref<string | null>(null)
+// 删除确认层状态(声明需在下方 immediate watch 之前,回调会访问)。
+const deleteConfirmOpen = ref(false)
+const deleting = ref(false)
+const deleteError = ref<string | null>(null)
 // 密码可见性:各密码框(kafka/redis/clickhouse/mysql/es)独立切换,默认密文。
 const showKafkaPassword = ref(false)
 const showRedisPassword = ref(false)
@@ -207,7 +211,12 @@ function fillFrom(conn: Connection): void {
 watch(
   () => props.show,
   (show) => {
-    if (!show) return
+    if (!show) {
+      // 关闭时一并收起删除确认层,避免下次打开残留上一次的确认态。
+      deleteConfirmOpen.value = false
+      deleteError.value = null
+      return
+    }
     if (props.connection) {
       fillFrom(props.connection)
       return
@@ -372,6 +381,35 @@ async function save(): Promise<void> {
     emit('close')
   } catch (e) {
     saveError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+// 编辑模式的删除入口:点击后先弹应用内确认层(盖过本弹窗,z-index 与
+// PromptDialog/ResetOffsetDialog 的 1200 对齐;ConfirmDialog 组件自身只有
+// z-index 100,会被 900 的弹窗压住,故在弹窗内自建同构确认层)。确认后经
+// store.remove 删除(内部调 deleteConnection 并同步本地列表与状态,与
+// App.vue 的删除链路一致),成功后关闭弹窗;失败原因展示在确认层内。
+function askDeleteConnection(): void {
+  deleteError.value = null
+  deleteConfirmOpen.value = true
+}
+
+function cancelDeleteConnection(): void {
+  deleteConfirmOpen.value = false
+}
+
+async function confirmDeleteConnection(): Promise<void> {
+  if (!props.connection || deleting.value) return
+  deleting.value = true
+  deleteError.value = null
+  try {
+    await store.remove(props.connection.id)
+    deleteConfirmOpen.value = false
+    emit('close')
+  } catch (e) {
+    deleteError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    deleting.value = false
   }
 }
 
@@ -761,6 +799,9 @@ function close(): void {
         <div v-if="saveError" class="msg err" data-test="save-error">{{ saveError }}</div>
       </div>
       <div class="modal-footer">
+        <button v-if="editing" class="btn danger" type="button" data-test="btn-delete-connection" @click="askDeleteConnection">
+          删除连接
+        </button>
         <button class="btn ghost" type="button" data-test="btn-test" :disabled="testing || targetInvalid" @click="runTest">
           {{ testing ? '测试中…' : '测试连接' }}
         </button>
@@ -768,6 +809,20 @@ function close(): void {
         <button class="btn primary" type="button" data-test="btn-save" :disabled="nameInvalid || saveInvalid" @click="save">
           保存
         </button>
+      </div>
+      <!-- 删除确认层:结构与 ConfirmDialog 同构,自建以叠在弹窗之上(z-index 1200)。 -->
+      <div v-if="deleteConfirmOpen" class="delete-confirm-backdrop" data-test="delete-confirm-dialog" @click.self="cancelDeleteConnection">
+        <div class="delete-confirm">
+          <div class="delete-confirm-title">确认操作</div>
+          <p class="delete-confirm-message" data-test="delete-confirm-message">
+            确认删除连接「{{ props.connection?.name ?? '' }}」？连接配置将被移除，此操作不可恢复。
+          </p>
+          <div v-if="deleteError" class="msg err" data-test="delete-error">{{ deleteError }}</div>
+          <div class="delete-confirm-footer">
+            <button class="btn ghost" type="button" data-test="delete-confirm-cancel" @click="cancelDeleteConnection">取消</button>
+            <button class="btn danger-solid" type="button" data-test="delete-confirm-ok" :disabled="deleting" @click="confirmDeleteConnection">删除</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -837,6 +892,26 @@ function close(): void {
 .msg.ok { background: var(--ok-soft); color: var(--ok); }
 .msg.err { background: var(--danger-soft); color: var(--danger); }
 .modal-footer { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--border); }
+/* 编辑模式的删除入口:推到 footer 最左,与右侧的测试/取消/保存保持距离。 */
+.btn.danger { margin-right: auto; background: transparent; color: var(--danger); border-color: var(--danger); }
+.btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
+/* 删除确认层:盖过 z-index 900 的弹窗本体,样式对齐 ConfirmDialog。 */
+.delete-confirm-backdrop {
+  position: fixed; inset: 0; z-index: 1200;
+  background: rgba(0, 0, 0, 0.32);
+  display: flex; align-items: center; justify-content: center;
+}
+.delete-confirm {
+  width: 380px; max-width: calc(100vw - 48px);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+  padding: 18px;
+}
+.delete-confirm-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+.delete-confirm-message { font-size: 13px; color: var(--text); line-height: 1.6; margin: 0; }
+.delete-confirm-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.btn.danger-solid { background: var(--danger); color: #fff; }
+.btn.danger-solid:hover:not(:disabled) { background: var(--danger-hover, var(--danger)); }
 .btn { border-radius: 7px; padding: 7px 14px; font-size: 13px; cursor: pointer; border: 1px solid transparent; transition: background 0.15s ease, opacity 0.15s ease; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.primary { background: var(--accent); color: #fff; }

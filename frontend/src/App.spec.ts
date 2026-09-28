@@ -92,8 +92,20 @@ function mountApp(overrides: Partial<Api> = {}) {
   return { wrapper, api }
 }
 
+// The delete ConfirmDialog teleports to <body>, so it is queried on
+// document.body rather than inside the wrapper (same as ConnectionTree.spec).
+function confirmDialog(): HTMLElement | null {
+  return document.body.querySelector('[data-test="confirm-dialog"]')
+}
+function clickConfirmDialog(testId: string): void {
+  document.body.querySelector(`[data-test="${testId}"]`)?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+}
+
 describe('App', () => {
-  beforeEach(() => setActivePinia(createPinia()))
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    document.body.innerHTML = ''
+  })
 
   it('loads connections on mount and passes them to the layout', async () => {
     const { wrapper, api } = mountApp({ listConnections: vi.fn(async () => [conn('a')]) })
@@ -126,12 +138,32 @@ describe('App', () => {
     expect(wrapper.find('[data-test="conn-name"]').text()).toBe('本地')
   })
 
-  it('deletes a connection', async () => {
+  it('asks for confirmation with the connection name before deleting', async () => {
     const { wrapper, api } = mountApp({ listConnections: vi.fn(async () => [conn('a')]) })
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(1)
     })
     await wrapper.find('[data-test="btn-delete"]').trigger('click')
+    const dialog = confirmDialog()
+    expect(dialog).not.toBeNull()
+    expect(dialog?.textContent).toContain('conn-a')
+    expect(dialog?.textContent).toContain('此操作不可恢复')
+    // 取消:不删除,连接仍在,确认弹窗关闭。
+    clickConfirmDialog('confirm-dialog-cancel')
+    await flushPromises()
+    expect(api.deleteConnection).not.toHaveBeenCalled()
+    expect(confirmDialog()).toBeNull()
+    expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(1)
+  })
+
+  it('deletes a connection after confirming', async () => {
+    const { wrapper, api } = mountApp({ listConnections: vi.fn(async () => [conn('a')]) })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(1)
+    })
+    await wrapper.find('[data-test="btn-delete"]').trigger('click')
+    expect(confirmDialog()).not.toBeNull()
+    clickConfirmDialog('confirm-dialog-ok')
     await flushPromises()
     expect(api.deleteConnection).toHaveBeenCalledWith('a')
     await vi.waitFor(() => {
