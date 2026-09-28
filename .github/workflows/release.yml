@@ -125,14 +125,20 @@ jobs:
         continue-on-error: true
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITEE_REPO: princess-zp/dataBasePro
           TAG: ${{ github.ref_name }}
         run: |
           G() { curl -sS --connect-timeout 20 --max-time 1800 "$@"; }
-          # 发布说明取标签注释(annotated tag 的 message:版本要点 + 发布人署名),
-          # 经 JSON 转义后随创建请求下发;取不到时回退默认文案。
-          git fetch --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
-          NOTES=$(git for-each-ref "refs/tags/${TAG}" --format='%(contents)' 2>/dev/null | head -c 4000)
+          # 发布说明取 annotated tag 的注释(版本要点 + 发布人署名)。release job
+          # 不 checkout 仓库,经 ls-remote 拿 tag 对象 sha 后走 GitHub API 读
+          # message;取不到时回退默认文案。
+          TAGSHA=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${TAG}" 2>/dev/null | awk '{print $1}')
+          NOTES=""
+          if [ -n "${TAGSHA}" ]; then
+            NOTES=$(G -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/tags/${TAGSHA}" \
+              | python3 -c 'import sys,json; d=json.load(sys.stdin) or {}; print(d.get("message","") if d.get("object",{}).get("type")=="tag" else "")' 2>/dev/null || true)
+          fi
           if [ -z "$(printf '%s' "${NOTES}" | tr -d '[:space:]')" ]; then
             NOTES="自动构建产物:macOS(Apple Silicon / Intel)与 Windows 安装包。"
           fi
@@ -144,10 +150,19 @@ jobs:
               -d "{\"tag_name\":\"${TAG}\",\"target_commitish\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":${NOTES_JSON},\"prerelease\":false}" > gitee_release.json || true
             cat gitee_release.json
             RID=$(python3 -c 'import json; d=json.load(open("gitee_release.json")) or {}; print(d.get("id",""))' || true)
+          else
+            # 重跑/复用已存在的发布:正文与标签注释保持同步。
+            G -X PATCH "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${RID}?access_token=${GITEE_TOKEN}" \
+              -H "Content-Type: application/json" -d "{\"body\":${NOTES_JSON}}" || true
           fi
           if [ -z "${RID}" ]; then echo "::warning::gitee release id 获取失败,Gitee 同步跳过"; exit 0; fi
+          # 附件幂等:同名资产已存在则跳过,避免重跑产生重复附件。
+          EXISTING=$(G "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${RID}?access_token=${GITEE_TOKEN}" \
+            | python3 -c 'import sys,json; d=json.load(sys.stdin) or {}; print(" ".join(a.get("name","") for a in d.get("assets",[])))' || true)
           for f in dist/*; do
-            echo "sync $(basename "$f")"
+            N=$(basename "$f")
+            case " ${EXISTING} " in *" ${N} "*) echo "skip(已存在) ${N}"; continue;; esac
+            echo "sync ${N}"
             G -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${RID}/attach_files" \
               -F "access_token=${GITEE_TOKEN}" -F "file=@$f" || echo "::warning::上传失败: $f"
           done
