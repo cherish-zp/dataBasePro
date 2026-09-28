@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -639,8 +640,9 @@ const mysqlDateLayout = "2006-01-02"
 
 // formatMysqlCell renders one MySQL cell for the wire: time-family values are
 // shown as local wall-clock text (DATETIME/TIMESTAMP "2006-01-02 15:04:05",
-// DATE date-only) instead of RFC3339 with a timezone suffix; everything else
-// delegates to FormatCHCell unchanged.
+// DATE date-only) instead of RFC3339 with a timezone suffix; BIT values arrive
+// as raw bit bytes and render as decimal; everything else delegates to
+// FormatCHCell unchanged.
 func formatMysqlCell(v any, colType string, maxBytes int) *string {
 	if t, ok := v.(time.Time); ok {
 		layout := mysqlDatetimeLayout
@@ -653,7 +655,29 @@ func formatMysqlCell(v any, colType string, maxBytes int) *string {
 		}
 		return &s
 	}
+	if strings.HasPrefix(strings.ToUpper(colType), "BIT") {
+		if b, ok := v.([]byte); ok {
+			s := formatMysqlBit(b)
+			return &s
+		}
+	}
 	return FormatCHCell(v, maxBytes)
+}
+
+// formatMysqlBit renders the driver's raw bit bytes as decimal. MySQL BIT 是
+// 大端位串且最长 64 位,按字节累计即可;超长(理论不可达)兜底十六进制。
+func formatMysqlBit(b []byte) string {
+	if len(b) == 0 {
+		return "0"
+	}
+	if len(b) > 8 {
+		return fmt.Sprintf("%x", b)
+	}
+	var n uint64
+	for _, x := range b {
+		n = n<<8 | uint64(x)
+	}
+	return strconv.FormatUint(n, 10)
 }
 
 // collectMysqlRows drains a result set into wire-shaped columns and

@@ -193,6 +193,15 @@ describe('SqlResultCard', () => {
     expect(wrapper.find('[data-test="result-meta"]').text()).toBe('12 ms · 0 行')
   })
 
+  it('表头:字段类型在字段名下方第二行展示,无类型的列不展示', () => {
+    const wrapper = mountCard()
+    const heads = wrapper.findAll('thead th')
+    expect(heads[1].text()).toContain('id')
+    expect(heads[1].find('[data-test="col-type"]').text()).toBe('Int32')
+    expect(heads[2].text()).toContain('name')
+    expect(heads[2].find('[data-test="col-type"]').exists()).toBe(false)
+  })
+
   it('单元格双击 emit cell-dblclick(row, col)', async () => {
     const wrapper = mountCard()
     const row1 = wrapper.findAll('[data-test="result-row"]')[1]

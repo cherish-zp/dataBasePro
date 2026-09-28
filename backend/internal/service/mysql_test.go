@@ -854,6 +854,12 @@ func TestFormatMysqlCell(t *testing.T) {
 		{"nil 保持 NULL", nil, "DATETIME", nil},
 		{"字符串原样透传", "2026-09-24T14:52:30+08:00", "DATETIME", strPtrOf("2026-09-24T14:52:30+08:00")},
 		{"数值走 FormatCHCell", int64(7), "BIGINT", strPtrOf("7")},
+		{"bit 一个字节 1", []byte{0x01}, "BIT", strPtrOf("1")},
+		{"bit 一个字节 0", []byte{0x00}, "BIT", strPtrOf("0")},
+		{"bit 多字节大端累计", []byte{0x00, 0x2A}, "BIT", strPtrOf("42")},
+		{"bit 空字节按 0", []byte{}, "BIT", strPtrOf("0")},
+		{"bit 列类型小写兼容", []byte{0x01}, "bit(8)", strPtrOf("1")},
+		{"非 bit 列的 bytes 原样转字符串", []byte{0x41}, "", strPtrOf("A")},
 	}
 	for _, tc := range cases {
 		got := formatMysqlCell(tc.in, tc.colType, CHCellMaxBytes)
@@ -869,19 +875,24 @@ func TestFormatMysqlCell(t *testing.T) {
 }
 
 // TestCollectMysqlRowsFormatsDateTime 验证控制台/表浏览共用的行收集按列类型
-// 格式化时间单元格:DATETIME 输出 "YYYY-MM-DD HH:MM:SS",DATE 只保留日期,
-// NULL 仍为 nil;前端拿到的即最终文本,无需二次处理。
+// 格式化单元格:DATETIME 输出 "YYYY-MM-DD HH:MM:SS",DATE 只保留日期,BIT 的
+// 原始位字节渲染为十进制,NULL 仍为 nil;前端拿到的即最终文本,无需二次处理。
 func TestCollectMysqlRowsFormatsDateTime(t *testing.T) {
 	conn := &fakeMysqlDrvConn{queryRows: &fakeMysqlDrvRows{
-		cols:  []string{"created_at", "birthday", "name"},
-		types: []string{"DATETIME", "DATE", "VARCHAR"},
+		cols:  []string{"created_at", "birthday", "enable", "name"},
+		types: []string{"DATETIME", "DATE", "BIT", "VARCHAR"},
 		vals: [][]driver.Value{
-			{time.Date(2026, 9, 24, 14, 52, 30, 0, time.Local), time.Date(2026, 9, 24, 0, 0, 0, 0, time.Local), "张三"},
-			{nil, nil, nil},
+			{
+				time.Date(2026, 9, 24, 14, 52, 30, 0, time.Local),
+				time.Date(2026, 9, 24, 0, 0, 0, 0, time.Local),
+				[]byte{0x01},
+				"张三",
+			},
+			{nil, nil, []byte{0x00}, nil},
 		},
 	}}
 	c, _ := newFakeMysqlClient(t, conn)
-	results, err := c.Execute(context.Background(), "app", "SELECT created_at, birthday, name FROM users")
+	results, err := c.Execute(context.Background(), "app", "SELECT created_at, birthday, enable, name FROM users")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -889,15 +900,15 @@ func TestCollectMysqlRowsFormatsDateTime(t *testing.T) {
 	if res.Error != "" {
 		t.Fatalf("statement must succeed, got %q", res.Error)
 	}
-	wantTypes := []string{"DATETIME", "DATE", "VARCHAR"}
+	wantTypes := []string{"DATETIME", "DATE", "BIT", "VARCHAR"}
 	for i, col := range res.Columns {
 		if col.Type != wantTypes[i] {
 			t.Fatalf("column %d type = %q, want %q", i, col.Type, wantTypes[i])
 		}
 	}
 	wantRows := [][]*string{
-		{strPtrOf("2026-09-24 14:52:30"), strPtrOf("2026-09-24"), strPtrOf("张三")},
-		{nil, nil, nil},
+		{strPtrOf("2026-09-24 14:52:30"), strPtrOf("2026-09-24"), strPtrOf("1"), strPtrOf("张三")},
+		{nil, nil, strPtrOf("0"), nil},
 	}
 	if !reflect.DeepEqual(res.Rows, wantRows) {
 		t.Fatalf("rows must be wall-clock formatted, got %+v", res.Rows)

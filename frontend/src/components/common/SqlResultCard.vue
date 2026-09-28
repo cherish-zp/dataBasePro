@@ -338,7 +338,8 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
               />
             </th>
             <th v-for="(col, ci) in columns" :key="ci" :title="col.type ? `${col.name}(${col.type})` : col.name">
-              {{ col.name }}
+              <span class="col-name">{{ col.name }}</span>
+              <span v-if="col.type" class="col-type" data-test="col-type">{{ col.type }}</span>
             </th>
           </tr>
         </thead>
@@ -388,6 +389,10 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
   border-radius: 8px;
   background: var(--bg-elevated);
   overflow: hidden;
+  /* 在 flex 列结果区里禁止收缩:结果卡内含 overflow:auto 的表格,自动最小
+     高度为 0,被压缩时卡片保持原位而表格底部被 overflow:hidden 裁掉,滚动
+     到底也看不到最后一行;禁收缩后超出部分交给外层容器滚动。 */
+  flex: none;
 }
 
 .result-head {
@@ -580,6 +585,20 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
   background: var(--bg-subtle);
   color: var(--text-secondary);
   font-weight: 600;
+}
+/* 字段名一行,类型小字第二行,避免类型只在悬浮提示里不可见。 */
+.result-table thead th .col-name {
+  display: block;
+}
+.result-table thead th .col-type {
+  display: block;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 400;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-tertiary);
 }
 .result-table tbody tr:nth-child(even) {
   background: var(--bg-subtle);
