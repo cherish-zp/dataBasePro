@@ -129,11 +129,19 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           G() { curl -sS --connect-timeout 20 --max-time 1800 "$@"; }
+          # 发布说明取标签注释(annotated tag 的 message:版本要点 + 发布人署名),
+          # 经 JSON 转义后随创建请求下发;取不到时回退默认文案。
+          git fetch --depth=1 origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>/dev/null || true
+          NOTES=$(git for-each-ref "refs/tags/${TAG}" --format='%(contents)' 2>/dev/null | head -c 4000)
+          if [ -z "$(printf '%s' "${NOTES}" | tr -d '[:space:]')" ]; then
+            NOTES="自动构建产物:macOS(Apple Silicon / Intel)与 Windows 安装包。"
+          fi
+          NOTES_JSON=$(printf '%s' "${NOTES}" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read().strip()))')
           RID=$(G "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/tags/${TAG}?access_token=${GITEE_TOKEN}" | python3 -c 'import sys,json; d=json.load(sys.stdin) or {}; print(d.get("id",""))' || true)
           if [ -z "${RID}" ]; then
             G -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases?access_token=${GITEE_TOKEN}" \
               -H "Content-Type: application/json" \
-              -d "{\"tag_name\":\"${TAG}\",\"target_commitish\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":\"自动构建产物:macOS(Apple Silicon / Intel)与 Windows 安装包。\",\"prerelease\":false}" > gitee_release.json || true
+              -d "{\"tag_name\":\"${TAG}\",\"target_commitish\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":${NOTES_JSON},\"prerelease\":false}" > gitee_release.json || true
             cat gitee_release.json
             RID=$(python3 -c 'import json; d=json.load(open("gitee_release.json")) or {}; print(d.get("id",""))' || true)
           fi
