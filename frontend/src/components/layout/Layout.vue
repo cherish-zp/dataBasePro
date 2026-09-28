@@ -27,6 +27,8 @@ import StatusBar from '@/components/layout/StatusBar.vue'
 import QueryFilesPanel, { type SqlConsoleApi } from './QueryFilesPanel.vue'
 import { useToastStore } from '@/store/toast'
 import HomeView from '@/views/HomeView.vue'
+import { getApi } from '@/api/client'
+import { APP_VERSION } from '@/version'
 
 const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
@@ -56,6 +58,32 @@ const dragFrom = ref<number | null>(null)
 const showProducer = ref(false)
 const showSettings = ref(false)
 const showUpdate = ref(false)
+
+// --- 顶栏更新红点 --------------------------------------------------------------
+// 挂载时静默探测一次新版本,之后每 30 分钟重查;has_update 点亮红点,
+// 某次探测确认已无更新(如新版本被撤回/已更新)则同步熄灭。
+// 任何失败(网络错误/绑定缺失)都静默忽略,不打扰用户、不影响页面。
+const updateAvailable = ref(false)
+const latestVersion = ref('')
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000
+let updateTimer: number | undefined = undefined
+
+async function pollUpdate(): Promise<void> {
+  try {
+    const res = await getApi().checkUpdate?.({ current_version: APP_VERSION })
+    if (!res) return
+    updateAvailable.value = res.has_update
+    if (res.has_update) latestVersion.value = res.latest_version
+  } catch {
+    // 静默:探测失败保持现状,不弹错误。
+  }
+}
+
+// openUpdate 打开更新弹窗的同时清除红点:弹窗内会重新探测,用户已被告知。
+function openUpdate(): void {
+  showUpdate.value = true
+  updateAvailable.value = false
+}
 
 // toast:全局轻提示浮层,在 Layout 底部居中渲染;自动消失由 store 负责。
 const toast = useToastStore()
@@ -396,11 +424,18 @@ onMounted(() => {
   window.addEventListener('keydown', onGlobalKeydown)
   // 启动即展开时(上次会话遗留状态),让面板立即拉一次文件列表。
   if (filesOpen.value) filesPanelRef.value?.refresh()
+  // 首次静默探测新版本,之后定时重查;失败已在 pollUpdate 内静默。
+  void pollUpdate()
+  updateTimer = window.setInterval(() => void pollUpdate(), UPDATE_CHECK_INTERVAL_MS)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick)
   window.removeEventListener('keydown', onGlobalKeydown)
+  if (updateTimer !== undefined) {
+    window.clearInterval(updateTimer)
+    updateTimer = undefined
+  }
 })
 
 function contextClose(): void {
@@ -479,15 +514,17 @@ function onTabDragEnd(): void {
       </button>
       <button
         class="btn ghost icon-btn"
+        :class="{ 'has-update': updateAvailable }"
         type="button"
         data-test="btn-update"
-        title="检查更新"
-        @click="showUpdate = true"
+        :title="updateAvailable ? `发现新版本 ${latestVersion}，点击查看` : '检查更新'"
+        @click="openUpdate"
       >
         <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
           <path d="M8 2.5v7.2M8 2.5 5.4 5.1M8 2.5l2.6 2.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
           <path d="M3 10.5v1.8c0 .7.5 1.2 1.2 1.2h7.6c.7 0 1.2-.5 1.2-1.2v-1.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
         </svg>
+        <span v-if="updateAvailable" class="update-dot" data-test="update-dot"></span>
       </button>
       <button
         class="btn ghost"
@@ -796,7 +833,23 @@ function onTabDragEnd(): void {
   transition: background 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
 }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 6px 8px; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 6px 8px; position: relative; }
+/* 更新红点:8px 圆点叠在图标右上角,2px 描边与底色同色用于分隔,pulse 克制(缩放+微降透明度)。 */
+.icon-btn.has-update .update-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--bg);
+  animation: update-dot-pulse 2s ease-in-out infinite;
+}
+@keyframes update-dot-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.82); opacity: 0.55; }
+}
 .btn.primary {
   background: var(--accent);
   color: #fff;

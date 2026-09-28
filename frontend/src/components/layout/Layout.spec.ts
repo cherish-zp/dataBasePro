@@ -734,6 +734,66 @@ describe('Layout', () => {
     })
   })
 
+  // --- 顶栏更新按钮红点 -------------------------------------------------------
+
+  it('renders the update dot and version title when a new version exists', async () => {
+    const { wrapper } = mountLayout([conn('a')], {
+      checkUpdate: vi.fn(async () => ({ has_update: true, latest_version: 'v9.9.9' })),
+    })
+    await flushPromises()
+    const btn = wrapper.find('[data-test="btn-update"]')
+    expect(btn.classes()).toContain('has-update')
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(true)
+    expect(btn.attributes('title')).toContain('发现新版本')
+    expect(btn.attributes('title')).toContain('v9.9.9')
+  })
+
+  it('renders no update dot when the probe reports no update', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    await flushPromises()
+    const btn = wrapper.find('[data-test="btn-update"]')
+    expect(btn.classes()).not.toContain('has-update')
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(false)
+    expect(btn.attributes('title')).toBe('检查更新')
+  })
+
+  it('silently ignores a missing checkUpdate binding', async () => {
+    setActivePinia(createPinia())
+    // fake 未提供 checkUpdate(旧 fake 场景):探测必须静默跳过,不得抛错。
+    const api = fakeApi() as unknown as Record<string, unknown>
+    delete api.checkUpdate
+    setApi(api as unknown as Api)
+    const wrapper = mount(Layout, { props: { connections: [conn('a')] } })
+    await flushPromises()
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-update"]').attributes('title')).toBe('检查更新')
+    wrapper.unmount()
+  })
+
+  it('silently ignores a failing checkUpdate probe', async () => {
+    const { wrapper } = mountLayout([conn('a')], {
+      checkUpdate: vi.fn(async () => {
+        throw new Error('network down')
+      }),
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-update"]').attributes('title')).toBe('检查更新')
+  })
+
+  it('clears the update dot after the user opens the update dialog', async () => {
+    const { wrapper } = mountLayout([conn('a')], {
+      checkUpdate: vi.fn(async () => ({ has_update: true, latest_version: 'v9.9.9' })),
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(true)
+    await wrapper.find('[data-test="btn-update"]').trigger('click')
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-update"]').classes()).not.toContain('has-update')
+    // 弹窗照常打开(teleport 到 body,断言走 document)。
+    expect(document.body.querySelector('[data-test="update-dialog"]')).not.toBeNull()
+  })
+
   // --- 新建查询(SQL文件全局化) ---------------------------------------------
 
   it('keeps 新建查询 disabled without an active tab or on a redis tab', async () => {
