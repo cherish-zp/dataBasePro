@@ -104,10 +104,14 @@ type CHTruncateTableRequest struct {
 	OnCluster bool `json:"on_cluster,omitempty"`
 }
 
-// CHExecuteRequest carries the multi-statement SQL script.
+// CHExecuteRequest carries the multi-statement SQL script. Limit/Offset 启用
+// 服务端分页:Limit>0 时仅返回 Offset 起的 Limit 行,结果按语句类型附
+// total_rows(≥0 精确 / -1 无法计数)。
 type CHExecuteRequest struct {
 	ConnectionID string `json:"connection_id"`
 	SQL          string `json:"sql"`
+	Limit        int    `json:"limit,omitempty"`
+	Offset       int    `json:"offset,omitempty"`
 }
 
 // TestCHConnection verifies reachability without persisting anything.
@@ -153,7 +157,7 @@ func (a *App) CHTruncateTable(req CHTruncateTableRequest) error {
 func (a *App) CHExecute(req CHExecuteRequest) ([]model.CHStatementResult, error) {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	results, err := a.svc.CHExecute(ctx, req.ConnectionID, req.SQL)
+	results, err := a.svc.CHExecute(ctx, req.ConnectionID, req.SQL, req.Limit, req.Offset)
 	a.audit(req.ConnectionID, "ch_execute", auditSQLTarget(req.SQL), auditResult(err), auditDetail(err))
 	return results, err
 }

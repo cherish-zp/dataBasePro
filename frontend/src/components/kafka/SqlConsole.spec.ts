@@ -1157,4 +1157,43 @@ describe('SqlConsole', () => {
       expect(useSqlHistoryStore().history).toEqual([])
     })
   })
+
+  // --- 前端分页(纯前端控制台,每页 500 条,翻页只做切片不重新请求) ---------
+
+  describe('前端分页', () => {
+    const manyMessages = (n: number) => Array.from({ length: n }, (_, i) => msg('k', `v${i}`, i))
+
+    it('结果多于 500 条时切片展示,页码信息给出总数与页数;翻页不重新请求', async () => {
+      const { wrapper, api } = mountConsole({ consumeMessages: vi.fn(async () => manyMessages(1200)) })
+      await setSql(wrapper, 'SELECT * FROM orders')
+      await runOnce(wrapper)
+      expect(cardRows(wrapper)).toHaveLength(500)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 1,200 条 · 第 1/3 页')
+      expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    })
+
+    it('下一页/上一页只做前端切片,边界禁用', async () => {
+      const { wrapper, api } = mountConsole({ consumeMessages: vi.fn(async () => manyMessages(600)) })
+      await setSql(wrapper, 'SELECT * FROM orders')
+      await runOnce(wrapper)
+      await wrapper.find('[data-test="pager-next"]').trigger('click')
+      expect(cardRows(wrapper)).toHaveLength(100)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 600 条 · 第 2/2 页')
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      await wrapper.find('[data-test="pager-prev"]').trigger('click')
+      expect(cardRows(wrapper)).toHaveLength(500)
+      expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    })
+
+    it('结果不足 500 条时单页展示,下一页禁用', async () => {
+      const { wrapper } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k', 'v')]) })
+      await setSql(wrapper, 'SELECT * FROM orders')
+      await runOnce(wrapper)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 1 条 · 第 1/1 页')
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      wrapper.unmount()
+    })
+  })
 })

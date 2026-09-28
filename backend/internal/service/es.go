@@ -445,34 +445,66 @@ func (e *esNoSQLCapabilityError) Error() string { return e.msg }
 // executeLocalSQL translates one statement locally (essql_translate.go) and
 // runs it over plain REST endpoints (search/count/cat/mapping). A translation
 // failure keeps both facts in the error: the server has no SQL endpoint, and
-// the reason the statement cannot be translated locally.
-func (c *EsClient) executeLocalSQL(ctx context.Context, stmt string) ([]model.EsColumn, [][]*string, error) {
+// the reason the statement cannot be translated locally. limit<=0 保持旧行为
+// (不注入分页、不下发 total_rows);limit>0 时 select 注入 from/size 并取
+// hits.total,count/show/describe 走客户端截断回退。
+func (c *EsClient) executeLocalSQL(ctx context.Context, stmt string, limit, offset int) ([]model.EsColumn, [][]*string, *int64, error) {
 	st, terr := TranslateEsSQL(stmt)
 	if terr != nil {
-		return nil, nil, fmt.Errorf("该服务端无 SQL 端点;%v", terr)
+		return nil, nil, nil, fmt.Errorf("该服务端无 SQL 端点;%v", terr)
 	}
 	switch st.Kind {
 	case "select":
-		return c.execTranslatedSelect(ctx, st)
+		if limit > 0 {
+			// 控制台分页是全局语义:请求的 offset/limit 覆盖语句自带的
+			// LIMIT/OFFSET 子句,保证翻页窗口一致。
+			st.From, st.Size = offset, limit
+		}
+		return c.execTranslatedSelect(ctx, st, limit)
 	case "count":
-		return c.execTranslatedCount(ctx, st)
+		cols, rows, err := c.execTranslatedCount(ctx, st)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return c.pageLocalRows(cols, rows, limit, offset)
 	case "show":
-		return c.execTranslatedShow(ctx, st)
+		cols, rows, err := c.execTranslatedShow(ctx, st)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return c.pageLocalRows(cols, rows, limit, offset)
 	default:
-		return c.execTranslatedDescribe(ctx, st)
+		cols, rows, err := c.execTranslatedDescribe(ctx, st)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		return c.pageLocalRows(cols, rows, limit, offset)
 	}
+}
+
+// pageLocalRows applies the client-side truncation fallback to a locally
+// translated non-select statement's rows (count/show/describe cannot express
+// from/size): offset 起至多 limit 行,取满 limit 行 total_rows=-1,否则
+// offset+实际行数;limit<=0 时原样返回且不下发 total_rows。
+func (c *EsClient) pageLocalRows(cols []model.EsColumn, rows [][]*string, limit, offset int) ([]model.EsColumn, [][]*string, *int64, error) {
+	if limit <= 0 {
+		return cols, rows, nil, nil
+	}
+	page, full := slicePageRows(rows, limit, offset)
+	return cols, page, fallbackTotalRows(full, offset, len(page)), nil
 }
 
 // execTranslatedSelect runs a translated SELECT over POST /{index}/_search:
 // "*" expands to the mapping fields (c.Mapping), explicit columns pass
 // verbatim; rows align to _source by dotted path (missing → nil, objects/
-// arrays rendered as compact JSON via esCellText).
-func (c *EsClient) execTranslatedSelect(ctx context.Context, st *EsSqlStatement) ([]model.EsColumn, [][]*string, error) {
+// arrays rendered as compact JSON via esCellText)。limit>0 时额外解析
+// hits.total 作为精确总数(total 原文缺失时不下发)。
+func (c *EsClient) execTranslatedSelect(ctx context.Context, st *EsSqlStatement, limit int) ([]model.EsColumn, [][]*string, *int64, error) {
 	cols := make([]model.EsColumn, 0, len(st.Columns))
 	if len(st.Columns) == 1 && st.Columns[0] == "*" {
 		mapping, err := c.Mapping(ctx, st.Index)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		cols = append(cols, mapping...)
 	} else {
@@ -482,31 +514,32 @@ func (c *EsClient) execTranslatedSelect(ctx context.Context, st *EsSqlStatement)
 	}
 	body, err := json.Marshal(esSearchBody(st))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	status, respBody, err := c.doRequest(ctx, http.MethodPost, "/"+url.PathEscape(st.Index)+"/_search", body)
 	if err != nil {
-		return nil, nil, fmt.Errorf("elasticsearch search: %w", err)
+		return nil, nil, nil, fmt.Errorf("elasticsearch search: %w", err)
 	}
 	if status != http.StatusOK {
-		return nil, nil, fmt.Errorf("elasticsearch search: HTTP %d: %s", status, truncateBody(string(respBody), 300))
+		return nil, nil, nil, fmt.Errorf("elasticsearch search: HTTP %d: %s", status, truncateBody(string(respBody), 300))
 	}
 	var search struct {
 		Hits struct {
-			Hits []struct {
+			Total json.RawMessage `json:"total"`
+			Hits  []struct {
 				Source json.RawMessage `json:"_source"`
 			} `json:"hits"`
 		} `json:"hits"`
 	}
 	if err := json.Unmarshal(respBody, &search); err != nil {
-		return nil, nil, fmt.Errorf("elasticsearch search: 解析响应失败: %w", err)
+		return nil, nil, nil, fmt.Errorf("elasticsearch search: 解析响应失败: %w", err)
 	}
 	rows := make([][]*string, 0, len(search.Hits.Hits))
 	for _, hit := range search.Hits.Hits {
 		var source map[string]json.RawMessage
 		if len(hit.Source) > 0 {
 			if err := json.Unmarshal(hit.Source, &source); err != nil {
-				return nil, nil, fmt.Errorf("elasticsearch search: 解析 _source 失败: %w", err)
+				return nil, nil, nil, fmt.Errorf("elasticsearch search: 解析 _source 失败: %w", err)
 			}
 		}
 		row := make([]*string, len(cols))
@@ -517,17 +550,32 @@ func (c *EsClient) execTranslatedSelect(ctx context.Context, st *EsSqlStatement)
 		}
 		rows = append(rows, row)
 	}
-	return cols, rows, nil
+	if limit <= 0 {
+		return cols, rows, nil, nil
+	}
+	return cols, rows, esTotalRowsPtr(search.Hits.Total), nil
+}
+
+// esTotalRowsPtr 解析 hits.total(7.x/8.x 对象或 6.x/5.x 数字);原文缺失时
+// 返回 nil(不下发 total_rows 而非误报 0)。
+func esTotalRowsPtr(raw json.RawMessage) *int64 {
+	if len(raw) == 0 {
+		return nil
+	}
+	v := esTotalRows(raw)
+	return &v
 }
 
 // esSearchBody 组装翻译后 SELECT 的 _search 请求体:Where 已是 DSL JSON
-// (nil → match_all),Sort 渲染为 [{field:{order}}]。
+// (nil → match_all),Sort 渲染为 [{field:{order}}];track_total_hits 让
+// hits.total 为精确值(默认仅前 10000 条精确,控制台分页的 total_rows 依赖
+// 精确总数)。
 func esSearchBody(st *EsSqlStatement) map[string]any {
 	var query any = map[string]any{"match_all": map[string]any{}}
 	if st.Where != nil {
 		query = json.RawMessage(st.Where)
 	}
-	body := map[string]any{"from": st.From, "size": st.Size, "query": query}
+	body := map[string]any{"from": st.From, "size": st.Size, "query": query, "track_total_hits": true}
 	if len(st.Sort) > 0 {
 		body["sort"] = st.Sort
 	}
@@ -625,8 +673,17 @@ func esSourceLookup(source map[string]json.RawMessage, path string) (json.RawMes
 // e.g. ES 6.1 OSS) each statement transparently falls back to the local
 // SQL→DSL translation path. Each result carries its duration and either
 // columns+rows or an error text; a failing statement records its error and
-// stops the run.
-func (c *EsClient) Execute(ctx context.Context, sqlText string) ([]model.EsStatementResult, error) {
+// stops the run. limit>0 启用服务端分页:本地翻译 select 路径映射为
+// size/from 并取 hits.total;SQL 端点路径与其余语句在客户端截断(offset 起
+// 至多 limit 行,取满 limit 行 total_rows=-1,否则 offset+实际行数)。
+func (c *EsClient) Execute(ctx context.Context, sqlText string, limit, offset int) ([]model.EsStatementResult, error) {
+	// 分页参数钳制:limit<0 视为未启用(旧行为),offset<0 视为 0。
+	if limit < 0 {
+		limit = 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	statements := SplitSQLStatements(sqlText)
 	if len(statements) == 0 {
 		return nil, errors.New("没有可执行的 SQL 语句")
@@ -635,21 +692,38 @@ func (c *EsClient) Execute(ctx context.Context, sqlText string) ([]model.EsState
 	for _, stmt := range statements {
 		res := model.EsStatementResult{SQL: stmt}
 		start := time.Now()
-		cols, rows, err := c.sqlQuery(ctx, stmt)
-		var noSQL *esNoSQLCapabilityError
-		if err != nil && errors.As(err, &noSQL) {
-			// 服务端无任何 SQL 端点:回退本地翻译,走普通 REST 端点执行。
-			cols, rows, err = c.executeLocalSQL(ctx, stmt)
-		}
+		cols, rows, total, err := c.execOneSQL(ctx, stmt, limit, offset)
 		res.DurationMs = msSince(start)
 		if err != nil {
 			res.Error = err.Error()
 			return append(out, res), nil
 		}
-		res.Columns, res.Rows = cols, rows
+		res.Columns, res.Rows, res.TotalRows = cols, rows, total
 		out = append(out, res)
 	}
 	return out, nil
+}
+
+// execOneSQL runs one statement over the probed SQL endpoint, falling back to
+// the local translation path when the server has no SQL capability. 返回本页
+// 行集与可选 total_rows(未启用分页或无法计数时为 nil)。
+func (c *EsClient) execOneSQL(ctx context.Context, stmt string, limit, offset int) ([]model.EsColumn, [][]*string, *int64, error) {
+	cols, rows, err := c.sqlQuery(ctx, stmt)
+	var noSQL *esNoSQLCapabilityError
+	if err != nil && errors.As(err, &noSQL) {
+		// 服务端无任何 SQL 端点:回退本地翻译,走普通 REST 端点执行。
+		return c.executeLocalSQL(ctx, stmt, limit, offset)
+	}
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if limit <= 0 {
+		return cols, rows, nil, nil
+	}
+	// SQL 端点无法表达 from/size(fetch_size+cursor 留待后续版本):结果在
+	// 客户端截断,总数按截断规则估算(取满 limit 行 → -1,耗尽 → 精确)。
+	page, full := slicePageRows(rows, limit, offset)
+	return cols, page, fallbackTotalRows(full, offset, len(page)), nil
 }
 
 // --- 索引浏览 ---
@@ -836,7 +910,8 @@ func (c *EsClient) PageRows(ctx context.Context, index, where, orderBy string, a
 			query = map[string]any{"multi_match": map[string]any{"query": w, "lenient": true}}
 		}
 	}
-	bodyMap := map[string]any{"from": offset, "size": limit, "query": query}
+	// track_total_hits 让 hits.total 为精确值(默认仅前 10000 条精确)。
+	bodyMap := map[string]any{"from": offset, "size": limit, "query": query, "track_total_hits": true}
 	if o := strings.TrimSpace(orderBy); o != "" {
 		direction := "asc"
 		if !asc {

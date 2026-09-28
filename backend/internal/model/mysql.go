@@ -124,7 +124,9 @@ type MysqlCellUpdatePreview struct {
 // result set) or an error text (failed statement; execution stops there).
 // PrimaryKey lists the table's primary key columns in definition order when
 // the statement is a single-table SELECT(供「复制为 INSERT」可选剥离主键
-// 列);其余语句不填(omitempty)。
+// 列);其余语句不填(omitempty)。TotalRows 仅在请求启用服务端分页时出现:
+// nil=未启用(不下发);≥0=精确总数(包装 COUNT 查询);-1=无法计数(如
+// SHOW 类语句取满一页)。
 type MysqlStatementResult struct {
 	SQL        string        `json:"sql"`
 	DurationMs int64         `json:"duration_ms"`
@@ -132,4 +134,5 @@ type MysqlStatementResult struct {
 	Columns    []MysqlColumn `json:"columns,omitempty"`
 	Rows       [][]*string   `json:"rows,omitempty"`
 	PrimaryKey []string      `json:"primary_key,omitempty"`
+	TotalRows  *int64        `json:"total_rows,omitempty"`
 }

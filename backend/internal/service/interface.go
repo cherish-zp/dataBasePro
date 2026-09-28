@@ -92,7 +92,10 @@ type ClickHouseDataSource interface {
 	Tables(ctx context.Context, database string, showSystem bool) ([]model.CHTableInfo, error)
 	PageRows(ctx context.Context, database, table, where, orderBy string, asc bool, limit, offset int) (model.CHPageRowsResult, error)
 	TruncateTable(ctx context.Context, database, table string, onCluster bool) error
-	Execute(ctx context.Context, sqlText string) ([]model.CHStatementResult, error)
+	// Execute runs the script statement by statement. limit>0 启用服务端分页:
+	// 可包装的查询语句(SELECT/WITH)被子查询改写为仅返回 offset 起的 limit
+	// 行并附 total_rows;其余返回行的语句走客户端截断回退。
+	Execute(ctx context.Context, sqlText string, limit, offset int) ([]model.CHStatementResult, error)
 }
 
 // MysqlDataSource extends DataSource with the MySQL browser operations:
@@ -109,8 +112,10 @@ type MysqlDataSource interface {
 	// Execute runs the SQL script statement by statement. When database is
 	// non-empty every statement runs on one dedicated connection pinned to it
 	// via USE (pool connections do not keep session state); empty keeps the
-	// pool path.
-	Execute(ctx context.Context, database, sqlText string) ([]model.MysqlStatementResult, error)
+	// pool path. limit>0 启用服务端分页:SELECT/WITH 语句被子查询包装为仅
+	// 返回 offset 起的 limit 行并附 total_rows,SHOW/DESC/EXPLAIN 等走客户端
+	// 截断回退。
+	Execute(ctx context.Context, database, sqlText string, limit, offset int) ([]model.MysqlStatementResult, error)
 	// PreviewCellUpdate renders the display text of the UPDATE and counts the
 	// rows matched by the same WHERE conditions (read-only, nothing executes).
 	PreviewCellUpdate(ctx context.Context, database, table string, set model.MysqlCellValue, where []model.MysqlCellValue) (model.MysqlCellUpdatePreview, error)
@@ -128,7 +133,11 @@ type PostgresDataSource interface {
 	Schemas(ctx context.Context, database string) ([]string, error)
 	Tables(ctx context.Context, database, schema string) ([]model.PostgresTableInfo, error)
 	PageRows(ctx context.Context, database, schema, relation, relationKind, where, orderBy string, asc bool, limit, offset int) (model.PostgresPageRowsResult, error)
-	Execute(ctx context.Context, database, schema, sqlText string) ([]model.PostgresStatementResult, error)
+	// Execute runs each statement of the script on one dedicated connection;
+	// a non-empty schema pins search_path first. limit>0 启用服务端分页:
+	// SELECT/WITH 语句被子查询包装为仅返回 offset 起的 limit 行并附
+	// total_rows,EXPLAIN/SHOW/TABLE/VALUES 等走客户端截断回退。
+	Execute(ctx context.Context, database, schema, sqlText string, limit, offset int) ([]model.PostgresStatementResult, error)
 	TruncateTable(ctx context.Context, database, schema, relation, relationKind string) error
 	PreviewCellUpdate(ctx context.Context, req model.PostgresCellUpdateRequest) (model.PostgresCellUpdatePreview, error)
 	UpdateCell(ctx context.Context, req model.PostgresCellUpdateRequest) error
@@ -166,8 +175,10 @@ type EsDataSource interface {
 	// upstream). The query must be valid JSON; an empty query is rejected.
 	DeleteByQuery(ctx context.Context, index, query string) (int64, error)
 	// Execute runs the SQL script statement by statement over the probed SQL
-	// endpoint (/_sql, /_xpack/sql or /_plugins/_sql).
-	Execute(ctx context.Context, sqlText string) ([]model.EsStatementResult, error)
+	// endpoint (/_sql, /_xpack/sql or /_plugins/_sql). limit>0 启用服务端分页:
+	// SQL 端点无法表达 from/size 时结果在客户端截断(total_rows=-1 除非结果
+	// 集已耗尽),本地翻译 select 路径映射为 size/from 并取 hits.total。
+	Execute(ctx context.Context, sqlText string, limit, offset int) ([]model.EsStatementResult, error)
 	// DSL executes one raw REST request for the DSL console (Kibana Dev Tools
 	// style): method/path/body are validated then forwarded verbatim over the
 	// regular request channel; every HTTP response (4xx/5xx included) comes

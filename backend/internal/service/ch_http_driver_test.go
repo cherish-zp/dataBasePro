@@ -305,7 +305,7 @@ func TestCHHTTPDriverExecReturnsEmptyRows(t *testing.T) {
 	cl := newCHHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "")
 	})
-	res, err := cl.Execute(context.Background(), "CREATE TABLE t (x UInt8) ENGINE = Memory")
+	res, err := cl.Execute(context.Background(), "CREATE TABLE t (x UInt8) ENGINE = Memory", 0, 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -461,5 +461,168 @@ func TestCHHTTPDriverEmptyTableKeepsColumns(t *testing.T) {
 	}
 	if len(res.Rows) != 0 {
 		t.Fatalf("expected 0 rows, got %d", len(res.Rows))
+	}
+}
+
+// --- Execute:服务端分页(包装查询 + count() 计数 / SHOW 类截断回退) ---
+
+// TestCHHTTPDriverExecutePagedWrapsSelect 锁定包装分页契约:SELECT 语句被
+// 改写为 `SELECT * FROM (<原文>) _dbp LIMIT n OFFSET m` 取页,再跑
+// `SELECT count() FROM (<原文>) _dbp` 计数,res.SQL 保持用户原文。
+func TestCHHTTPDriverExecutePagedWrapsSelect(t *testing.T) {
+	var bodies []string
+	cl := newCHHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if string(body) == "SELECT 1" { // 构造期 Ping,不记录
+			io.WriteString(w, "1")
+			return
+		}
+		bodies = append(bodies, string(body))
+		if strings.Contains(string(body), "count()") {
+			io.WriteString(w, `["count()"]
+["UInt64"]
+[1234]`)
+			return
+		}
+		io.WriteString(w, `["id","UInt64"]
+["UInt64"]
+["a",1]
+["b",2]`)
+	})
+	res, err := cl.Execute(context.Background(), "SELECT id FROM logs.events", 500, 100)
+	if err != nil || len(res) != 1 || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if res[0].SQL != "SELECT id FROM logs.events" {
+		t.Fatalf("res.SQL must keep the original text, got %q", res[0].SQL)
+	}
+	wantPage := "SELECT * FROM (SELECT id FROM logs.events) _dbp LIMIT 500 OFFSET 100"
+	wantCount := "SELECT count() FROM (SELECT id FROM logs.events) _dbp"
+	if len(bodies) != 2 || bodies[0] != wantPage || bodies[1] != wantCount {
+		t.Fatalf("paged queries mismatch:\n got %+v\nwant [%q %q]", bodies, wantPage, wantCount)
+	}
+	if res[0].TotalRows == nil || *res[0].TotalRows != 1234 {
+		t.Fatalf("total_rows must be the exact count 1234, got %+v", res[0].TotalRows)
+	}
+	if len(res[0].Rows) != 2 || res[0].Rows[0][0] == nil || *res[0].Rows[0][0] != "a" {
+		t.Fatalf("unexpected rows: %+v", res[0].Rows)
+	}
+}
+
+// SHOW/DESC/EXPLAIN 等不能包装的语句只消费 offset+limit 行:取满 limit 行
+// total_rows=-1,本页跳过前 offset 行。
+func TestCHHTTPDriverExecutePagedShowTruncatesFullPage(t *testing.T) {
+	cl := newCHHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `["name"]
+["String"]
+["a"]
+["b"]
+["c"]
+["d"]
+["e"]`)
+	})
+	res, err := cl.Execute(context.Background(), "SHOW TABLES FROM logs", 2, 1)
+	if err != nil || len(res) != 1 || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if len(res[0].Rows) != 2 || *res[0].Rows[0][0] != "b" || *res[0].Rows[1][0] != "c" {
+		t.Fatalf("page must start at offset 1 with 2 rows, got %+v", res[0].Rows)
+	}
+	if res[0].TotalRows == nil || *res[0].TotalRows != -1 {
+		t.Fatalf("a full page must report total_rows -1, got %+v", res[0].TotalRows)
+	}
+}
+
+// 结果集在 offset+limit 内耗尽时,total_rows = offset+本页行数(精确)。
+func TestCHHTTPDriverExecutePagedShowExhaustedTotal(t *testing.T) {
+	cl := newCHHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `["name"]
+["String"]
+["a"]
+["b"]
+["c"]
+["d"]`)
+	})
+	res, err := cl.Execute(context.Background(), "SHOW TABLES FROM logs", 2, 3)
+	if err != nil || len(res) != 1 || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if len(res[0].Rows) != 1 || *res[0].Rows[0][0] != "d" {
+		t.Fatalf("page must hold the remaining 1 row, got %+v", res[0].Rows)
+	}
+	if res[0].TotalRows == nil || *res[0].TotalRows != 4 {
+		t.Fatalf("exhausted result must report offset+pageLen=4, got %+v", res[0].TotalRows)
+	}
+}
+
+// limit=0 保持旧行为:原语句执行、不下发 total_rows。
+func TestCHHTTPDriverExecuteWithoutLimitKeepsLegacyBehavior(t *testing.T) {
+	cl := newCHHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `["id","UInt64"]
+["UInt64"]
+["a",1]
+["b",2]
+["c",3]`)
+	})
+	res, err := cl.Execute(context.Background(), "SELECT id FROM logs.events", 0, 0)
+	if err != nil || len(res) != 1 || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if len(res[0].Rows) != 3 {
+		t.Fatalf("all rows must be returned, got %+v", res[0].Rows)
+	}
+	if res[0].TotalRows != nil {
+		t.Fatalf("total_rows must stay unset without paging, got %+v", res[0].TotalRows)
+	}
+}
+
+// --- P1-2:分页包装丢失 ORDER BY ---
+
+// CH 包装同样外提语句顶层的尾 ORDER BY;带 LIMIT 尾巴或子查询内的 ORDER BY
+// 不外提。
+func TestWrapCHPagedQueryHoistsTrailingOrderBy(t *testing.T) {
+	got := wrapCHPagedQuery("SELECT id FROM logs.events ORDER BY id DESC", 10, 5)
+	want := "SELECT * FROM (SELECT id FROM logs.events) _dbp ORDER BY id DESC LIMIT 10 OFFSET 5"
+	if got != want {
+		t.Fatalf("hoisted wrap = %q, want %q", got, want)
+	}
+	got = wrapCHPagedQuery("SELECT id FROM logs.events ORDER BY id LIMIT 3", 10, 0)
+	want = "SELECT * FROM (SELECT id FROM logs.events ORDER BY id LIMIT 3) _dbp LIMIT 10 OFFSET 0"
+	if got != want {
+		t.Fatalf("wrap with limit tail = %q, want %q", got, want)
+	}
+	got = wrapCHPagedQuery("SELECT * FROM (SELECT id FROM t ORDER BY id) s", 10, 0)
+	want = "SELECT * FROM (SELECT * FROM (SELECT id FROM t ORDER BY id) s) _dbp LIMIT 10 OFFSET 0"
+	if got != want {
+		t.Fatalf("wrap with subquery order by = %q, want %q", got, want)
+	}
+}
+
+// --- P2-2:负数分页参数钳制 ---
+
+// limit<0 视为禁用分页(旧行为),offset<0 视为 0:语句原样执行、不下发
+// total_rows。
+func TestCHHTTPDriverExecuteClampsNegativePaging(t *testing.T) {
+	var bodies []string
+	cl := newCHHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if string(body) == "SELECT 1" { // 构造期 Ping,不记录
+			io.WriteString(w, "1")
+			return
+		}
+		bodies = append(bodies, string(body))
+		io.WriteString(w, `["id","UInt64"]
+["UInt64"]
+[1]`)
+	})
+	res, err := cl.Execute(context.Background(), "SELECT id FROM logs.events", -1, -5)
+	if err != nil || len(res) != 1 || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if len(bodies) != 1 || bodies[0] != "SELECT id FROM logs.events" {
+		t.Fatalf("negative paging must disable wrapping, got %+v", bodies)
+	}
+	if res[0].TotalRows != nil {
+		t.Fatalf("total_rows must stay unset without paging, got %+v", res[0].TotalRows)
 	}
 }

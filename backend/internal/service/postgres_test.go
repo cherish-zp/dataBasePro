@@ -116,6 +116,8 @@ type fakePostgres struct {
 	pageCall    string
 	truncated   string
 	execSQL     string
+	execLimit   int
+	execOffset  int
 	execResult  []model.PostgresStatementResult
 	previewCall *model.PostgresCellUpdateRequest
 	previewOut  model.PostgresCellUpdatePreview
@@ -136,8 +138,9 @@ func (f *fakePostgres) PageRows(_ context.Context, database, schema, relation, k
 	f.pageCall = database + "." + schema + "." + relation + ":" + kind + ":" + where + ":" + orderBy
 	return f.page, nil
 }
-func (f *fakePostgres) Execute(_ context.Context, database, schema, sqlText string) ([]model.PostgresStatementResult, error) {
+func (f *fakePostgres) Execute(_ context.Context, database, schema, sqlText string, limit, offset int) ([]model.PostgresStatementResult, error) {
 	f.execSQL = database + "|" + schema + "|" + sqlText
+	f.execLimit, f.execOffset = limit, offset
 	return f.execResult, nil
 }
 func (f *fakePostgres) TruncateTable(_ context.Context, database, schema, relation, kind string) error {
@@ -326,7 +329,7 @@ func TestServicePostgresDelegates(t *testing.T) {
 	if got, want := fake.pageCall, "app.public.users:table:active:id"; got != want {
 		t.Fatalf("page call = %q, want %q", got, want)
 	}
-	gotStmts, err := svc.PostgresExecute(ctx, id, "app", "billing", "SELECT 1")
+	gotStmts, err := svc.PostgresExecute(ctx, id, "app", "billing", "SELECT 1", 0, 0)
 	if err != nil || len(gotStmts) != 1 || !gotStmts[0].HasRows || gotStmts[0].Statement != "SELECT 1" {
 		t.Fatalf("execute: %v %+v", err, gotStmts)
 	}
@@ -359,6 +362,9 @@ type fakePGCommand struct {
 type recordingPGConn struct {
 	mu       sync.Mutex
 	commands []fakePGCommand
+	// rowsFor 非空时按 SQL 定制行集(分页测试需要给页查询与 COUNT 查询
+	// 不同的应答);nil 时走 staticPGRows 默认行集。
+	rowsFor func(query string) (driver.Rows, error)
 }
 
 func (c *recordingPGConn) record(sql string, args []driver.NamedValue) {
@@ -384,6 +390,9 @@ func (c *recordingPGConn) ExecContext(_ context.Context, query string, args []dr
 }
 func (c *recordingPGConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	c.record(query, args)
+	if c.rowsFor != nil {
+		return c.rowsFor(query)
+	}
 	return &staticPGRows{columns: []string{"?column?"}, rows: [][]driver.Value{{int64(1)}}}, nil
 }
 
@@ -423,10 +432,10 @@ func TestPostgresExecuteResetsSearchPathBetweenRuns(t *testing.T) {
 		dbs:       map[string]*sql.DB{"app": sql.OpenDB(recordingPGConnector{conn})},
 	}
 	ctx := context.Background()
-	if _, err := client.Execute(ctx, "app", "billing", "SELECT 1"); err != nil {
+	if _, err := client.Execute(ctx, "app", "billing", "SELECT 1", 0, 0); err != nil {
 		t.Fatalf("first execute: %v", err)
 	}
-	if _, err := client.Execute(ctx, "app", "", "SELECT 1"); err != nil {
+	if _, err := client.Execute(ctx, "app", "", "SELECT 1", 0, 0); err != nil {
 		t.Fatalf("second execute: %v", err)
 	}
 	if err := client.Close(); err != nil {
@@ -460,5 +469,257 @@ func TestPostgresConnPoolSettings(t *testing.T) {
 	applyPostgresConnPoolSettings(db)
 	if err := db.Close(); err != nil {
 		t.Fatalf("close db: %v", err)
+	}
+}
+
+// --- Execute:服务端分页(包装查询 + COUNT 计数 / EXPLAIN 类截断回退) ---
+
+func newPagedPGClient(t *testing.T, conn *recordingPGConn) *PostgresClient {
+	t.Helper()
+	return &PostgresClient{
+		cfg:       model.PostgresConfig{Database: "app"},
+		defaultDB: "app",
+		dbs:       map[string]*sql.DB{"app": sql.OpenDB(recordingPGConnector{conn})},
+	}
+}
+
+// TestPostgresExecutePagedWrapsSelect 锁定包装分页契约:SELECT 语句被改写为
+// `SELECT * FROM (<原文>) _pgc LIMIT n OFFSET m` 取页,同一连接再跑
+// `SELECT COUNT(*) FROM (<原文>) _pgc` 计数,res.Statement 保持用户原文。
+func TestPostgresExecutePagedWrapsSelect(t *testing.T) {
+	conn := &recordingPGConn{rowsFor: func(query string) (driver.Rows, error) {
+		if strings.Contains(query, "COUNT(*)") {
+			return &staticPGRows{columns: []string{"count"}, rows: [][]driver.Value{{int64(1234)}}}, nil
+		}
+		return &staticPGRows{columns: []string{"id"}, rows: [][]driver.Value{{int64(1)}, {int64(2)}}}, nil
+	}}
+	client := newPagedPGClient(t, conn)
+	res, err := client.Execute(context.Background(), "app", "public", "SELECT * FROM users", 10, 5)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	r := res[0]
+	if r.Error != "" {
+		t.Fatalf("statement must succeed, got %q", r.Error)
+	}
+	if r.Statement != "SELECT * FROM users" {
+		t.Fatalf("res.Statement must keep the original text, got %q", r.Statement)
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.commands) < 3 {
+		t.Fatalf("expected page+count after set_config, got %#v", conn.commands)
+	}
+	if got := conn.commands[1].SQL; got != "SELECT * FROM (SELECT * FROM users) _pgc LIMIT 10 OFFSET 5" {
+		t.Fatalf("page query mismatch, got %q", got)
+	}
+	if got := conn.commands[2].SQL; got != "SELECT COUNT(*) FROM (SELECT * FROM users) _pgc" {
+		t.Fatalf("count query mismatch, got %q", got)
+	}
+	if r.TotalRows == nil || *r.TotalRows != 1234 {
+		t.Fatalf("total_rows must be the exact count 1234, got %+v", r.TotalRows)
+	}
+	if len(r.Rows) != 2 || r.Rows[0][0] == nil || *r.Rows[0][0] != "1" {
+		t.Fatalf("unexpected rows: %+v", r.Rows)
+	}
+}
+
+// EXPLAIN 等不能包装的语句只消费 offset+limit 行:取满 limit 行 total_rows=-1,
+// 耗尽时 total_rows=offset+本页行数。
+func TestPostgresExecutePagedExplainTruncates(t *testing.T) {
+	conn := &recordingPGConn{rowsFor: func(string) (driver.Rows, error) {
+		return &staticPGRows{columns: []string{"QUERY PLAN"}, rows: [][]driver.Value{
+			{"Seq Scan on users (cost=0..1 rows=2 width=4)"},
+			{"Planning Time: 0.1 ms"},
+		}}, nil
+	}}
+	client := newPagedPGClient(t, conn)
+
+	// 取满 limit=1 行(offset=1,消费至 2 行,本页 1 行)→ -1。
+	res, err := client.Execute(context.Background(), "app", "", "EXPLAIN SELECT * FROM users", 1, 1)
+	if err != nil || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if len(res[0].Rows) != 1 || *res[0].Rows[0][0] != "Planning Time: 0.1 ms" {
+		t.Fatalf("page must start at offset 1, got %+v", res[0].Rows)
+	}
+	if res[0].TotalRows == nil || *res[0].TotalRows != -1 {
+		t.Fatalf("a full page must report total_rows -1, got %+v", res[0].TotalRows)
+	}
+
+	// 耗尽(limit=5, offset=1,仅剩 1 行)→ offset+pageLen=2。
+	res, err = client.Execute(context.Background(), "app", "", "EXPLAIN SELECT * FROM users", 5, 1)
+	if err != nil || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if res[0].TotalRows == nil || *res[0].TotalRows != 2 {
+		t.Fatalf("exhausted result must report offset+pageLen=2, got %+v", res[0].TotalRows)
+	}
+}
+
+// limit=0 保持旧行为:原语句执行、无 COUNT 查询、不下发 total_rows。
+func TestPostgresExecuteWithoutLimitKeepsLegacyBehavior(t *testing.T) {
+	conn := &recordingPGConn{}
+	client := newPagedPGClient(t, conn)
+	res, err := client.Execute(context.Background(), "app", "", "SELECT 1", 0, 0)
+	if err != nil || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	for _, cmd := range conn.commands {
+		if strings.Contains(cmd.SQL, "COUNT(*)") || strings.Contains(cmd.SQL, "_pgc") {
+			t.Fatalf("no paging statements may run without limit, got %#v", conn.commands)
+		}
+	}
+	if res[0].TotalRows != nil {
+		t.Fatalf("total_rows must stay unset without paging, got %+v", res[0].TotalRows)
+	}
+}
+
+// --- P0-1:数据修改 CTE 禁用包装与计数 ---
+
+// postgresStatementContainsDML:顶层(深度 0)与 WITH 之后第一层 CTE 子查询
+// (深度 1)中出现 INSERT/UPDATE/DELETE/MERGE 才命中;字符串、双引号标识符、
+// 美元体与更深层子查询里的同形词一律不算。
+func TestPostgresStatementContainsDML(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"delete cte", "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d", true},
+		{"update cte", "WITH d AS (UPDATE t SET x = 1 RETURNING *) SELECT * FROM d", true},
+		{"insert cte", "WITH d AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM d", true},
+		{"second cte carries dml", "WITH a AS (SELECT 1), d AS (DELETE FROM t RETURNING *) SELECT * FROM a, d", true},
+		{"top level delete after cte", "WITH a AS (SELECT 1) DELETE FROM t", true},
+		{"lowercase keyword", "with d as (delete from t returning *) select * from d", true},
+		{"plain select cte", "WITH a AS (SELECT 1) SELECT * FROM a", false},
+		{"keyword only in string", "WITH a AS (SELECT 'DELETE FROM t' AS q) SELECT * FROM a", false},
+		{"keyword only in dollar body", "WITH a AS (SELECT $$DELETE FROM t$$ AS q) SELECT * FROM a", false},
+		{"keyword only in quoted ident", `WITH a AS (SELECT "delete" FROM t) SELECT * FROM a`, false},
+		{"keyword only in comment", "WITH a AS (SELECT /* DELETE */ 1) SELECT * FROM a", false},
+		{"word boundary prefix", "WITH a AS (SELECT deleted_at FROM t) SELECT * FROM a", false},
+	}
+	for _, tc := range cases {
+		if got := postgresStatementContainsDML(tc.in); got != tc.want {
+			t.Fatalf("%s: postgresStatementContainsDML(%q) = %v, want %v", tc.name, tc.in, got, tc.want)
+		}
+	}
+}
+
+// P0-1 集成:数据修改 CTE 不得包装分页——包装执行一次、COUNT 再执行一次会
+// 让 DELETE 生效两次。命中检测时与 EXPLAIN/SHOW 同走客户端截断回退:原语句
+// 只执行一次,无任何 _pgc 包装/COUNT 语句,total_rows 走截断语义。
+func TestPostgresExecutePagedDMLCteRunsOnceWithoutWrapOrCount(t *testing.T) {
+	conn := &recordingPGConn{rowsFor: func(string) (driver.Rows, error) {
+		return &staticPGRows{columns: []string{"id"}, rows: [][]driver.Value{{int64(1)}, {int64(2)}, {int64(3)}}}, nil
+	}}
+	client := newPagedPGClient(t, conn)
+	res, err := client.Execute(context.Background(), "app", "",
+		"WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d", 2, 0)
+	if err != nil || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	// set_config + 原语句,恰好两条:无包装页查询、无 COUNT 第二次执行。
+	if len(conn.commands) != 2 {
+		t.Fatalf("dml cte must run verbatim exactly once, got %#v", conn.commands)
+	}
+	if got := conn.commands[1].SQL; got != "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d" {
+		t.Fatalf("statement must not be wrapped, got %q", got)
+	}
+	if len(res[0].Rows) != 2 {
+		t.Fatalf("page must hold limit rows, got %+v", res[0].Rows)
+	}
+	if res[0].TotalRows == nil || *res[0].TotalRows != -1 {
+		t.Fatalf("a full page must report total_rows -1, got %+v", res[0].TotalRows)
+	}
+}
+
+// --- P1-2:分页包装丢失 ORDER BY ---
+
+// splitTrailingTopLevelOrderBy:只外提语句顶层(括号深度 0,引号/注释/美元
+// 体之外)、其后没有 LIMIT/OFFSET/FOR 等尾巴的结尾 ORDER BY。
+func TestSplitTrailingTopLevelOrderBy(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    string
+		head  string
+		order string
+		ok    bool
+	}{
+		{"trailing order by", "SELECT * FROM users ORDER BY created_at DESC", "SELECT * FROM users", "ORDER BY created_at DESC", true},
+		{"expression kept verbatim", "SELECT a FROM t ORDER BY lower(name) DESC, id NULLS LAST", "SELECT a FROM t", "ORDER BY lower(name) DESC, id NULLS LAST", true},
+		{"paren wrapped query", "(SELECT * FROM a UNION SELECT * FROM b) ORDER BY id", "(SELECT * FROM a UNION SELECT * FROM b)", "ORDER BY id", true},
+		{"cte body order by stays inside", "WITH c AS (SELECT * FROM t ORDER BY id) SELECT * FROM c", "", "", false},
+		{"trailing order by after cte", "WITH c AS (SELECT * FROM t) SELECT * FROM c ORDER BY name", "WITH c AS (SELECT * FROM t) SELECT * FROM c", "ORDER BY name", true},
+		{"limit tail blocks hoist", "SELECT * FROM t ORDER BY id LIMIT 10", "", "", false},
+		{"offset tail blocks hoist", "SELECT * FROM t ORDER BY id OFFSET 5", "", "", false},
+		{"for update tail blocks hoist", "SELECT * FROM t ORDER BY id FOR UPDATE", "", "", false},
+		{"subquery order by not top level", "SELECT * FROM (SELECT * FROM t ORDER BY id) s", "", "", false},
+		{"string literal skipped", "SELECT 'ORDER BY x' FROM t ORDER BY id", "SELECT 'ORDER BY x' FROM t", "ORDER BY id", true},
+		{"quoted identifier skipped", `SELECT "ORDER BY" FROM t ORDER BY id`, `SELECT "ORDER BY" FROM t`, "ORDER BY id", true},
+		{"no order by", "SELECT * FROM t", "", "", false},
+		{"lowercase keywords", "select * from t order by id", "select * from t", "order by id", true},
+		{"unbalanced parens bail out", "SELECT * FROM (t ORDER BY id", "", "", false},
+	}
+	for _, tc := range cases {
+		head, order, ok := splitTrailingTopLevelOrderBy(tc.in)
+		if ok != tc.ok || head != tc.head || order != tc.order {
+			t.Fatalf("%s: splitTrailingTopLevelOrderBy(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				tc.name, tc.in, head, order, ok, tc.head, tc.order, tc.ok)
+		}
+	}
+}
+
+// P1-2 集成:带顶层尾 ORDER BY 的 SELECT,页查询把 ORDER BY 外提到包装
+// 外层(派生表不保证保留子查询内 ORDER BY);COUNT 仍包装原文,不带外提。
+func TestPostgresExecutePagedHoistsTrailingOrderBy(t *testing.T) {
+	conn := &recordingPGConn{rowsFor: func(query string) (driver.Rows, error) {
+		if strings.Contains(query, "COUNT(*)") {
+			return &staticPGRows{columns: []string{"count"}, rows: [][]driver.Value{{int64(7)}}}, nil
+		}
+		return &staticPGRows{columns: []string{"id"}, rows: [][]driver.Value{{int64(1)}}}, nil
+	}}
+	client := newPagedPGClient(t, conn)
+	res, err := client.Execute(context.Background(), "app", "", "SELECT * FROM users ORDER BY created_at DESC", 10, 5)
+	if err != nil || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	if len(conn.commands) < 3 {
+		t.Fatalf("expected page+count after set_config, got %#v", conn.commands)
+	}
+	wantPage := "SELECT * FROM (SELECT * FROM users) _pgc ORDER BY created_at DESC LIMIT 10 OFFSET 5"
+	wantCount := "SELECT COUNT(*) FROM (SELECT * FROM users ORDER BY created_at DESC) _pgc"
+	if got := conn.commands[1].SQL; got != wantPage {
+		t.Fatalf("page query mismatch, got %q want %q", got, wantPage)
+	}
+	if got := conn.commands[2].SQL; got != wantCount {
+		t.Fatalf("count query mismatch, got %q want %q", got, wantCount)
+	}
+}
+
+// --- P2-2:负数分页参数钳制 ---
+
+func TestPostgresExecuteClampsNegativePaging(t *testing.T) {
+	conn := &recordingPGConn{}
+	client := newPagedPGClient(t, conn)
+	res, err := client.Execute(context.Background(), "app", "", "SELECT 1", -1, -5)
+	if err != nil || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	conn.mu.Lock()
+	defer conn.mu.Unlock()
+	for _, cmd := range conn.commands {
+		if strings.Contains(cmd.SQL, "_pgc") || strings.Contains(cmd.SQL, "COUNT(*)") {
+			t.Fatalf("negative limit must disable paging, got %#v", conn.commands)
+		}
+	}
+	if res[0].TotalRows != nil {
+		t.Fatalf("total_rows must stay unset without paging, got %+v", res[0].TotalRows)
 	}
 }

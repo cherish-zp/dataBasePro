@@ -21,6 +21,8 @@ type fakeCHApp struct {
 	truncated   string
 	clusterArg  bool
 	execSQL     string
+	execLimit   int
+	execOffset  int
 	execResult  []model.CHStatementResult
 	execErr     error
 	truncateErr error
@@ -62,8 +64,9 @@ func (f *fakeCHApp) TruncateTable(_ context.Context, database, table string, onC
 	f.clusterArg = onCluster
 	return f.truncateErr
 }
-func (f *fakeCHApp) Execute(_ context.Context, sqlText string) ([]model.CHStatementResult, error) {
+func (f *fakeCHApp) Execute(_ context.Context, sqlText string, limit, offset int) ([]model.CHStatementResult, error) {
 	f.execSQL = sqlText
+	f.execLimit, f.execOffset = limit, offset
 	return f.execResult, f.execErr
 }
 
@@ -435,3 +438,15 @@ func TestCHCellUpdateJSONShapes(t *testing.T) {
 }
 
 func strPtrOf(s string) *string { return &s }
+
+// TestAppCHExecutePassesPaging 请求上的分页参数必须透传到执行层。
+func TestAppCHExecutePassesPaging(t *testing.T) {
+	fake := &fakeCHApp{}
+	app, connID := newCHApp(t, fake)
+	if _, err := app.CHExecute(CHExecuteRequest{ConnectionID: connID, SQL: "SELECT 1", Limit: 500, Offset: 100}); err != nil {
+		t.Fatalf("CHExecute: %v", err)
+	}
+	if fake.execLimit != 500 || fake.execOffset != 100 {
+		t.Fatalf("paging must pass through: limit=%d offset=%d", fake.execLimit, fake.execOffset)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -349,7 +350,17 @@ func (c *PostgresClient) PageRows(ctx context.Context, database, schema, relatio
 
 // Execute splits and runs each statement on one connection. A non-empty schema
 // first sets search_path so unqualified statements are scoped as expected.
-func (c *PostgresClient) Execute(ctx context.Context, database, schema, sqlText string) ([]model.PostgresStatementResult, error) {
+// limit>0 启用服务端分页:SELECT/WITH 语句被子查询包装为仅返回 offset 起的
+// limit 行并附 COUNT 总数;EXPLAIN/SHOW/TABLE/VALUES 等不能包装的返回行语句
+// 只消费 offset+limit 行(取满 limit 行 total_rows=-1,否则 offset+实际行数)。
+func (c *PostgresClient) Execute(ctx context.Context, database, schema, sqlText string, limit, offset int) ([]model.PostgresStatementResult, error) {
+	// 分页参数钳制:limit<0 视为未启用(旧行为),offset<0 视为 0。
+	if limit < 0 {
+		limit = 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	statements := SplitPostgresStatements(sqlText)
 	if len(statements) == 0 {
 		return nil, errors.New("没有可执行的 SQL 语句")
@@ -371,14 +382,28 @@ func (c *PostgresClient) Execute(ctx context.Context, database, schema, sqlText 
 		res := model.PostgresStatementResult{Statement: statement, HasRows: postgresStatementReturnsRows(statement)}
 		start := time.Now()
 		if res.HasRows {
-			rows, err := conn.QueryContext(ctx, statement)
+			// 分页决策与 MySQL 同构;res.Statement 保持原文(单表 SELECT 的
+			// 主键解析与前端展示都基于原语句)。数据修改 CTE(WITH d AS
+			// (DELETE/INSERT/UPDATE ... RETURNING ...) SELECT ...)与
+			// `WITH ... DELETE` 形态禁止包装:包装执行一次、COUNT 计数再执行
+			// 一次会让 DML 生效两次,命中时与 EXPLAIN/SHOW 同走客户端截断。
+			query, collectMax, wrapped := statement, 0, false
+			if limit > 0 {
+				if sqlStatementWrappable(statement) && !postgresStatementContainsDML(statement) {
+					query = wrapPostgresPagedQuery(statement, limit, offset)
+					wrapped = true
+				} else {
+					collectMax = offset + limit
+				}
+			}
+			rows, err := conn.QueryContext(ctx, query)
 			if err != nil {
 				res.DurationMs = msSince(start)
 				res.Error = err.Error()
 				out = append(out, res)
 				return out, nil
 			}
-			cols, dataRows, err := collectPostgresRows(rows)
+			cols, dataRows, err := collectPostgresRowsN(rows, collectMax)
 			closeErr := rows.Close()
 			if err != nil || closeErr != nil {
 				res.DurationMs = msSince(start)
@@ -389,6 +414,16 @@ func (c *PostgresClient) Execute(ctx context.Context, database, schema, sqlText 
 				}
 				out = append(out, res)
 				return out, nil
+			}
+			if limit > 0 {
+				if wrapped {
+					// 计数失败不影响语句结果:total_rows 保持不下发(nil)。
+					res.TotalRows = countPostgresWrapped(ctx, conn, statement)
+				} else {
+					page, full := slicePageRows(dataRows, limit, offset)
+					dataRows = page
+					res.TotalRows = fallbackTotalRows(full, offset, len(page))
+				}
 			}
 			res.Columns = cols
 			res.Rows = dataRows
@@ -414,6 +449,41 @@ func (c *PostgresClient) Execute(ctx context.Context, database, schema, sqlText 
 		out = append(out, res)
 	}
 	return out, nil
+}
+
+// wrapPostgresPagedQuery renders the paged form of a wrappable statement: the
+// original text (trailing semicolon stripped) becomes a derived table, and the
+// page window is appended as literal LIMIT/OFFSET (integers, injection-free).
+// 语句顶层以 ORDER BY 结尾且其后无 LIMIT/FOR 等尾巴时,把 ORDER BY 原样外提
+// 到包装外层(派生表不保证保留子查询内的 ORDER BY,跨页顺序可能不稳)。
+func wrapPostgresPagedQuery(stmt string, limit, offset int) string {
+	body := stripTrailingSemicolon(stmt)
+	tail := ""
+	if head, order, ok := splitTrailingTopLevelOrderBy(body); ok {
+		body, tail = head, " "+order
+	}
+	return "SELECT * FROM (" + body + ") _pgc" + tail + " LIMIT " +
+		strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
+}
+
+// countPostgresWrapped runs `SELECT COUNT(*) FROM (<stmt>) _pgc` on the same
+// console connection and returns the exact total; a failing count returns nil
+// (total_rows is then omitted rather than guessed).
+func countPostgresWrapped(ctx context.Context, conn *sql.Conn, stmt string) *int64 {
+	rows, err := conn.QueryContext(ctx,
+		"SELECT COUNT(*) FROM ("+stripTrailingSemicolon(stmt)+") _pgc")
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil
+	}
+	var total int64
+	if err := rows.Scan(&total); err != nil {
+		return nil
+	}
+	return &total
 }
 
 // TruncateTable empties an ordinary table; views and materialized views are
@@ -692,6 +762,13 @@ type postgresQueryer interface {
 }
 
 func collectPostgresRows(rows *sql.Rows) ([]model.PostgresColumn, [][]*string, error) {
+	return collectPostgresRowsN(rows, 0)
+}
+
+// collectPostgresRowsN 是 collectPostgresRows 的限量变体:至多消费 max 行
+// (max<=0 表示不限制),供 EXPLAIN/SHOW/TABLE/VALUES 等不能包装的语句做
+// offset+limit 截断。
+func collectPostgresRowsN(rows *sql.Rows, max int) ([]model.PostgresColumn, [][]*string, error) {
 	types, err := rows.ColumnTypes()
 	if err != nil {
 		return nil, nil, fmt.Errorf("column types: %w", err)
@@ -704,6 +781,9 @@ func collectPostgresRows(rows *sql.Rows) ([]model.PostgresColumn, [][]*string, e
 	pointers := make([]any, len(types))
 	out := [][]*string{}
 	for rows.Next() {
+		if max > 0 && len(out) >= max {
+			break
+		}
 		for i := range values {
 			pointers[i] = &values[i]
 		}

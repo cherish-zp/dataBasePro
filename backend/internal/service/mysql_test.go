@@ -290,6 +290,8 @@ type fakeMysqlDS struct {
 	truncated    string
 	execDB       string
 	execSQL      string
+	execLimit    int
+	execOffset   int
 	execResult   []model.MysqlStatementResult
 	previewOut   model.MysqlCellUpdatePreview
 	previewErr   error
@@ -321,9 +323,10 @@ func (f *fakeMysqlDS) TruncateTable(_ context.Context, database, table string) e
 	f.truncated = database + "." + table
 	return nil
 }
-func (f *fakeMysqlDS) Execute(_ context.Context, database, sqlText string) ([]model.MysqlStatementResult, error) {
+func (f *fakeMysqlDS) Execute(_ context.Context, database, sqlText string, limit, offset int) ([]model.MysqlStatementResult, error) {
 	f.execDB = database
 	f.execSQL = sqlText
+	f.execLimit, f.execOffset = limit, offset
 	return f.execResult, nil
 }
 func (f *fakeMysqlDS) PreviewCellUpdate(_ context.Context, database, table string, set model.MysqlCellValue, where []model.MysqlCellValue) (model.MysqlCellUpdatePreview, error) {
@@ -363,7 +366,7 @@ func TestMysqlAccessorDelegatesToPooledFake(t *testing.T) {
 	if !fake.hitDatabases {
 		t.Fatal("delegation must reach the pooled fake")
 	}
-	if _, err := svc.MysqlExecute(ctx, c.ID, "app", "SELECT 1"); err != nil || fake.execSQL != "SELECT 1" || fake.execDB != "app" {
+	if _, err := svc.MysqlExecute(ctx, c.ID, "app", "SELECT 1", 0, 0); err != nil || fake.execSQL != "SELECT 1" || fake.execDB != "app" {
 		t.Fatalf("MysqlExecute: %v sql=%q db=%q", err, fake.execSQL, fake.execDB)
 	}
 }
@@ -469,6 +472,9 @@ type fakeMysqlDrvConn struct {
 	// queryRows 非空时,业务查询(非 information_schema)返回该结果集,
 	// 供 collectMysqlRows 的 wire 形状测试使用。
 	queryRows *fakeMysqlDrvRows
+	// countRows 非空时,SELECT COUNT(*) 查询返回该结果集(分页计数与页数据
+	// 需要不同的应答,故与 queryRows 分开)。
+	countRows *fakeMysqlDrvRows
 }
 
 // pkResultRows 把桩数据渲染成 information_schema.columns 形状的结果集
@@ -522,6 +528,9 @@ func (s *fakeMysqlDrvStmt) Query(args []driver.Value) (driver.Rows, error) {
 		return s.conn.pkResultRows(args), nil
 	}
 	s.conn.queries = append(s.conn.queries, s.query)
+	if s.conn.countRows != nil && strings.Contains(strings.ToUpper(s.query), "COUNT(*)") {
+		return s.conn.countRows, nil
+	}
 	if s.conn.queryRows != nil {
 		return s.conn.queryRows, nil
 	}
@@ -591,7 +600,7 @@ func newFakeMysqlClient(t *testing.T, pending *fakeMysqlDrvConn) (*MysqlClient, 
 
 func TestMysqlExecuteWithDatabasePinsUSEAndStatements(t *testing.T) {
 	c, created := newFakeMysqlClient(t, nil)
-	results, err := c.Execute(context.Background(), "订单", "SELECT 1;\nSET @x = 1;")
+	results, err := c.Execute(context.Background(), "订单", "SELECT 1;\nSET @x = 1;", 0, 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -612,7 +621,7 @@ func TestMysqlExecuteWithDatabasePinsUSEAndStatements(t *testing.T) {
 
 func TestMysqlExecuteWithoutDatabaseSkipsUSE(t *testing.T) {
 	c, created := newFakeMysqlClient(t, nil)
-	if _, err := c.Execute(context.Background(), "", "SELECT 1"); err != nil {
+	if _, err := c.Execute(context.Background(), "", "SELECT 1", 0, 0); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	for _, conn := range *created {
@@ -630,7 +639,7 @@ func TestMysqlExecuteWithoutDatabaseSkipsUSE(t *testing.T) {
 func TestMysqlExecuteUSEFailureStopsBeforeStatements(t *testing.T) {
 	pinned := &fakeMysqlDrvConn{useErr: errors.New("Error 1049: Unknown database 'nope'")}
 	c, created := newFakeMysqlClient(t, pinned)
-	results, err := c.Execute(context.Background(), "nope", "SELECT 1;\nSET @x = 1;")
+	results, err := c.Execute(context.Background(), "nope", "SELECT 1;\nSET @x = 1;", 0, 0)
 	if err == nil || !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("USE failure must surface the driver error, got %v", err)
 	}
@@ -645,8 +654,214 @@ func TestMysqlExecuteUSEFailureStopsBeforeStatements(t *testing.T) {
 
 func TestMysqlExecuteEmptyScript(t *testing.T) {
 	c, _ := newFakeMysqlClient(t, nil)
-	if _, err := c.Execute(context.Background(), "app", "  \n "); err == nil || !strings.Contains(err.Error(), "没有可执行的 SQL 语句") {
+	if _, err := c.Execute(context.Background(), "app", "  \n ", 0, 0); err == nil || !strings.Contains(err.Error(), "没有可执行的 SQL 语句") {
 		t.Fatalf("empty script must be rejected, got %v", err)
+	}
+}
+
+// --- Execute:服务端分页(包装查询 + COUNT 计数 / SHOW 类截断回退) ---
+
+// TestMysqlExecutePagedWrapsSelect 锁定包装分页契约:SELECT 语句被改写为
+// `SELECT * FROM (<原文>) _dbp LIMIT n OFFSET m` 取页,同一连接再跑
+// `SELECT COUNT(*) FROM (<原文>) _dbp` 计数,res.SQL 保持用户原文。
+func TestMysqlExecutePagedWrapsSelect(t *testing.T) {
+	conn := &fakeMysqlDrvConn{
+		queryRows: &fakeMysqlDrvRows{
+			cols: []string{"id"},
+			vals: [][]driver.Value{{int64(1)}, {int64(2)}},
+		},
+		countRows: &fakeMysqlDrvRows{
+			cols: []string{"COUNT(*)"},
+			vals: [][]driver.Value{{int64(1234)}},
+		},
+	}
+	c, created := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM users", 500, 100)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	res := results[0]
+	if res.Error != "" {
+		t.Fatalf("statement must succeed, got %q", res.Error)
+	}
+	if res.SQL != "SELECT * FROM users" {
+		t.Fatalf("res.SQL must keep the original text, got %q", res.SQL)
+	}
+	wantPage := "SELECT * FROM (SELECT * FROM users) _dbp LIMIT 500 OFFSET 100"
+	wantCount := "SELECT COUNT(*) FROM (SELECT * FROM users) _dbp"
+	if len(conn.queries) != 2 || conn.queries[0] != wantPage || conn.queries[1] != wantCount {
+		t.Fatalf("paged queries mismatch:\n got %+v\nwant [%q %q]", conn.queries, wantPage, wantCount)
+	}
+	if res.TotalRows == nil || *res.TotalRows != 1234 {
+		t.Fatalf("total_rows must be the exact count 1234, got %+v", res.TotalRows)
+	}
+	if len(res.Rows) != 2 {
+		t.Fatalf("unexpected rows: %+v", res.Rows)
+	}
+	if len(*created) != 1 {
+		t.Fatalf("page and count must run on one connection, got %d", len(*created))
+	}
+}
+
+// WITH 开头的语句同样可包装;尾分号去干净再进子查询。
+func TestMysqlExecutePagedWrapsWithStatement(t *testing.T) {
+	conn := &fakeMysqlDrvConn{
+		countRows: &fakeMysqlDrvRows{cols: []string{"COUNT(*)"}, vals: [][]driver.Value{{int64(3)}}},
+	}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app", "WITH c AS (SELECT 1) SELECT * FROM c;", 10, 5)
+	if err != nil || results[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, results)
+	}
+	wantPage := "SELECT * FROM (WITH c AS (SELECT 1) SELECT * FROM c) _dbp LIMIT 10 OFFSET 5"
+	if len(conn.queries) != 2 || conn.queries[0] != wantPage {
+		t.Fatalf("WITH must be wrapped with LIMIT/OFFSET, got %+v", conn.queries)
+	}
+	if results[0].TotalRows == nil || *results[0].TotalRows != 3 {
+		t.Fatalf("total_rows must come from the count query, got %+v", results[0].TotalRows)
+	}
+}
+
+// SHOW/DESC/EXPLAIN 等不能包装的语句只消费 offset+limit 行:取满 limit 行
+// total_rows=-1(结果可能未耗尽),本页跳过前 offset 行。
+func TestMysqlExecutePagedShowTruncatesFullPage(t *testing.T) {
+	conn := &fakeMysqlDrvConn{queryRows: &fakeMysqlDrvRows{
+		cols: []string{"Tables_in_app"},
+		vals: [][]driver.Value{{"a"}, {"b"}, {"c"}, {"d"}, {"e"}},
+	}}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "", "SHOW TABLES", 2, 1)
+	if err != nil || results[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, results)
+	}
+	res := results[0]
+	// 原语句执行(无包装、无 COUNT),页数据从 offset 起共 limit 行。
+	if len(conn.queries) != 1 || conn.queries[0] != "SHOW TABLES" {
+		t.Fatalf("SHOW must run verbatim, got %+v", conn.queries)
+	}
+	if len(res.Rows) != 2 || res.Rows[0][0] == nil || *res.Rows[0][0] != "b" || *res.Rows[1][0] != "c" {
+		t.Fatalf("page must start at offset 1 with 2 rows, got %+v", res.Rows)
+	}
+	if res.TotalRows == nil || *res.TotalRows != -1 {
+		t.Fatalf("a full page must report total_rows -1, got %+v", res.TotalRows)
+	}
+}
+
+// 结果集在 offset+limit 内耗尽时,total_rows = offset+本页行数(精确)。
+func TestMysqlExecutePagedShowExhaustedTotal(t *testing.T) {
+	conn := &fakeMysqlDrvConn{queryRows: &fakeMysqlDrvRows{
+		cols: []string{"Tables_in_app"},
+		vals: [][]driver.Value{{"a"}, {"b"}, {"c"}, {"d"}},
+	}}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "", "SHOW TABLES", 2, 3)
+	if err != nil || results[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, results)
+	}
+	res := results[0]
+	if len(res.Rows) != 1 || res.Rows[0][0] == nil || *res.Rows[0][0] != "d" {
+		t.Fatalf("page must hold the remaining 1 row, got %+v", res.Rows)
+	}
+	if res.TotalRows == nil || *res.TotalRows != 4 {
+		t.Fatalf("exhausted result must report offset+pageLen=4, got %+v", res.TotalRows)
+	}
+}
+
+// limit=0(或未传)保持旧行为:原语句执行、不下发 total_rows。
+func TestMysqlExecuteWithoutLimitKeepsLegacyBehavior(t *testing.T) {
+	conn := &fakeMysqlDrvConn{queryRows: &fakeMysqlDrvRows{
+		cols: []string{"id"},
+		vals: [][]driver.Value{{int64(1)}, {int64(2)}, {int64(3)}},
+	}}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM users", 0, 0)
+	if err != nil || results[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, results)
+	}
+	if len(conn.queries) != 1 || conn.queries[0] != "SELECT * FROM users" {
+		t.Fatalf("statement must run verbatim without paging, got %+v", conn.queries)
+	}
+	if len(results[0].Rows) != 3 {
+		t.Fatalf("all rows must be returned, got %+v", results[0].Rows)
+	}
+	if results[0].TotalRows != nil {
+		t.Fatalf("total_rows must stay unset without paging, got %+v", results[0].TotalRows)
+	}
+}
+
+// --- P1-2:分页包装丢失 ORDER BY ---
+
+// 带顶层尾 ORDER BY 的 SELECT:外提到包装外层(派生表不保证保留子查询内的
+// ORDER BY,跨页顺序可能不稳),外提片段按原文拼接。
+func TestWrapMysqlPagedQueryHoistsTrailingOrderBy(t *testing.T) {
+	got := wrapMysqlPagedQuery("SELECT * FROM users ORDER BY created_at DESC, id", 10, 5)
+	want := "SELECT * FROM (SELECT * FROM users) _dbp ORDER BY created_at DESC, id LIMIT 10 OFFSET 5"
+	if got != want {
+		t.Fatalf("hoisted wrap = %q, want %q", got, want)
+	}
+}
+
+// 尾巴带 LIMIT 的 ORDER BY 不外提(外提会改变语义),保持整句包装。
+func TestWrapMysqlPagedQueryKeepsOrderByWithLimitTail(t *testing.T) {
+	got := wrapMysqlPagedQuery("SELECT * FROM users ORDER BY created_at LIMIT 20", 10, 0)
+	want := "SELECT * FROM (SELECT * FROM users ORDER BY created_at LIMIT 20) _dbp LIMIT 10 OFFSET 0"
+	if got != want {
+		t.Fatalf("wrap with limit tail = %q, want %q", got, want)
+	}
+}
+
+// 子查询内(括号深度>0)的 ORDER BY 不外提。
+func TestWrapMysqlPagedQueryKeepsSubqueryOrderBy(t *testing.T) {
+	got := wrapMysqlPagedQuery("SELECT * FROM (SELECT * FROM t ORDER BY id) s", 10, 0)
+	want := "SELECT * FROM (SELECT * FROM (SELECT * FROM t ORDER BY id) s) _dbp LIMIT 10 OFFSET 0"
+	if got != want {
+		t.Fatalf("wrap with subquery order by = %q, want %q", got, want)
+	}
+}
+
+// Execute 集成:页查询外提 ORDER BY,COUNT 仍包装原文(计数不需要排序)。
+func TestMysqlExecutePagedHoistsTrailingOrderBy(t *testing.T) {
+	conn := &fakeMysqlDrvConn{
+		queryRows: &fakeMysqlDrvRows{cols: []string{"id"}, vals: [][]driver.Value{{int64(1)}}},
+		countRows: &fakeMysqlDrvRows{cols: []string{"COUNT(*)"}, vals: [][]driver.Value{{int64(7)}}},
+	}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM users ORDER BY created_at DESC", 10, 5)
+	if err != nil || results[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, results)
+	}
+	wantPage := "SELECT * FROM (SELECT * FROM users) _dbp ORDER BY created_at DESC LIMIT 10 OFFSET 5"
+	wantCount := "SELECT COUNT(*) FROM (SELECT * FROM users ORDER BY created_at DESC) _dbp"
+	if len(conn.queries) != 2 || conn.queries[0] != wantPage || conn.queries[1] != wantCount {
+		t.Fatalf("paged queries mismatch:\n got %+v\nwant [%q %q]", conn.queries, wantPage, wantCount)
+	}
+	if results[0].TotalRows == nil || *results[0].TotalRows != 7 {
+		t.Fatalf("total_rows must come from the count query, got %+v", results[0].TotalRows)
+	}
+}
+
+// --- P2-2:负数分页参数钳制 ---
+
+// limit<0 视为禁用分页(旧行为),offset<0 视为 0:语句原样执行、不下发
+// total_rows,负数不得下溢到包装或截断逻辑。
+func TestMysqlExecuteClampsNegativePaging(t *testing.T) {
+	conn := &fakeMysqlDrvConn{queryRows: &fakeMysqlDrvRows{
+		cols: []string{"id"},
+		vals: [][]driver.Value{{int64(1)}, {int64(2)}, {int64(3)}},
+	}}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM users", -1, -5)
+	if err != nil || results[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, results)
+	}
+	if len(conn.queries) != 1 || conn.queries[0] != "SELECT * FROM users" {
+		t.Fatalf("negative paging must disable wrapping, got %+v", conn.queries)
+	}
+	if len(results[0].Rows) != 3 {
+		t.Fatalf("all rows must be returned, got %+v", results[0].Rows)
+	}
+	if results[0].TotalRows != nil {
+		t.Fatalf("total_rows must stay unset without paging, got %+v", results[0].TotalRows)
 	}
 }
 
@@ -697,7 +912,7 @@ func TestSingleTableName(t *testing.T) {
 func TestMysqlExecuteFillsPrimaryKeyForSingleTableSelect(t *testing.T) {
 	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{"app.users": {"id", "tenant_id"}}}
 	c, created := newFakeMysqlClient(t, conn)
-	results, err := c.Execute(context.Background(), "app", "SELECT * FROM users")
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM users", 0, 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -724,7 +939,7 @@ func TestMysqlExecuteFillsPrimaryKeyForSingleTableSelect(t *testing.T) {
 func TestMysqlExecuteQualifiedTableUsesSQLSchema(t *testing.T) {
 	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{"other.users": {"uid"}}}
 	c, _ := newFakeMysqlClient(t, conn)
-	results, err := c.Execute(context.Background(), "app", "SELECT * FROM other.users")
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM other.users", 0, 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -740,7 +955,7 @@ func TestMysqlExecuteUnqualifiedTableFallsBackToDefaultDB(t *testing.T) {
 	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{"app.users": {"id"}}}
 	c, _ := newFakeMysqlClient(t, conn)
 	c.defaultDB = "app"
-	results, err := c.Execute(context.Background(), "", "SELECT * FROM users")
+	results, err := c.Execute(context.Background(), "", "SELECT * FROM users", 0, 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -756,7 +971,7 @@ func TestMysqlExecuteLeavesPrimaryKeyEmptyForNonSingleTable(t *testing.T) {
 	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{"app.users": {"id"}}}
 	c, _ := newFakeMysqlClient(t, conn)
 	results, err := c.Execute(context.Background(), "app",
-		"SELECT * FROM a JOIN b ON a.id = b.id; SELECT 1; UPDATE t SET a = 1")
+		"SELECT * FROM a JOIN b ON a.id = b.id; SELECT 1; UPDATE t SET a = 1", 0, 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -776,7 +991,7 @@ func TestMysqlExecuteLeavesPrimaryKeyEmptyForNonSingleTable(t *testing.T) {
 func TestMysqlExecutePrimaryKeyLookupFailureDoesNotAffectResult(t *testing.T) {
 	conn := &fakeMysqlDrvConn{pkErr: errors.New("information_schema unavailable")}
 	c, _ := newFakeMysqlClient(t, conn)
-	results, err := c.Execute(context.Background(), "app", "SELECT * FROM users")
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM users", 0, 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -795,7 +1010,7 @@ func TestMysqlExecutePrimaryKeyLookupFailureDoesNotAffectResult(t *testing.T) {
 func TestMysqlExecuteTableWithoutPrimaryKeyLeavesEmpty(t *testing.T) {
 	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{"app.logs": nil}}
 	c, _ := newFakeMysqlClient(t, conn)
-	results, err := c.Execute(context.Background(), "app", "SELECT * FROM logs")
+	results, err := c.Execute(context.Background(), "app", "SELECT * FROM logs", 0, 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -814,7 +1029,7 @@ func TestMysqlExecutePerStatementPrimaryKey(t *testing.T) {
 	}}
 	c, _ := newFakeMysqlClient(t, conn)
 	results, err := c.Execute(context.Background(), "app",
-		"SELECT * FROM users; INSERT INTO logs(msg) VALUES ('hi'); SELECT * FROM orders")
+		"SELECT * FROM users; INSERT INTO logs(msg) VALUES ('hi'); SELECT * FROM orders", 0, 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -892,7 +1107,7 @@ func TestCollectMysqlRowsFormatsDateTime(t *testing.T) {
 		},
 	}}
 	c, _ := newFakeMysqlClient(t, conn)
-	results, err := c.Execute(context.Background(), "app", "SELECT created_at, birthday, enable, name FROM users")
+	results, err := c.Execute(context.Background(), "app", "SELECT created_at, birthday, enable, name FROM users", 0, 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

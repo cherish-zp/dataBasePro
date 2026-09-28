@@ -22,6 +22,8 @@ type fakeMysqlApp struct {
 	truncateErr error
 	execDB      string
 	execSQL     string
+	execLimit   int
+	execOffset  int
 	execResult  []model.MysqlStatementResult
 	execErr     error
 	previewOut  model.MysqlCellUpdatePreview
@@ -57,9 +59,10 @@ func (f *fakeMysqlApp) TruncateTable(_ context.Context, database, table string) 
 	f.truncated = database + "." + table
 	return f.truncateErr
 }
-func (f *fakeMysqlApp) Execute(_ context.Context, database, sqlText string) ([]model.MysqlStatementResult, error) {
+func (f *fakeMysqlApp) Execute(_ context.Context, database, sqlText string, limit, offset int) ([]model.MysqlStatementResult, error) {
 	f.execDB = database
 	f.execSQL = sqlText
+	f.execLimit, f.execOffset = limit, offset
 	return f.execResult, f.execErr
 }
 func (f *fakeMysqlApp) PreviewCellUpdate(_ context.Context, database, table string, set model.MysqlCellValue, where []model.MysqlCellValue) (model.MysqlCellUpdatePreview, error) {
@@ -417,5 +420,24 @@ func TestAppListDriversIncludesMysqlAndTiDB(t *testing.T) {
 	}
 	if found != 2 {
 		t.Fatalf("MySQL and TiDB must both be registered, found %d in %+v", found, drivers)
+	}
+}
+
+// TestAppMysqlExecutePassesPaging 请求上的分页参数必须透传到执行层。
+func TestAppMysqlExecutePassesPaging(t *testing.T) {
+	fake := &fakeMysqlApp{}
+	app, connID := newMysqlApp(t, model.ConnectionTypeMySQL, fake)
+	if _, err := app.MysqlExecute(MysqlExecuteRequest{ConnectionID: connID, SQL: "SELECT 1", Limit: 500, Offset: 100}); err != nil {
+		t.Fatalf("MysqlExecute: %v", err)
+	}
+	if fake.execLimit != 500 || fake.execOffset != 100 {
+		t.Fatalf("paging must pass through: limit=%d offset=%d", fake.execLimit, fake.execOffset)
+	}
+	// 缺省(0/0)同样透传 = 不启用分页。
+	if _, err := app.MysqlExecute(MysqlExecuteRequest{ConnectionID: connID, SQL: "SELECT 2"}); err != nil {
+		t.Fatalf("MysqlExecute: %v", err)
+	}
+	if fake.execLimit != 0 || fake.execOffset != 0 {
+		t.Fatalf("absent paging must pass through as zero: limit=%d offset=%d", fake.execLimit, fake.execOffset)
 	}
 }

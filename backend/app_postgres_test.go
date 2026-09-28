@@ -18,6 +18,8 @@ type fakePostgresApp struct {
 	pageTarget string
 	truncated  string
 	execTarget string
+	execLimit  int
+	execOffset int
 	execResult []model.PostgresStatementResult
 	execErr    error
 	updateErr  error
@@ -44,8 +46,9 @@ func (f *fakePostgresApp) PageRows(_ context.Context, database, schema, relation
 	f.pageTarget = strings.Join([]string{database, schema, relation, kind, where, orderBy}, "|")
 	return f.page, nil
 }
-func (f *fakePostgresApp) Execute(_ context.Context, database, schema, sqlText string) ([]model.PostgresStatementResult, error) {
+func (f *fakePostgresApp) Execute(_ context.Context, database, schema, sqlText string, limit, offset int) ([]model.PostgresStatementResult, error) {
 	f.execTarget = database + "|" + schema + "|" + sqlText
+	f.execLimit, f.execOffset = limit, offset
 	return f.execResult, f.execErr
 }
 func (f *fakePostgresApp) TruncateTable(_ context.Context, database, schema, relation, kind string) error {
@@ -192,5 +195,17 @@ func TestAppListDriversIncludesPostgreSQL(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("PostgreSQL missing: %+v", drivers)
+	}
+}
+
+// TestAppPostgresExecutePassesPaging 请求上的分页参数必须透传到执行层。
+func TestAppPostgresExecutePassesPaging(t *testing.T) {
+	fake := &fakePostgresApp{}
+	app, connID := newPostgresApp(t, fake)
+	if _, err := app.PostgresExecute(PostgresExecuteRequest{ConnectionID: connID, SQL: "SELECT 1", Limit: 500, Offset: 100}); err != nil {
+		t.Fatalf("PostgresExecute: %v", err)
+	}
+	if fake.execLimit != 500 || fake.execOffset != 100 {
+		t.Fatalf("paging must pass through: limit=%d offset=%d", fake.execLimit, fake.execOffset)
 	}
 }

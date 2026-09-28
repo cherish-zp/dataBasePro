@@ -32,8 +32,10 @@ const props = withDefaults(
     selectable?: boolean
     /** 表的主键列名列表(空/缺省 = 未识别)。 */
     primaryKey?: string[]
+    /** 服务端分页的精确总行数(≥0 时头部展示「共 N 条」;null/-1/缺省不展示)。 */
+    totalRows?: number | null
   }>(),
-  { durationMs: null, insertTarget: null, error: null, editing: null, selectable: false, primaryKey: () => [] },
+  { durationMs: null, insertTarget: null, error: null, editing: null, selectable: false, primaryKey: () => [], totalRows: null },
 )
 
 const emit = defineEmits<{
@@ -51,6 +53,11 @@ const dotClass = computed(() => (props.error ? 'fail' : props.durationMs != null
 const metaText = computed(() => {
   const parts: string[] = []
   if (props.durationMs != null) parts.push(`${Math.round(props.durationMs)} ms`)
+  // 服务端分页的精确总数(total_rows ≥ 0):千分位展示;无法计数(-1)或
+  // 未启用分页(缺省)时只显示本页行数。
+  if (props.totalRows != null && props.totalRows >= 0) {
+    parts.push(`共 ${props.totalRows.toLocaleString('en-US')} 条`)
+  }
   parts.push(`${props.rows.length} 行`)
   return parts.join(' · ')
 })

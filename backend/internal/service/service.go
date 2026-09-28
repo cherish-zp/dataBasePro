@@ -17,6 +17,10 @@ type Service struct {
 	store   *store.Store
 	pool    *Pool
 	factory ClientFactory
+	// mysqlExportClientBuilder 为表导出构建独立专用 MySQL/TiDB 客户端,
+	// 使导出不与池内客户端共享生命周期(导出期间断开/编辑/删除连接互不影响)。
+	// nil 时退回 buildMysqlClient;测试经 SetMysqlExportClientBuilderForTest 注入。
+	mysqlExportClientBuilder func(*model.Connection) (*MysqlClient, error)
 }
 
 // NewService builds a Service around the given store and client factory.
@@ -472,13 +476,14 @@ func (s *Service) CHTruncateTable(ctx context.Context, id, database, table strin
 	return ch.TruncateTable(ctx, database, table, onCluster)
 }
 
-// CHExecute runs a SQL script statement by statement.
-func (s *Service) CHExecute(ctx context.Context, id, sqlText string) ([]model.CHStatementResult, error) {
+// CHExecute runs a SQL script statement by statement. limit>0 启用服务端分页
+// (包装查询 + count() 计数,SHOW 类语句客户端截断)。
+func (s *Service) CHExecute(ctx context.Context, id, sqlText string, limit, offset int) ([]model.CHStatementResult, error) {
 	ch, err := s.ch(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return ch.Execute(ctx, sqlText)
+	return ch.Execute(ctx, sqlText, limit, offset)
 }
 
 // EsTestConnection verifies connectivity to the given config without
@@ -619,12 +624,13 @@ func (s *Service) EsDeleteByQuery(ctx context.Context, id, index, query string) 
 }
 
 // EsExecute runs a SQL script statement by statement over the probed endpoint.
-func (s *Service) EsExecute(ctx context.Context, id, sqlText string) ([]model.EsStatementResult, error) {
+// limit>0 启用服务端分页(本地翻译 select 映射 size/from,其余客户端截断)。
+func (s *Service) EsExecute(ctx context.Context, id, sqlText string, limit, offset int) ([]model.EsStatementResult, error) {
 	e, err := s.es(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return e.Execute(ctx, sqlText)
+	return e.Execute(ctx, sqlText, limit, offset)
 }
 
 // EsRefreshIndex forces the index's shards to refresh (near-immediate search
@@ -814,13 +820,14 @@ func (s *Service) PostgresPageRows(ctx context.Context, id, database, schema, re
 	return pg.PageRows(ctx, database, schema, relation, relationKind, where, orderBy, asc, limit, offset)
 }
 
-// PostgresExecute runs a SQL script statement by statement.
-func (s *Service) PostgresExecute(ctx context.Context, id, database, schema, sqlText string) ([]model.PostgresStatementResult, error) {
+// PostgresExecute runs a SQL script statement by statement. limit>0 启用服务
+// 端分页(包装查询 + COUNT 计数,EXPLAIN/SHOW 类语句客户端截断)。
+func (s *Service) PostgresExecute(ctx context.Context, id, database, schema, sqlText string, limit, offset int) ([]model.PostgresStatementResult, error) {
 	pg, err := s.postgres(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return pg.Execute(ctx, database, schema, sqlText)
+	return pg.Execute(ctx, database, schema, sqlText, limit, offset)
 }
 
 // PostgresTruncateTable empties an ordinary table (audited upstream).
@@ -864,6 +871,12 @@ func (s *Service) CloseConnection(ctx context.Context, id string) error {
 // server, so app/service-layer tests inject fakes through it.
 func (s *Service) PutPooledForTest(id string, ds DataSource) error {
 	return s.pool.Put(id, ds)
+}
+
+// SetMysqlExportClientBuilderForTest overrides how MysqlExportTable builds its
+// dedicated client. Test seam only (the builder bypasses the pool entirely).
+func (s *Service) SetMysqlExportClientBuilderForTest(fn func(*model.Connection) (*MysqlClient, error)) {
+	s.mysqlExportClientBuilder = fn
 }
 
 // DeleteConnection closes any pooled client and removes the definition.

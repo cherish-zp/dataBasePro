@@ -215,6 +215,8 @@ type fakeCH struct {
 	truncated  string
 	clusterArg bool
 	execSQL    string
+	execLimit  int
+	execOffset int
 	execResult []model.CHStatementResult
 	// 单元格更新能力(可选):记录委托参数并回放预设结果。
 	previewOut  model.CHCellUpdatePreview
@@ -242,8 +244,9 @@ func (f *fakeCH) TruncateTable(_ context.Context, database, table string, onClus
 	return nil
 }
 
-func (f *fakeCH) Execute(_ context.Context, sqlText string) ([]model.CHStatementResult, error) {
+func (f *fakeCH) Execute(_ context.Context, sqlText string, limit, offset int) ([]model.CHStatementResult, error) {
 	f.execSQL = sqlText
+	f.execLimit, f.execOffset = limit, offset
 	return f.execResult, nil
 }
 
@@ -319,7 +322,7 @@ func TestServiceCHDelegates(t *testing.T) {
 		t.Fatalf("truncate delegation mismatch: %+v", fake)
 	}
 
-	results, err := svc.CHExecute(ctx, id, "SELECT 1")
+	results, err := svc.CHExecute(ctx, id, "SELECT 1", 0, 0)
 	if err != nil || len(results) != 1 || results[0].SQL != "SELECT 1" {
 		t.Fatalf("CHExecute: %v %+v", err, results)
 	}

@@ -30,6 +30,7 @@ interface PgStatementResult {
   columns?: { name: string; type: string }[]
   rows?: (string | null)[][]
   primary_key?: string[]
+  total_rows?: number
 }
 
 function selectResult(): PgStatementResult {
@@ -128,6 +129,8 @@ describe('PostgresSqlConsole', () => {
         sql: 'SELECT id, name FROM users',
         database: 'shop',
         schema: 'public',
+        limit: 500,
+        offset: 0,
       })
     })
     await vi.waitFor(() => {
@@ -560,5 +563,191 @@ describe('PG 专用语句拆分与代次守卫', () => {
     ).map((o) => o.value)
     expect(options).toContain('final')
     expect(options).not.toContain('stale-schema')
+  })
+
+  // --- 结果区分页(服务端分页,默认 500 条/页) ---------------------------------
+
+  describe('结果区分页', () => {
+    const pagedRows = (n: number) => Array.from({ length: n }, (_, i) => [String(i)])
+
+    it('新查询请求带 limit=500&offset=0,精确总数显示「共 N 条 · 第 p/last 页」', async () => {
+      appMocks.PostgresExecute.mockResolvedValue([
+        { statement: 'SELECT id FROM users', duration_ms: 1, columns: [{ name: 'id', type: 'integer' }], rows: pagedRows(500), total_rows: 1234 },
+      ])
+      const wrapper = mountConsole()
+      await typeSql(wrapper, 'SELECT id FROM users')
+      pressRunShortcut(wrapper)
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 1,234 条 · 第 1/3 页')
+      })
+      expect(appMocks.PostgresExecute).toHaveBeenLastCalledWith(
+        expect.objectContaining({ sql: 'SELECT id FROM users', limit: 500, offset: 0 }),
+      )
+      wrapper.unmount()
+    })
+
+    it('下一页以 offset=500 重放上次脚本;行数不足 500 时下一页禁用', async () => {
+      // 按 offset 分派:第 1 页 500 行且无法计数;第 2 页耗尽(30 行,精确 530)。
+      const stmt = (n: number, total: number) => ({
+        statement: 'SELECT id FROM users',
+        duration_ms: 1,
+        columns: [{ name: 'id', type: 'integer' }],
+        rows: pagedRows(n),
+        total_rows: total,
+      })
+      appMocks.PostgresExecute.mockImplementation(async (req: { offset?: number }) =>
+        req.offset === 500 ? [stmt(30, 530)] : [stmt(500, -1)],
+      )
+      const wrapper = mountConsole()
+      await typeSql(wrapper, 'SELECT id FROM users')
+      pressRunShortcut(wrapper)
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="pager-info"]').text()).toBe('至少 500 条 · 第 1 页')
+      })
+      await wrapper.find('[data-test="pager-next"]').trigger('click')
+      await vi.waitFor(() => {
+        expect(appMocks.PostgresExecute).toHaveBeenLastCalledWith(
+          expect.objectContaining({ sql: 'SELECT id FROM users', limit: 500, offset: 500 }),
+        )
+      })
+      // 耗尽结果:total_rows=530 → 上一页可用、下一页禁用(第 2/2 页)。
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 530 条 · 第 2/2 页')
+      })
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      expect((wrapper.find('[data-test="pager-prev"]').element as HTMLButtonElement).disabled).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('fake 结果无 total_rows:显示「第 x-y 条」,不报错', async () => {
+      appMocks.PostgresExecute.mockResolvedValue([
+        { statement: 'SELECT id FROM users', duration_ms: 1, columns: [{ name: 'id', type: 'integer' }], rows: [['1'], ['2']] },
+      ])
+      const wrapper = mountConsole()
+      await typeSql(wrapper, 'SELECT id FROM users')
+      pressRunShortcut(wrapper)
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="pager-info"]').text()).toBe('第 1-2 条')
+      })
+      wrapper.unmount()
+    })
+
+    it('脚本含 DML(UPDATE …; SELECT …)时隐藏分页条,避免翻页重放重复写库', async () => {
+      appMocks.PostgresExecute.mockResolvedValue([
+        { statement: 'UPDATE t SET x = x + 1 WHERE id = 1', duration_ms: 2 },
+        { statement: 'SELECT * FROM t', duration_ms: 1, columns: [{ name: 'x', type: 'integer' }], rows: [['1'], ['2']], total_rows: 2 },
+      ])
+      const wrapper = mountConsole()
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="pg-db-select"]').exists()).toBe(true)
+      })
+      await typeSql(wrapper, 'UPDATE t SET x = x + 1 WHERE id = 1; SELECT * FROM t')
+      pressRunShortcut(wrapper)
+      await vi.waitFor(() => {
+        const tabs = wrapper.findAll('[data-test^="result-tab-"]')
+        expect(tabs).toHaveLength(2)
+        expect(tabs[1].find('.tab-dot.running').exists()).toBe(false)
+      })
+      expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('WITH 可能是数据修改 CTE,保守隐藏分页条', async () => {
+      appMocks.PostgresExecute.mockResolvedValue([
+        {
+          statement: 'WITH c AS (SELECT 1 AS x) SELECT * FROM c',
+          duration_ms: 1,
+          columns: [{ name: 'x', type: 'integer' }],
+          rows: [['1']],
+          total_rows: 1,
+        },
+      ])
+      const wrapper = mountConsole()
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="pg-db-select"]').exists()).toBe(true)
+      })
+      await typeSql(wrapper, 'WITH c AS (SELECT 1 AS x) SELECT * FROM c')
+      pressRunShortcut(wrapper)
+      await vi.waitFor(() => {
+        const tabs = wrapper.findAll('[data-test^="result-tab-"]')
+        expect(tabs).toHaveLength(1)
+        expect(tabs[0].find('.tab-dot.running').exists()).toBe(false)
+      })
+      expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('前导注释不影响只读判定:注释 + SELECT 仍显示分页条,翻页按原脚本重放', async () => {
+      const stmt = (total: number) => ({
+        statement: 'SELECT id FROM users',
+        duration_ms: 1,
+        columns: [{ name: 'id', type: 'integer' }],
+        rows: pagedRows(500),
+        total_rows: total,
+      })
+      appMocks.PostgresExecute.mockResolvedValue([stmt(1200)])
+      const wrapper = mountConsole()
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="pg-db-select"]').exists()).toBe(true)
+      })
+      await typeSql(wrapper, '-- 查询\nSELECT id FROM users')
+      // ⌘Shift+Enter 运行全部(lastRequest 记录整段含注释脚本)。
+      pressRunShortcut(wrapper, { metaKey: true, shiftKey: true })
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(true)
+      })
+      await wrapper.find('[data-test="pager-next"]').trigger('click')
+      await vi.waitFor(() => {
+        expect(appMocks.PostgresExecute).toHaveBeenLastCalledWith(
+          expect.objectContaining({ sql: '-- 查询\nSELECT id FROM users', limit: 500, offset: 500 }),
+        )
+      })
+      wrapper.unmount()
+    })
+
+    it('恰好整页(total_rows=500)时下一页禁用;total_rows=1200 时下一页可用', async () => {
+      const stmt = (total: number) => ({
+        statement: 'SELECT id FROM users',
+        duration_ms: 1,
+        columns: [{ name: 'id', type: 'integer' }],
+        rows: pagedRows(500),
+        total_rows: total,
+      })
+      appMocks.PostgresExecute.mockResolvedValue([stmt(500)])
+      const wrapper = mountConsole()
+      await typeSql(wrapper, 'SELECT id FROM users')
+      pressRunShortcut(wrapper)
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 500 条 · 第 1/1 页')
+      })
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      wrapper.unmount()
+      // total=1200 → 共 3 页,本页 500 行,下一页可用。
+      appMocks.PostgresExecute.mockResolvedValue([stmt(1200)])
+      const wrapper2 = mountConsole()
+      await typeSql(wrapper2, 'SELECT id FROM users')
+      pressRunShortcut(wrapper2)
+      await vi.waitFor(() => {
+        expect(wrapper2.find('[data-test="pager-info"]').text()).toBe('共 1,200 条 · 第 1/3 页')
+      })
+      expect((wrapper2.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(false)
+      wrapper2.unmount()
+    })
+
+    it('分页条容器带跨页顺序说明 tooltip', async () => {
+      appMocks.PostgresExecute.mockResolvedValue([
+        { statement: 'SELECT id FROM users', duration_ms: 1, columns: [{ name: 'id', type: 'integer' }], rows: [['1']], total_rows: 1 },
+      ])
+      const wrapper = mountConsole()
+      await typeSql(wrapper, 'SELECT id FROM users')
+      pressRunShortcut(wrapper)
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(true)
+      })
+      expect(wrapper.find('[data-test="result-pager"]').attributes('title')).toBe(
+        '跨页分页由数据库 ORDER BY 保证顺序;无排序查询顺序以数据库返回为准',
+      )
+      wrapper.unmount()
+    })
   })
 })

@@ -31,6 +31,8 @@ interface MysqlStatementResult {
   rows?: (string | null)[][]
   // 单表 SELECT 时后端填充的主键列名数组(供结果卡行选择/INSERT 选项)。
   primary_key?: string[]
+  // 服务端分页结果:≥0 精确总数;-1 无法计数(SHOW 类取满一页);缺省未启用。
+  total_rows?: number
 }
 interface MysqlTableInfo {
   name: string
@@ -52,7 +54,7 @@ interface MysqlCellUpdateTarget {
 }
 
 const app = App as unknown as {
-  MysqlExecute(req: { connection_id: string; sql: string; database?: string }): Promise<MysqlStatementResult[]>
+  MysqlExecute(req: { connection_id: string; sql: string; database?: string; limit?: number; offset?: number }): Promise<MysqlStatementResult[]>
   MysqlPreviewCellUpdate(req: MysqlCellUpdateTarget): Promise<{ statement: string; matched_rows: number }>
   MysqlUpdateCell(req: MysqlCellUpdateTarget): Promise<void>
   ListMysqlTables(req: { connection_id: string; database: string }): Promise<MysqlTableInfo[]>
@@ -74,6 +76,126 @@ const resultTabs = ref<ResultTabItem[]>([])
 const activeResult = ref(0)
 const activeCard = computed(() => results.value[activeResult.value])
 
+// --- 结果区分页(服务端分页,默认 500 条/页) --------------------------------
+// 新查询成功后记录 lastRequest(重放依据)并回到第 1 页;翻页 = lastRequest
+// + 新 offset 重新执行,不经过编辑器(编辑器内容可能与重放脚本不同)。
+const PAGE_SIZE = 500
+const page = ref(1)
+const lastRequest = ref<{ sql: string; database: string } | null>(null)
+
+// 行结果:无错误且 rows 是数组的结果,分页信息以行为准。
+const rowResults = computed(() =>
+  results.value.filter((r) => !r.error && Array.isArray(r.rows)),
+)
+
+// 精确总数:第一个行结果上 ≥0 的 total_rows(-1 是「无法计数」);null = 全部
+// 不可计数或未启用分页。
+const exactTotal = computed<number | null>(() => {
+  for (const r of rowResults.value) {
+    if (r.total_rows != null && r.total_rows >= 0) return r.total_rows
+  }
+  return null
+})
+
+// 所有行结果都无法计数(total_rows === -1)→ 「至少 N 条」。
+const allUnknownTotal = computed(
+  () =>
+    rowResults.value.length > 0 &&
+    rowResults.value.every((r) => r.total_rows === -1),
+)
+
+// --- 脚本只读判定:翻页 = 重放整段脚本,含 DML 的脚本翻一页就重复写一次库,
+// 仅当本次执行的每条语句首个关键字都属于只读集合才显示分页条。WITH 可能是
+// 数据修改 CTE(PG/MySQL 8),与其他一切语句(INSERT/UPDATE/SET/USE/…)一律
+// 保守视为不可重放。 ---
+const READONLY_KEYWORDS = new Set(['SELECT', 'SHOW', 'DESC', 'DESCRIBE', 'EXPLAIN', 'TABLE', 'VALUES'])
+
+// 取语句首个关键字:跳过前导空白与注释(-- 与 # 行注释、/* */ 块注释),
+// 大小写不敏感;纯注释/空白/无法识别返回 null(保守视为非只读)。
+function firstStatementKeyword(stmt: string): string | null {
+  let i = 0
+  const n = stmt.length
+  for (;;) {
+    while (i < n && /\s/.test(stmt[i] as string)) i += 1
+    if (stmt.startsWith('--', i) || stmt[i] === '#') {
+      const nl = stmt.indexOf('\n', i)
+      i = nl === -1 ? n : nl + 1
+      continue
+    }
+    if (stmt.startsWith('/*', i)) {
+      const end = stmt.indexOf('*/', i + 2)
+      i = end === -1 ? n : end + 2
+      continue
+    }
+    break
+  }
+  const m = /^[A-Za-z_]+/.exec(stmt.slice(i, i + 64))
+  return m ? m[0].toUpperCase() : null
+}
+
+// 脚本只读判定:全部语句只读 → true;空集或含任何非只读语句 → false。
+function scriptIsReadonly(statements: string[]): boolean {
+  return (
+    statements.length > 0 &&
+    statements.every((s) => {
+      const kw = firstStatementKeyword(s)
+      return kw !== null && READONLY_KEYWORDS.has(kw)
+    })
+  )
+}
+
+// 分页条可见:有行结果,且本次执行的脚本整体只读(重放翻页安全)。
+const pagerVisible = computed(
+  () => rowResults.value.length > 0 && scriptIsReadonly(results.value.map((r) => r.sql)),
+)
+
+const lastPage = computed(() =>
+  exactTotal.value == null ? null : Math.max(1, Math.ceil(exactTotal.value / PAGE_SIZE)),
+)
+
+// 页码信息:精确总数 → 共 N 条 · 第 p/last 页;全部 -1 → 至少 N 条 · 第 p 页;
+// 结果上没有 total_rows(未启用分页的响应)→ 第 x-y 条。
+const pagerInfo = computed(() => {
+  const first = rowResults.value[0]
+  const pageLen = first?.rows?.length ?? 0
+  const offset = (page.value - 1) * PAGE_SIZE
+  if (exactTotal.value != null) {
+    return `共 ${exactTotal.value.toLocaleString('en-US')} 条 · 第 ${page.value}/${lastPage.value ?? 1} 页`
+  }
+  if (allUnknownTotal.value) {
+    return `至少 ${(offset + pageLen).toLocaleString('en-US')} 条 · 第 ${page.value} 页`
+  }
+  if (pageLen === 0) return `第 ${page.value} 页`
+  return `第 ${offset + 1}-${offset + pageLen} 条`
+})
+
+const canPrev = computed(() => !running.value && page.value > 1)
+
+// 下一页:执行中禁用;有精确总数时按 lastPage 判定(恰好整页已取完不可再翻,
+// total=0 亦不可翻);总数未知(-1/缺省)沿用「本页行数 < PAGE_SIZE 则无更多」。
+const canNext = computed(() => {
+  if (running.value || rowResults.value.length === 0) return false
+  if (exactTotal.value != null) {
+    return lastPage.value != null && page.value < lastPage.value
+  }
+  return rowResults.value.some((r) => (r.rows?.length ?? 0) >= PAGE_SIZE)
+})
+
+// 翻页 = 上次成功执行的请求 + 新 offset 重新执行。
+function goToPage(target: number): void {
+  const req = lastRequest.value
+  if (!req) return
+  void executeScript(req.sql, req.database, target)
+}
+
+function prevPage(): void {
+  if (canPrev.value) void goToPage(page.value - 1)
+}
+
+function nextPage(): void {
+  if (canNext.value) void goToPage(page.value + 1)
+}
+
 // 语句单行摘要:第一条非空行(trim,超长截断),供 tab 悬浮提示。
 function statementSummary(text: string): string {
   const line = (text.split('\n').find((l) => l.trim() !== '') ?? '').trim()
@@ -81,14 +203,15 @@ function statementSummary(text: string): string {
 }
 
 // tab 标签:语句起始 offset 上方最近的注释;无注释回退「结果 N」。
-function tabLabel(from: number, index: number): string {
-  return commentAbove(sql.value, from) ?? `结果 ${index + 1}`
+// doc 为注释检索的文本:新查询 = 编辑器当前内容,翻页 = 重放的脚本。
+function tabLabel(doc: string, from: number, index: number): string {
+  return commentAbove(doc, from) ?? `结果 ${index + 1}`
 }
 
 // 发起「运行全部」:按拆分段生成 running tab,active 指向第 0 个。
-function tabsFromSegments(segs: SqlSegment[]): ResultTabItem[] {
+function tabsFromSegments(segs: SqlSegment[], doc: string): ResultTabItem[] {
   return segs.map((s, i) => ({
-    label: tabLabel(s.from, i),
+    label: tabLabel(doc, s.from, i),
     status: 'running',
     title: statementSummary(s.text),
   }))
@@ -252,7 +375,8 @@ function statementAtCursor(): string | null {
 }
 
 // 单语句执行:只发该段文本,结果数组替换为该条结果;发起即置 running 标记,
-// 并预置单个 running tab(标签优先取该语句的前置注释)。
+// 并预置单个 running tab(标签优先取该语句的前置注释)。新查询成功后记录
+// lastRequest 并回到第 1 页(服务端分页默认 500 条/页)。
 async function runSingle(text: string): Promise<void> {
   if (running.value) return
   if (!text.trim()) return
@@ -263,7 +387,7 @@ async function runSingle(text: string): Promise<void> {
   const seg = splitSqlStatements(sql.value).find((s) => s.text.trim() === text.trim())
   resultTabs.value = [
     {
-      label: seg ? tabLabel(seg.from, 0) : '结果 1',
+      label: seg ? tabLabel(sql.value, seg.from, 0) : '结果 1',
       status: 'running',
       title: statementSummary(text),
     },
@@ -274,8 +398,12 @@ async function runSingle(text: string): Promise<void> {
       connection_id: props.connectionId,
       sql: text,
       database: activeDb.value,
+      limit: PAGE_SIZE,
+      offset: 0,
     })
     results.value = res
+    lastRequest.value = { sql: text, database: activeDb.value }
+    page.value = 1
     // 选中文本可能含多条语句:结果多于预置 tab 时按序回退「结果 N」补齐。
     resultTabs.value = res.map((r, i) => ({
       label: resultTabs.value[i]?.label ?? `结果 ${i + 1}`,
@@ -309,20 +437,28 @@ async function runCurrentStatement(): Promise<void> {
 // 结果 tab 同步推进(running → ok/fail),active 重置到第 0 个。
 async function runAll(): Promise<void> {
   if (running.value) return
-  const script = sql.value
-  if (!script.trim()) return
+  if (!sql.value.trim()) return
+  await executeScript(sql.value, activeDb.value, 1)
+}
+
+// 执行一段脚本(新查询 targetPage=1;翻页 = 重放 lastRequest + 新 offset)。
+// 成功后记录 lastRequest 与当前页码;失败保持原页码,便于重试。
+async function executeScript(script: string, database: string, targetPage: number): Promise<void> {
+  if (running.value) return
   running.value = true
   error.value = null
   resultsOpen.value = true
   const segs = splitSqlStatements(script)
   markedStatements.value = segs.map((s): MarkedStatement => ({ text: s.text, status: 'running' }))
-  resultTabs.value = tabsFromSegments(segs)
+  resultTabs.value = tabsFromSegments(segs, script)
   activeResult.value = 0
   try {
     const res = await app.MysqlExecute({
       connection_id: props.connectionId,
       sql: script,
-      database: activeDb.value,
+      database,
+      limit: PAGE_SIZE,
+      offset: (targetPage - 1) * PAGE_SIZE,
     })
     results.value = res
     resultTabs.value = applyTabStatus(resultTabs.value, res)
@@ -331,6 +467,8 @@ async function runAll(): Promise<void> {
       status: r.error ? 'fail' : 'ok',
       detail: r.error ?? `${r.duration_ms} ms`,
     }))
+    lastRequest.value = { sql: script, database }
+    page.value = targetPage
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     error.value = msg
@@ -536,10 +674,13 @@ async function confirmCellUpdate(): Promise<void> {
   const target = idx === null ? undefined : results.value[idx]
   if (!target) return
   try {
+    // 刷新与该结果的原执行同页(当前页码),避免编辑后整页内容跳变。
     const fresh = await app.MysqlExecute({
       connection_id: props.connectionId,
       sql: target.sql,
       database: activeDb.value,
+      limit: PAGE_SIZE,
+      offset: (page.value - 1) * PAGE_SIZE,
     })
     if (fresh.length > 0) {
       // 仅替换该索引的结果,其他语句结果保持不变。
@@ -758,6 +899,12 @@ watch(
         <div class="results-body" data-test="results-body">
           <!-- 结果 Tab 条:每条语句一个 tab,点击切换下方唯一的结果卡。 -->
           <SqlResultTabs :tabs="resultTabs" :active="activeResult" @select="activeResult = $event" />
+          <!-- 分页条:服务端分页(500 条/页),翻页按上次成功请求重放;仅只读脚本可翻。 -->
+          <div v-if="pagerVisible" class="result-pager" data-test="result-pager" title="跨页分页由数据库 ORDER BY 保证顺序;无排序查询顺序以数据库返回为准">
+            <button type="button" class="pager-btn" data-test="pager-prev" :disabled="!canPrev" @click="prevPage">上一页</button>
+            <span class="pager-info" data-test="pager-info">{{ pagerInfo }}</span>
+            <button type="button" class="pager-btn" data-test="pager-next" :disabled="!canNext" @click="nextPage">下一页</button>
+          </div>
           <div v-if="results.length === 0" class="empty" data-test="results-empty">⌘Enter 执行当前语句 · ⌘Shift+Enter 运行全部</div>
           <!-- 仅渲染 active tab 对应的结果卡;MySQL 结果可勾选行复制 INSERT。 -->
           <SqlResultCard
@@ -767,6 +914,7 @@ watch(
             :duration-ms="activeCard.duration_ms"
             :columns="activeCard.columns ?? []"
             :rows="activeCard.rows ?? []"
+            :total-rows="activeCard.total_rows ?? null"
             :insert-target="parseCHSingleTableSelect(activeCard.sql)"
             :export-name="`mysql-result-${activeResult}`"
             :error="activeCard.error ?? null"
@@ -876,6 +1024,17 @@ watch(
 .results-close:hover { background: var(--bg-hover); color: var(--text); }
 .results-body { flex: 1; min-height: 0; overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 12px; }
 .empty { text-align: center; color: var(--text-tertiary); padding: 24px; font-size: 13px; }
+
+/* 结果分页条:上一页 / 页码信息 / 下一页。 */
+.result-pager { flex: none; display: flex; align-items: center; justify-content: center; gap: 12px; }
+.pager-btn {
+  border: 1px solid var(--border); background: var(--bg-subtle); color: var(--text);
+  border-radius: 7px; padding: 3px 12px; font-size: 12px; cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.pager-btn:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--accent); }
+.pager-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.pager-info { font-size: 12px; color: var(--text-secondary); font-family: var(--mono); }
 
 /* 状态栏:光标行列 / 语句条数 / 最近耗时。 */
 .statusbar {

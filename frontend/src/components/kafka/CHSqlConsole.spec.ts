@@ -266,7 +266,7 @@ describe('CHSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
     await waitForTabs(wrapper, 2)
-    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1; SELECT bad' })
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1; SELECT bad' , limit: 500, offset: 0 })
     expect(resultCards(wrapper)).toHaveLength(1)
     // active(第 0 个)卡:语句原文、耗时、列与行(NULL 单元格)。
     const card = resultCards(wrapper)[0]
@@ -303,7 +303,7 @@ describe('CHSqlConsole', () => {
     cmInput(wrapper).dispatch({ selection: { anchor: 10, head: 18 } })
     await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
     await waitForTabs(wrapper, 2)
-    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1; SELECT 2' })
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1; SELECT 2' , limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -318,7 +318,7 @@ describe('CHSqlConsole', () => {
     // SqlEditor 自身不处理该组合键时事件从 CM contentDOM 冒泡到外层容器。
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1' })
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1' , limit: 500, offset: 0 })
   })
 
   it('⌘Enter 无选区时只执行光标所在语句(结果只有一张卡)', async () => {
@@ -333,7 +333,7 @@ describe('CHSqlConsole', () => {
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
     expect(api.chExecute).toHaveBeenCalledTimes(1)
-    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1;' })
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1;' , limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -348,7 +348,7 @@ describe('CHSqlConsole', () => {
     await nextTick()
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT bad' })
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT bad' , limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -361,7 +361,7 @@ describe('CHSqlConsole', () => {
     cmInput(wrapper).dispatch({ selection: { anchor: 0, head: 8 } })
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1' })
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1' , limit: 500, offset: 0 })
     expect(api.chExecute).toHaveBeenCalledTimes(1)
   })
 
@@ -371,7 +371,7 @@ describe('CHSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     pressRunShortcut(wrapper, { metaKey: true, shiftKey: true })
     await waitForTabs(wrapper, 2)
-    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1; SELECT bad' })
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT 1; SELECT bad' , limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -383,7 +383,7 @@ describe('CHSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     wrapper.findComponent(SqlEditor).vm.$emit('run-statement', 'SELECT bad')
     await waitForCards(wrapper, 1)
-    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT bad' })
+    expect(api.chExecute).toHaveBeenCalledWith({ connection_id: 'ch1', sql: 'SELECT bad' , limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -902,7 +902,7 @@ describe('CHSqlConsole', () => {
       ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
       // 刷新入参是该条语句的原文(而非整段脚本)。
       await vi.waitFor(() => {
-        expect(exec).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: first.sql })
+        expect(exec).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: first.sql , limit: 500, offset: 0 })
       })
       // 第一条结果被替换为刷新后的行;第二条结果保持原样(切 tab 查看)。
       await vi.waitFor(() => {
@@ -1090,7 +1090,7 @@ describe('CHSqlConsole', () => {
       expect(wrapper.find('[data-test="menu-run-selection"]').exists()).toBe(true)
       await wrapper.find('[data-test="menu-run-selection"]').trigger('click')
       await waitForTabs(wrapper, 1)
-      expect(api.chExecute).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: 'SELECT 1' })
+      expect(api.chExecute).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: 'SELECT 1' , limit: 500, offset: 0 })
       // 无选区右键 →「执行当前语句」:执行光标所在语句(第 2 段)。
       await typeSql(wrapper, 'SELECT 1; SELECT bad')
       wrapper.findComponent(SqlEditor).vm.$emit('cursor', { line: 1, col: 13 })
@@ -1098,12 +1098,161 @@ describe('CHSqlConsole', () => {
       await openRunMenu(wrapper)
       await wrapper.find('[data-test="menu-run-current"]').trigger('click')
       await waitForTabs(wrapper, 1)
-      expect(api.chExecute).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: 'SELECT bad' })
+      expect(api.chExecute).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: 'SELECT bad' , limit: 500, offset: 0 })
       // 「运行全部」→ 整段脚本交给后端。
       await openRunMenu(wrapper)
       await wrapper.find('[data-test="menu-run-all"]').trigger('click')
       await waitForTabs(wrapper, 2)
-      expect(api.chExecute).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: 'SELECT 1; SELECT bad' })
+      expect(api.chExecute).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: 'SELECT 1; SELECT bad' , limit: 500, offset: 0 })
+      wrapper.unmount()
+    })
+  })
+
+  // --- 结果区分页(服务端分页,默认 500 条/页) ---------------------------------
+
+  describe('结果区分页', () => {
+    const pagedRows = (n: number) => Array.from({ length: n }, (_, i) => [String(i)])
+
+    it('新查询请求带 limit=500&offset=0,精确总数显示「共 N 条 · 第 p/last 页」', async () => {
+      ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'UInt8' }], rows: pagedRows(500), total_rows: 1234 },
+      ])
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(api.chExecute).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: 'SELECT 1', limit: 500, offset: 0 })
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 1,234 条 · 第 1/3 页')
+      wrapper.unmount()
+    })
+
+    it('下一页以 offset=500 重放上次脚本,上一页回到 offset=0;翻页不受编辑器影响', async () => {
+      const exec = api.chExecute as ReturnType<typeof vi.fn>
+      exec.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'UInt8' }], rows: pagedRows(500), total_rows: -1 },
+      ])
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      // 本页满 500 行且无法计数 → 「至少 500 条」。
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('至少 500 条 · 第 1 页')
+      await wrapper.find('[data-test="pager-next"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(exec).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: 'SELECT 1', limit: 500, offset: 500 })
+      // 翻页重放不经过编辑器:编辑器内容已变,仍按上次成功脚本执行。
+      await typeSql(wrapper, 'SELECT 2')
+      await wrapper.find('[data-test="pager-prev"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(exec).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: 'SELECT 1', limit: 500, offset: 0 })
+      wrapper.unmount()
+    })
+
+    it('下一页禁用:所有行结果行数都小于每页 500 条', async () => {
+      ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'UInt8' }], rows: [['1']], total_rows: 1 },
+      ])
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      expect((wrapper.find('[data-test="pager-prev"]').element as HTMLButtonElement).disabled).toBe(true)
+      wrapper.unmount()
+    })
+
+    it('fake 结果无 total_rows:显示「第 x-y 条」,不报错', async () => {
+      ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'UInt8' }], rows: [['1'], ['2']] },
+      ])
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('第 1-2 条')
+      wrapper.unmount()
+    })
+
+    it('脚本含 DML(ALTER … UPDATE; SELECT …)时隐藏分页条,避免翻页重放重复写库', async () => {
+      ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { sql: 'ALTER TABLE t UPDATE x = x + 1 WHERE id = 1', duration_ms: 2 },
+        { sql: 'SELECT * FROM t', duration_ms: 1, columns: [{ name: 'x', type: 'UInt8' }], rows: [['1'], ['2']], total_rows: 2 },
+      ])
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, 'ALTER TABLE t UPDATE x = x + 1 WHERE id = 1; SELECT * FROM t')
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('WITH 可能是数据修改 CTE,保守隐藏分页条', async () => {
+      ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          sql: 'WITH c AS (SELECT 1 AS x) SELECT * FROM c',
+          duration_ms: 1,
+          columns: [{ name: 'x', type: 'UInt8' }],
+          rows: [['1']],
+          total_rows: 1,
+        },
+      ])
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, 'WITH c AS (SELECT 1 AS x) SELECT * FROM c')
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('前导注释不影响只读判定:注释 + SELECT 仍显示分页条,翻页按原脚本重放', async () => {
+      ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'UInt8' }], rows: pagedRows(500), total_rows: 1200 },
+      ])
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, '-- 查询\nSELECT 1')
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(true)
+      await wrapper.find('[data-test="pager-next"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(api.chExecute).toHaveBeenLastCalledWith({ connection_id: 'ch1', sql: '-- 查询\nSELECT 1', limit: 500, offset: 500 })
+      wrapper.unmount()
+    })
+
+    it('恰好整页(total_rows=500)时下一页禁用;total_rows=1200 时下一页可用', async () => {
+      ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'UInt8' }], rows: pagedRows(500), total_rows: 500 },
+      ])
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 500 条 · 第 1/1 页')
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      wrapper.unmount()
+      // total=1200 → 共 3 页,本页 500 行,下一页可用。
+      ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'UInt8' }], rows: pagedRows(500), total_rows: 1200 },
+      ])
+      const wrapper2 = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper2, 'SELECT 1')
+      await wrapper2.find('[data-test="btn-ch-run"]').trigger('click')
+      await waitForTabs(wrapper2, 1)
+      expect((wrapper2.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(false)
+      wrapper2.unmount()
+    })
+
+    it('分页条容器带跨页顺序说明 tooltip', async () => {
+      ;(api.chExecute as ReturnType<typeof vi.fn>).mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'UInt8' }], rows: [['1']], total_rows: 1 },
+      ])
+      const wrapper = mount(CHSqlConsole, { props: { tabId: 'ch-tab1', connectionId: 'ch1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-ch-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="result-pager"]').attributes('title')).toBe(
+        '跨页分页由数据库 ORDER BY 保证顺序;无排序查询顺序以数据库返回为准',
+      )
       wrapper.unmount()
     })
   })

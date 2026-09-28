@@ -41,11 +41,15 @@ type PostgresTruncateTableRequest struct {
 }
 
 // PostgresExecuteRequest carries a multi-statement SQL script and its schema.
+// Limit/Offset 启用服务端分页:Limit>0 时仅返回 Offset 起的 Limit 行,结果按
+// 语句类型附 total_rows(≥0 精确 / -1 无法计数)。
 type PostgresExecuteRequest struct {
 	ConnectionID string `json:"connection_id"`
 	Database     string `json:"database,omitempty"`
 	Schema       string `json:"schema,omitempty"`
 	SQL          string `json:"sql"`
+	Limit        int    `json:"limit,omitempty"`
+	Offset       int    `json:"offset,omitempty"`
 }
 
 // TestPostgresConnection verifies reachability without persisting anything.
@@ -88,7 +92,7 @@ func (a *App) PostgresPageRows(req PostgresPageRowsRequest) (model.PostgresPageR
 func (a *App) PostgresExecute(req PostgresExecuteRequest) ([]model.PostgresStatementResult, error) {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	results, err := a.svc.PostgresExecute(ctx, req.ConnectionID, req.Database, req.Schema, req.SQL)
+	results, err := a.svc.PostgresExecute(ctx, req.ConnectionID, req.Database, req.Schema, req.SQL, req.Limit, req.Offset)
 	a.audit(req.ConnectionID, "postgres_execute", auditSQLTarget(req.SQL), auditResult(err), auditDetail(err))
 	return results, err
 }

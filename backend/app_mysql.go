@@ -38,10 +38,14 @@ type MysqlTruncateTableRequest struct {
 // MysqlExecuteRequest carries the multi-statement SQL script. Database is the
 // console's current database context: non-empty runs the whole script on one
 // connection pinned to it via USE; empty keeps the pool default (no USE).
+// Limit/Offset 启用服务端分页:Limit>0 时仅返回 Offset 起的 Limit 行,结果按
+// 语句类型附 total_rows(≥0 精确 / -1 无法计数)。
 type MysqlExecuteRequest struct {
 	ConnectionID string `json:"connection_id"`
 	Database     string `json:"database,omitempty"`
 	SQL          string `json:"sql"`
+	Limit        int    `json:"limit,omitempty"`
+	Offset       int    `json:"offset,omitempty"`
 }
 
 // TestMysqlConnection verifies reachability without persisting anything.
@@ -89,7 +93,7 @@ func (a *App) MysqlTruncateTable(req MysqlTruncateTableRequest) error {
 func (a *App) MysqlExecute(req MysqlExecuteRequest) ([]model.MysqlStatementResult, error) {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	results, err := a.svc.MysqlExecute(ctx, req.ConnectionID, req.Database, req.SQL)
+	results, err := a.svc.MysqlExecute(ctx, req.ConnectionID, req.Database, req.SQL, req.Limit, req.Offset)
 	a.audit(req.ConnectionID, "mysql_execute", auditSQLTarget(req.SQL), auditResult(err), auditDetail(err))
 	return results, err
 }

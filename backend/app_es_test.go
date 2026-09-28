@@ -36,6 +36,8 @@ type fakeESApp struct {
 	execResult     []model.EsStatementResult
 	execErr        error
 	execSQL        string
+	execLimit      int
+	execOffset     int
 	dslMethod      string
 	dslPath        string
 	dslBody        string
@@ -108,8 +110,9 @@ func (f *fakeESApp) DeleteByQuery(_ context.Context, index, query string) (int64
 	f.deleteByQueryQ = index + "\x00" + query
 	return f.deleteByQuery, f.deleteQueryErr
 }
-func (f *fakeESApp) Execute(_ context.Context, sqlText string) ([]model.EsStatementResult, error) {
+func (f *fakeESApp) Execute(_ context.Context, sqlText string, limit, offset int) ([]model.EsStatementResult, error) {
 	f.execSQL = sqlText
+	f.execLimit, f.execOffset = limit, offset
 	return f.execResult, f.execErr
 }
 func (f *fakeESApp) DSL(_ context.Context, method, path, body string) (model.EsDslResult, error) {
@@ -975,5 +978,17 @@ func TestAppEsClusterStatsJSONShapes(t *testing.T) {
 		if !strings.Contains(string(b), `"`+key+`"`) {
 			t.Fatalf("EsNodeInfo JSON must expose %q, got %s", key, b)
 		}
+	}
+}
+
+// TestAppESExecutePassesPaging 请求上的分页参数必须透传到执行层。
+func TestAppESExecutePassesPaging(t *testing.T) {
+	fake := &fakeESApp{}
+	app, connID := newESApp(t, fake)
+	if _, err := app.ESExecute(EsExecuteRequest{ConnectionID: connID, SQL: "SELECT 1", Limit: 500, Offset: 100}); err != nil {
+		t.Fatalf("ESExecute: %v", err)
+	}
+	if fake.execLimit != 500 || fake.execOffset != 100 {
+		t.Fatalf("paging must pass through: limit=%d offset=%d", fake.execLimit, fake.execOffset)
 	}
 }

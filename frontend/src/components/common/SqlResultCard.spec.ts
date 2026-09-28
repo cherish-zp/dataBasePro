@@ -411,3 +411,20 @@ describe('SqlResultCard — 行选择与 INSERT 选项', () => {
     )
   })
 })
+
+describe('SqlResultCard — 服务端分页总数', () => {
+  it('totalRows ≥ 0 时头部显示「共 N 条」(千分位)', () => {
+    const wrapper = mountCard({ totalRows: 12345, rows: [['1', 'a']] })
+    expect(wrapper.find('[data-test="result-meta"]').text()).toBe('12 ms · 共 12,345 条 · 1 行')
+    wrapper.unmount()
+  })
+
+  it('totalRows 为 -1(无法计数)或缺省(未启用分页)时展示不变', () => {
+    const neg = mountCard({ totalRows: -1 })
+    expect(neg.find('[data-test="result-meta"]').text()).toBe('12 ms · 2 行')
+    neg.unmount()
+    const none = mountCard()
+    expect(none.find('[data-test="result-meta"]').text()).toBe('12 ms · 2 行')
+    none.unmount()
+  })
+})

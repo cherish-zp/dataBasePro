@@ -141,7 +141,9 @@ type PostgresCellUpdatePreview struct {
 	MatchedRows int64  `json:"matched_rows"`
 }
 
-// PostgresStatementResult is one statement's execution outcome.
+// PostgresStatementResult is one statement's execution outcome. TotalRows 仅
+// 在请求启用服务端分页时出现:nil=未启用(不下发);≥0=精确总数(包装
+// COUNT(*) 查询);-1=无法计数(如 EXPLAIN/SHOW 类语句取满一页)。
 type PostgresStatementResult struct {
 	Statement    string           `json:"statement"`
 	HasRows      bool             `json:"has_rows"`
@@ -151,4 +153,5 @@ type PostgresStatementResult struct {
 	Rows         [][]*string      `json:"rows,omitempty"`
 	PrimaryKey   []string         `json:"primary_key,omitempty"`
 	AffectedRows int64            `json:"affected_rows"`
+	TotalRows    *int64           `json:"total_rows,omitempty"`
 }
