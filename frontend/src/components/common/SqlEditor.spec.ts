@@ -3,6 +3,7 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { EditorView } from '@codemirror/view'
 import { language } from '@codemirror/language'
+import { CompletionContext, type Completion } from '@codemirror/autocomplete'
 import SqlEditor from './SqlEditor.vue'
 
 // defineExpose 出来的方法(通过 wrapper.vm 访问)。
@@ -223,6 +224,38 @@ describe('SqlEditor 语句级增强', () => {
     await wrapper.setProps({ highlightCursorStatement: true })
     cmView(wrapper).dispatch({ selection: { anchor: 3 } })
     expect(wrapper.findAll('.cm-current-statement')).toHaveLength(1)
+  })
+})
+
+// —— SQL 关键词补全(lang-sql 默认缺失词的额外补全源)——
+describe('SqlEditor SQL 关键词补全', () => {
+  // 收集 pos 处注册的全部补全源(lang-sql 自带 + 额外关键词源),显式触发并合并选项。
+  function collectCompletions(view: EditorView, pos: number): Completion[] {
+    const ctx = new CompletionContext(view.state, pos, true)
+    const out: Completion[] = []
+    for (const source of view.state.languageDataAt('autocomplete', pos)) {
+      const run = source as (c: CompletionContext) => { options: Completion[] } | null
+      const result = run(ctx)
+      if (result) out.push(...result.options)
+    }
+    return out
+  }
+
+  it('输入 TRUN 可联想 lang-sql 默认缺失的 TRUNCATE(keyword,整词大写)', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: 'TRUN' } })
+    const options = collectCompletions(cmView(wrapper), 4)
+    const truncate = options.find((o) => o.label === 'TRUNCATE')
+    expect(truncate, '补全结果应包含 TRUNCATE').toBeDefined()
+    expect(truncate?.type).toBe('keyword')
+    // 其余额外关键词同样可选大写词,选中后整词替换光标前词。
+    expect(options.some((o) => o.label === 'SHOW')).toBe(true)
+  })
+
+  it('额外补全源与 lang-sql 内置关键词补全不重复(SELE 只产生一个 SELECT)', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: 'SELE' } })
+    const options = collectCompletions(cmView(wrapper), 4)
+    const selects = options.filter((o) => o.label === 'SELECT')
+    expect(selects).toHaveLength(1)
   })
 })
 

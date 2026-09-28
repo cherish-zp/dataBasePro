@@ -27,6 +27,9 @@ import {
   closeBrackets,
   closeBracketsKeymap,
   completionKeymap,
+  completeFromList,
+  ifNotIn,
+  type CompletionSource,
 } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import {
@@ -37,6 +40,7 @@ import {
 } from '@codemirror/language'
 import { tags as t } from '@lezer/highlight'
 import { splitSqlStatements } from '@/utils/sqlSplit'
+import { SQL_EXTRA_KEYWORDS, dedupeSqlKeywords } from '@/utils/sqlKeywords'
 
 export interface SqlTableSchema {
   name: string
@@ -116,6 +120,28 @@ function sqlExtension(tables: SqlTableSchema[]): Extension {
   // upperCaseKeywords:键入 as/select 等自动转大写。
   return sql({ schema: schemaOf(tables), upperCaseKeywords: true })
 }
+
+// lang-sql 默认方言(StandardSQL)的关键词补全不含 TRUNCATE/SHOW 等常用语句关键词
+// (见 utils/sqlKeywords.ts),这里构建一个只补缺失词的额外补全源:标签 type 为
+// keyword,经 completeFromList 大小写不敏感匹配、选中后整词大写应用,与
+// upperCaseKeywords 行为一致;ifNotIn 与 lang-sql 内置关键词补全同款,字符串/
+// 注释/点号后不触发。经 EditorState.languageData 全局 facet 注册,与 lang-sql
+// 自带的表/列/关键词补全源并存(autocompletion 用 languageDataAt 收集),不做
+// override、不改变现有补全行为。
+function extraKeywordCompletionSource(): CompletionSource {
+  const options = dedupeSqlKeywords(SQL_EXTRA_KEYWORDS).map((label) => ({
+    label,
+    type: 'keyword',
+  }))
+  return ifNotIn(
+    ['QuotedIdentifier', 'String', 'LineComment', 'BlockComment', '.'],
+    completeFromList(options),
+  )
+}
+
+const extraKeywordCompletion = EditorState.languageData.of(() => [
+  { autocomplete: extraKeywordCompletionSource() },
+])
 
 // 主题色全部走 CSS 变量,自动跟随 [data-theme] 深浅色切换。
 const editorTheme = EditorView.theme({
@@ -369,6 +395,7 @@ onMounted(() => {
     indentOnInput(),
     bracketMatching(),
     autocompletion(),
+    extraKeywordCompletion,
     closeBrackets(),
     keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...completionKeymap]),
     sqlCompartment.of(sqlExtension(props.tables)),
