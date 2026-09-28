@@ -1,8 +1,8 @@
 package store
 
 import (
-	"strings"
 	"testing"
+	"time"
 )
 
 func TestQueryFileHeaderSupportsSchemaAndLegacyFiles(t *testing.T) {
@@ -31,14 +31,18 @@ func TestQueryFileStoreReadWriteHeaderSchema(t *testing.T) {
 	if connID != "conn-pg" || database != "app" || schema != "billing" {
 		t.Fatalf("header conn=%q db=%q schema=%q", connID, database, schema)
 	}
-	if !strings.Contains(content, "-- schema: billing") || !strings.Contains(content, "FROM invoices;") {
+	// Read 剥离元数据行,编辑器只见纯 SQL;元数据经结构化字段返回。
+	if content != "SELECT *\nFROM invoices;" {
 		t.Fatalf("content mismatch: %q", content)
 	}
-	// 旧文件兼容：没有 schema 行时解析为空，内容原样返回。
-	if err := s.Write("legacy.sql", "-- connection: x\n-- database: y\nSELECT 1", "", "", ""); err != nil {
-		t.Fatalf("Write legacy: %v", err)
-	}
-	if _, connID, database, schema, err = s.Read("legacy.sql"); err != nil || connID != "x" || database != "y" || schema != "" {
+	// 旧文件兼容:磁盘上存在只有 connection/database 行(无 schema 行)的文件,
+	// 解析出 conn/db 而 schema 为空;Read 剥离元数据后正文原样返回。
+	writeQueryFileRaw(t, s.Dir, "legacy.sql", "-- connection: x\n-- database: y\nSELECT 1", time.Now())
+	legacy, connID, database, schema, err := s.Read("legacy.sql")
+	if err != nil || connID != "x" || database != "y" || schema != "" {
 		t.Fatalf("legacy Read: err=%v conn=%q db=%q schema=%q", err, connID, database, schema)
+	}
+	if legacy != "SELECT 1" {
+		t.Fatalf("legacy content mismatch: %q", legacy)
 	}
 }

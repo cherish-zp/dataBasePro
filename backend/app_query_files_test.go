@@ -51,8 +51,9 @@ func TestAppQueryFileRoundTrip(t *testing.T) {
 	if got.Database != "订单库" {
 		t.Fatalf("read database = %q, want 订单库", got.Database)
 	}
-	if got.Content != "-- connection: conn-1\n-- database: 订单库\nSELECT * FROM orders;\n" {
-		t.Fatalf("read must return the full original text, got %q", got.Content)
+	// Read 剥离元数据行:编辑器只见纯 SQL;连接/库经结构化字段返回。
+	if got.Content != "SELECT * FROM orders;\n" {
+		t.Fatalf("read must return the SQL body without meta header lines, got %q", got.Content)
 	}
 	if _, err := app.ReadQueryFile(QueryFileReadRequest{Dir: dir, Name: "每日消费延迟.sql"}); err != nil {
 		t.Fatalf("ReadQueryFile with explicit extension: %v", err)
@@ -132,8 +133,16 @@ func TestAppQueryFileWriteWithoutDatabaseOmitsHeaderLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadQueryFile: %v", err)
 	}
-	if got.Content != "-- connection: conn-2\nSELECT 1;\n" {
-		t.Fatalf("empty database must not add a header line, got %q", got.Content)
+	// 直接断言磁盘原始文件:空 database 不得写 -- database: 行。
+	raw, err := os.ReadFile(filepath.Join(dir, "无库.sql"))
+	if err != nil {
+		t.Fatalf("read raw file: %v", err)
+	}
+	if string(raw) != "-- connection: conn-2\nSELECT 1;\n" {
+		t.Fatalf("empty database must not add a header line, got %q", string(raw))
+	}
+	if got.Content != "SELECT 1;\n" {
+		t.Fatalf("read must strip the meta header, got %q", got.Content)
 	}
 	if got.Database != "" {
 		t.Fatalf("empty database must read back empty, got %q", got.Database)

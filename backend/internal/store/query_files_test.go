@@ -102,7 +102,6 @@ func TestQueryFileListIgnoresNonSQLAndSubdirsAndTempFiles(t *testing.T) {
 func TestQueryFileReadRoundTripsHeaderAndBody(t *testing.T) {
 	dir := t.TempDir()
 	s := NewQueryFileStore(dir)
-	header := "-- connection: conn-9\n-- database: 订单库\n"
 	body := "SELECT count(*) FROM events;\n"
 	if err := s.Write("消费统计.sql", body, "conn-9", "订单库", ""); err != nil {
 		t.Fatalf("Write: %v", err)
@@ -111,14 +110,52 @@ func TestQueryFileReadRoundTripsHeaderAndBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if content != header+body {
-		t.Fatalf("Read must return the full original text, got %q", content)
+	// Read 必须剥离元数据头注释(编辑器只展示纯 SQL),元数据经结构化字段返回。
+	if content != body {
+		t.Fatalf("Read must return the body without meta header lines, got %q", content)
 	}
 	if connectionID != "conn-9" {
 		t.Fatalf("connection id = %q, want conn-9", connectionID)
 	}
 	if database != "订单库" {
 		t.Fatalf("database = %q, want 订单库", database)
+	}
+}
+
+// 复现线上 bug:文件曾被旧的 Read/Write 链路反复叠加头部注释,载入时必须
+// 把所有元数据行剥干净,编辑器不再出现重复的 -- connection/-- database。
+func TestQueryFileReadStripsDuplicatedMetaHeaders(t *testing.T) {
+	dir := t.TempDir()
+	raw := "-- connection: conn-1\n-- database: ms_center\n" +
+		"-- connection: conn-1\n-- database: ms_center\n" +
+		"SELECT 1;\n"
+	writeQueryFileRaw(t, dir, "脏文件.sql", raw, time.Now())
+
+	content, connectionID, database, _, err := NewQueryFileStore(dir).Read("脏文件.sql")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if content != "SELECT 1;\n" {
+		t.Fatalf("duplicated meta headers must be stripped, got %q", content)
+	}
+	if connectionID != "conn-1" || database != "ms_center" {
+		t.Fatalf("metadata must still parse: connection %q database %q", connectionID, database)
+	}
+}
+
+// 用户自己写在文件开头的普通注释不是元数据,剥离时必须原样保留。
+func TestQueryFileReadKeepsUserLeadingComments(t *testing.T) {
+	dir := t.TempDir()
+	raw := "-- 订单表对账查询,勿删\nSELECT 1;\n"
+	if err := NewQueryFileStore(dir).Write("备注.sql", raw, "conn-1", "", ""); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	content, _, _, _, err := NewQueryFileStore(dir).Read("备注.sql")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if content != raw {
+		t.Fatalf("user leading comments must be preserved, got %q", content)
 	}
 }
 
@@ -230,8 +267,55 @@ func TestQueryFileWriteOverwritesSameName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if content != "-- connection: conn-2\n-- database: db2\nSELECT 22;\n" || connectionID != "conn-2" || database != "db2" {
+	if content != "SELECT 22;\n" || connectionID != "conn-2" || database != "db2" {
 		t.Fatalf("overwrite not applied: %q / %q / %q", content, connectionID, database)
+	}
+}
+
+// Write 的内容里若已带有元数据头(旧链路遗留/编辑器回传),必须先剥离再前置
+// 新头,否则每次保存都会再叠一份——这正是线上「头注释越点越多」的根因。
+func TestQueryFileWriteStripsMetaLinesFromContent(t *testing.T) {
+	dir := t.TempDir()
+	s := NewQueryFileStore(dir)
+	polluted := "-- connection: conn-1\n-- database: ms_center\nSELECT 1;\n"
+	if err := s.Write("污染.sql", polluted, "conn-1", "ms_center", ""); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "污染.sql"))
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	want := "-- connection: conn-1\n-- database: ms_center\nSELECT 1;\n"
+	if string(raw) != want {
+		t.Fatalf("file must carry exactly one meta header block, got %q", string(raw))
+	}
+}
+
+// 幂等回归:写→读→再写,磁盘内容必须逐字节稳定,不会随载入/保存循环增长。
+func TestQueryFileRoundTripIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	s := NewQueryFileStore(dir)
+	body := "-- 我的备注\nSELECT 1;\n"
+	if err := s.Write("循环.sql", body, "conn-1", "db1", ""); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	first, err := os.ReadFile(filepath.Join(dir, "循环.sql"))
+	if err != nil {
+		t.Fatalf("read first: %v", err)
+	}
+	loaded, _, _, _, err := s.Read("循环.sql")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if err := s.Write("循环.sql", loaded, "conn-1", "db1", ""); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	second, err := os.ReadFile(filepath.Join(dir, "循环.sql"))
+	if err != nil {
+		t.Fatalf("read second: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("round trip must be byte-stable:\nfirst  %q\nsecond %q", first, second)
 	}
 }
 
