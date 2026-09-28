@@ -190,6 +190,11 @@ describe('ConnectionTree', () => {
     expect(wrapper.find('[data-test="conn-caret"]').classes()).toContain('open')
   })
 
+  it('delete button carries a 删除连接 title hint', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    expect(wrapper.find('[data-test="btn-delete"]').attributes('title')).toBe('删除连接')
+  })
+
   it('edit button emits edit-connection with the connection without toggling the row', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
     await wrapper.find('[data-test="btn-edit-connection"]').trigger('click')
@@ -1290,6 +1295,142 @@ describe('ConnectionTree', () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="mysql-table-empty"]').text()).toBe('（无表）')
     })
+  })
+
+  async function expandOneMysqlTable(wrapper: VueWrapper): Promise<void> {
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="mysql-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-table-node"]').exists()).toBe(true)
+    })
+  }
+
+  it('shows the five mysql table context menu items on right-click', async () => {
+    setApi(fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['shop']),
+      listMysqlTables: vi.fn(async () => [{ name: 'users', engine: 'InnoDB', table_rows: 3 }]),
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await expandOneMysqlTable(wrapper)
+    expect(document.body.querySelector('[data-test="context-menu"]')).toBeNull()
+    await wrapper.find('[data-test="mysql-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    const keys = Array.from(document.body.querySelectorAll('[data-test^="context-item-"]')).map((n) => n.getAttribute('data-test'))
+    expect(keys).toEqual([
+      'context-item-open-mysql-table',
+      'context-item-mysql-edit-columns',
+      'context-item-mysql-export',
+      'context-item-mysql-truncate',
+      'context-item-mysql-drop',
+    ])
+  })
+
+  it('drops a mysql table from the context menu after confirmation and refetches the table list', async () => {
+    const mysqlDropTable = vi.fn(async () => {})
+    const listMysqlTables = vi
+      .fn()
+      .mockResolvedValueOnce([{ name: 'users', engine: 'InnoDB', table_rows: 1 }, { name: 'orders', engine: 'InnoDB', table_rows: 2 }])
+      .mockResolvedValue([{ name: 'orders', engine: 'InnoDB', table_rows: 2 }])
+    setApi(fakeApi({ listMysqlDatabases: vi.fn(async () => ['shop']), listMysqlTables, mysqlDropTable }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await expandOneMysqlTable(wrapper)
+    expect(wrapper.findAll('[data-test="mysql-table-node"]')).toHaveLength(2)
+    await wrapper.findAll('[data-test="mysql-table-node"]')[0].trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-mysql-drop"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    // 危险确认文案含 db.table 与「不可恢复」。
+    expect(confirmDialog()?.textContent).toContain('shop.users')
+    expect(confirmDialog()?.textContent).toContain('不可恢复')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(mysqlDropTable).toHaveBeenCalledWith({ connection_id: 'my', database: 'shop', table: 'users' })
+    })
+    // 删除后重拉该库表清单,被删表消失。
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="mysql-table-name"]').map((n) => n.text())).toEqual(['orders'])
+    })
+    expect(listMysqlTables).toHaveBeenCalledTimes(2)
+  })
+
+  it('truncates a mysql table from the context menu after confirmation and refetches the table list', async () => {
+    const mysqlTruncateTable = vi.fn(async () => {})
+    const listMysqlTables = vi.fn(async () => [{ name: 'users', engine: 'InnoDB', table_rows: 1 }])
+    setApi(fakeApi({ listMysqlDatabases: vi.fn(async () => ['shop']), listMysqlTables, mysqlTruncateTable }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await expandOneMysqlTable(wrapper)
+    await wrapper.find('[data-test="mysql-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-mysql-truncate"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    expect(confirmDialog()?.textContent).toContain('shop.users')
+    expect(confirmDialog()?.textContent).toContain('清空')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(mysqlTruncateTable).toHaveBeenCalledWith({ connection_id: 'my', database: 'shop', table: 'users' })
+    })
+    await vi.waitFor(() => {
+      expect(listMysqlTables).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('opens the export dialog from the 导出表 menu and exports via mysqlExportTable and saveFile', async () => {
+    localStorage.clear()
+    const mysqlExportTable = vi.fn(async () => ({ filename: 'users_20260928.sql', content: 'CREATE TABLE `users` (`id` int);' }))
+    setApi(fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['shop']),
+      listMysqlTables: vi.fn(async () => [{ name: 'users', engine: 'InnoDB', table_rows: 1 }]),
+      mysqlExportTable,
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await expandOneMysqlTable(wrapper)
+    await wrapper.find('[data-test="mysql-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-mysql-export"]') as HTMLElement).click()
+    // 菜单点击只打开选项弹窗,不直接发起导出;弹窗内展示 db.table。
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="mysql-export-dialog"]')).not.toBeNull()
+    })
+    expect(document.body.querySelector('[data-test="mysql-export-dialog"]')?.textContent).toContain('shop.users')
+    expect(mysqlExportTable).not.toHaveBeenCalled()
+    ;(document.body.querySelector('[data-test="btn-export-confirm"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(mysqlExportTable).toHaveBeenCalledWith({
+        connection_id: 'my',
+        database: 'shop',
+        table: 'users',
+        include_ddl: true,
+        include_data: true,
+        insert_per_row: false,
+        drop_table_if_exists: false,
+        strip_auto_increment: false,
+        include_create_db: false,
+      })
+    })
+    await vi.waitFor(() => {
+      expect(vi.mocked(saveFile)).toHaveBeenCalledWith('users_20260928.sql', 'CREATE TABLE `users` (`id` int);', 'application/sql')
+    })
+  })
+
+  it('opens the structure dialog from the 编辑表字段 menu item', async () => {
+    const mysqlTableColumns = vi.fn(async () => ({ columns: [], ddl: '' }))
+    setApi(fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['shop']),
+      listMysqlTables: vi.fn(async () => [{ name: 'users', engine: 'InnoDB', table_rows: 1 }]),
+      mysqlTableColumns,
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await expandOneMysqlTable(wrapper)
+    expect(document.body.querySelector('[data-test="mysql-structure-dialog"]')).toBeNull()
+    await wrapper.find('[data-test="mysql-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-mysql-edit-columns"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="mysql-structure-dialog"]')).not.toBeNull()
+    })
+    expect(mysqlTableColumns).toHaveBeenCalledWith({ connection_id: 'my', database: 'shop', table: 'users' })
   })
 
   it('lists clickhouse databases when a clickhouse connection expands', async () => {

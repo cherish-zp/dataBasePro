@@ -3,6 +3,7 @@
 import {backend} from '../models';
 import {model} from '../models';
 import {store} from '../models';
+import {service} from '../models';
 
 export function AlterTopicConfig(arg1:backend.AlterTopicConfigRequest):Promise<void>;
 
@@ -132,11 +133,19 @@ export function ListSavedQueries(arg1:backend.ListSavedQueriesRequest):Promise<A
 
 export function ListTopics(arg1:string):Promise<Array<model.Topic>>;
 
+export function MysqlAlterTable(arg1:backend.MysqlAlterTableRequest):Promise<void>;
+
+export function MysqlDropTable(arg1:backend.MysqlDropTableRequest):Promise<void>;
+
 export function MysqlExecute(arg1:backend.MysqlExecuteRequest):Promise<Array<model.MysqlStatementResult>>;
+
+export function MysqlExportTable(arg1:backend.MysqlExportTableRequest):Promise<service.MysqlExportTableResult>;
 
 export function MysqlPageRows(arg1:backend.MysqlPageRowsRequest):Promise<model.MysqlPageRowsResult>;
 
 export function MysqlPreviewCellUpdate(arg1:model.MysqlCellUpdateRequest):Promise<model.MysqlCellUpdatePreview>;
+
+export function MysqlTableColumns(arg1:backend.MysqlTableColumnsRequest):Promise<service.MysqlTableColumnsResult>;
 
 export function MysqlTruncateTable(arg1:backend.MysqlTruncateTableRequest):Promise<void>;
 

@@ -12,6 +12,8 @@ import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import PromptDialog from './PromptDialog.vue'
 import TopicDetailDrawer from '@/components/kafka/TopicDetailDrawer.vue'
 import ResetOffsetDialog from '@/components/kafka/ResetOffsetDialog.vue'
+import MysqlTableStructure from '@/components/kafka/MysqlTableStructure.vue'
+import MysqlExportDialog from '@/components/kafka/MysqlExportDialog.vue'
 
 const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
@@ -89,7 +91,7 @@ async function onToggleConnect(conn: Connection): Promise<void> {
 // here and a create/delete branch in the dispatch functions below. ES 的
 // es-index / es-template 不作为 collection 分区,但复用同一批交互状态
 // (右键菜单、删除确认),因此也纳入 ObjectKind。
-type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db' | 'es-index' | 'es-template'
+type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db' | 'es-index' | 'es-template' | 'mysql-table'
 interface ObjectCollection {
   key: string
   label: string
@@ -695,13 +697,19 @@ async function submitCreate(conn: Connection): Promise<void> {
 // confirm holds the pending destructive action. The dialog is rendered by
 // Wails (window.confirm is silently unsupported in WKWebView and always
 // returns false), so deletion is confirmed in-app instead. `names` marks a
-// batch delete of several topics at once.
-const confirm = ref<{ connId: string; kind: ObjectKind; name: string; names?: string[] } | null>(null)
+// batch delete of several topics at once; mysql-table 节点额外带 action
+// (drop/truncate)与 db,用于删除表与截断表两种确认。
+const confirm = ref<{ connId: string; kind: ObjectKind; name: string; names?: string[]; action?: 'drop' | 'truncate'; db?: string } | null>(null)
 
 const confirmMessage = computed(() => {
   const pending = confirm.value
   if (!pending) return ''
   if (pending.names) return `确认删除 ${pending.names.length} 个 Topic？此操作不可恢复。`
+  if (pending.kind === 'mysql-table') {
+    const target = `${pending.db ?? ''}.${pending.name}`
+    if (pending.action === 'truncate') return `确认截断表「${target}」？表数据将被清空，此操作不可恢复。`
+    return `确认删除表「${target}」？表结构与数据将被删除，此操作不可恢复。`
+  }
   if (pending.kind === 'es-index') return `确认删除索引「${pending.name}」？此操作不可恢复。`
   if (pending.kind === 'es-template') return `确认删除索引模板「${pending.name}」？此操作不可恢复。`
   return `确认删除 ${pending.kind === 'topic' ? 'Topic' : 'Consumer Group'}「${pending.name}」？此操作不可恢复。`
@@ -711,6 +719,7 @@ const confirmText = computed(() => {
   const pending = confirm.value
   if (!pending) return '删除'
   if (pending.names) return `删除 ${pending.names.length} 个 Topic`
+  if (pending.kind === 'mysql-table') return pending.action === 'truncate' ? '截断表' : '删除表'
   if (pending.kind === 'es-index') return '删除索引'
   if (pending.kind === 'es-template') return '删除模板'
   return `删除 ${pending.kind === 'topic' ? 'Topic' : '消费组'}`
@@ -723,10 +732,20 @@ const detailMeta = ref<{ connId: string; topic: string; edit: boolean } | null>(
 // --- Right-click context menus ----------------------------------------------
 
 // ctxMenu targets the right-clicked tree node; items differ per object kind.
-const ctxMenu = ref<{ x: number; y: number; kind: ObjectKind; connId: string; name: string; partitions: number } | null>(null)
+// db 仅 mysql-table 节点使用(表所属的数据库)。
+const ctxMenu = ref<{ x: number; y: number; kind: ObjectKind; connId: string; name: string; partitions: number; db?: string } | null>(null)
 
 const ctxItems = computed<ContextMenuItem[]>(() => {
   if (!ctxMenu.value) return []
+  if (ctxMenu.value.kind === 'mysql-table') {
+    return [
+      { key: 'open-mysql-table', label: '打开表' },
+      { key: 'mysql-edit-columns', label: '编辑表字段…' },
+      { key: 'mysql-export', label: '导出表…' },
+      { key: 'mysql-truncate', label: '截断表', danger: true },
+      { key: 'mysql-drop', label: '删除表', danger: true },
+    ]
+  }
   if (ctxMenu.value.kind === 'topic') {
     return [
       { key: 'browse', label: '打开消息浏览' },
@@ -771,6 +790,10 @@ function openEsIndexMenu(e: MouseEvent, connId: string, name: string): void {
 
 function openEsTemplateMenu(e: MouseEvent, connId: string, name: string): void {
   ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'es-template', connId, name, partitions: 0 }
+}
+
+function openMysqlTableMenu(e: MouseEvent, connId: string, db: string, name: string): void {
+  ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'mysql-table', connId, name, partitions: 0, db }
 }
 
 function closeCtxMenu(): void {
@@ -826,6 +849,52 @@ function onCtxSelect(key: string): void {
     case 'delete-es-template':
       askDelete(props.connections.find((c) => c.id === m.connId)!, 'es-template', m.name)
       break
+    case 'open-mysql-table':
+      emit('open-mysql-table', m.connId, m.db ?? '', m.name)
+      break
+    case 'mysql-edit-columns':
+      if (m.db !== undefined) structureMeta.value = { connId: m.connId, db: m.db, table: m.name }
+      break
+    case 'mysql-export':
+      if (m.db !== undefined) exportMeta.value = { connId: m.connId, db: m.db, table: m.name }
+      break
+    case 'mysql-truncate':
+      askMysqlTableConfirm(m.connId, m.db ?? '', m.name, 'truncate')
+      break
+    case 'mysql-drop':
+      askMysqlTableConfirm(m.connId, m.db ?? '', m.name, 'drop')
+      break
+  }
+}
+
+// structureMeta holds the mysql table whose structure-editing dialog is open.
+const structureMeta = ref<{ connId: string; db: string; table: string } | null>(null)
+
+// exportMeta holds the mysql table whose export-options dialog is open; the
+// actual export (mysqlExportTable + saveFile) lives in MysqlExportDialog.
+const exportMeta = ref<{ connId: string; db: string; table: string } | null>(null)
+
+// askMysqlTableConfirm 进入删除表/截断表的确认;文案与按钮随 action 区分。
+function askMysqlTableConfirm(connId: string, db: string, table: string, action: 'drop' | 'truncate'): void {
+  confirm.value = { connId, kind: 'mysql-table', name: table, action, db }
+}
+
+// reloadMysqlTables 重置某库的表清单缓存;库节点仍展开时立即重新拉取,
+// 让删除/截断后的树立即反映新状态(与 toggleMysqlDb 的懒加载逻辑一致)。
+async function reloadMysqlTables(connId: string, db: string): Promise<void> {
+  const key = mysqlDbKey(connId, db)
+  delete mysqlTablesByDb.value[key]
+  if (!isMysqlDbExpanded(connId, db)) return
+  mysqlTableLoadingByDb.value[key] = true
+  try {
+    mysqlTablesByDb.value[key] = (await getApi().listMysqlTables?.({
+      connection_id: connId,
+      database: db,
+    })) ?? []
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    mysqlTableLoadingByDb.value[key] = false
   }
 }
 
@@ -948,6 +1017,16 @@ async function executeDelete(): Promise<void> {
       await getApi().deleteTopic({ connection_id: pending.connId, topic: pending.name })
     } else if (pending.kind === 'group') {
       await getApi().deleteConsumerGroup({ connection_id: pending.connId, group: pending.name })
+    } else if (pending.kind === 'mysql-table') {
+      const db = pending.db ?? ''
+      if (pending.action === 'truncate') {
+        await getApi().mysqlTruncateTable?.({ connection_id: pending.connId, database: db, table: pending.name })
+      } else {
+        await getApi().mysqlDropTable?.({ connection_id: pending.connId, database: db, table: pending.name })
+      }
+      // 删除/截断成功后只刷新该库的表清单,不动整棵连接树。
+      await reloadMysqlTables(pending.connId, db)
+      return
     } else if (pending.kind === 'es-index') {
       await getApi().esDeleteIndex?.({ connection_id: pending.connId, index: pending.name })
     } else if (pending.kind === 'es-template') {
@@ -1025,7 +1104,7 @@ function exportTopics(conn: Connection): void {
         <button v-if="conn.type === 'kafka'" class="conn-health" type="button" data-test="btn-cluster-health" title="集群健康" @click.stop="emit('open-health', conn.id)">🩺</button>
         <button v-if="conn.type === 'es'" class="conn-health" type="button" data-test="btn-es-monitor" title="集群监控" @click.stop="emit('open-es-monitor', conn.id)">📈</button>
         <button class="conn-edit" type="button" data-test="btn-edit-connection" title="编辑连接" @click.stop="emit('edit-connection', conn)">✎</button>
-        <button class="conn-delete" type="button" data-test="btn-delete" @click.stop="emit('delete', conn.id)">🗑</button>
+        <button class="conn-delete" type="button" data-test="btn-delete" title="删除连接" @click.stop="emit('delete', conn.id)">🗑</button>
       </div>
 
       <div v-if="isExpanded(conn.id) && (conn.type === 'kafka' || conn.type === 'redis')" class="conn-children">
@@ -1374,6 +1453,7 @@ function exportTopics(conn: Connection): void {
                   data-test="mysql-table-node"
                   :title="`${t.name}(${t.engine})`"
                   @dblclick="emit('open-mysql-table', conn.id, db, t.name)"
+                  @contextmenu.prevent.stop="openMysqlTableMenu($event, conn.id, db, t.name)"
                 >
                   <span class="leaf-name" data-test="mysql-table-name">{{ t.name }}</span>
                   <span class="leaf-badge engine" data-test="mysql-table-engine">{{ t.engine }}</span>
@@ -1669,6 +1749,21 @@ function exportTopics(conn: Connection): void {
       :topic="resetMeta?.topic ?? null"
       :group="resetMeta?.group ?? null"
       @close="resetMeta = null"
+    />
+    <MysqlTableStructure
+      :show="!!structureMeta"
+      :connection-id="structureMeta?.connId ?? ''"
+      :database="structureMeta?.db ?? ''"
+      :table="structureMeta?.table ?? ''"
+      @close="structureMeta = null"
+    />
+    <MysqlExportDialog
+      v-if="exportMeta"
+      :show="true"
+      :connection-id="exportMeta.connId"
+      :database="exportMeta.db"
+      :table="exportMeta.table"
+      @close="exportMeta = null"
     />
     <ConfirmDialog
       :show="!!confirm"

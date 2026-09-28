@@ -258,8 +258,20 @@ export function ListTopics(arg1) {
   return window['go']['backend']['App']['ListTopics'](arg1);
 }
 
+export function MysqlAlterTable(arg1) {
+  return window['go']['backend']['App']['MysqlAlterTable'](arg1);
+}
+
+export function MysqlDropTable(arg1) {
+  return window['go']['backend']['App']['MysqlDropTable'](arg1);
+}
+
 export function MysqlExecute(arg1) {
   return window['go']['backend']['App']['MysqlExecute'](arg1);
+}
+
+export function MysqlExportTable(arg1) {
+  return window['go']['backend']['App']['MysqlExportTable'](arg1);
 }
 
 export function MysqlPageRows(arg1) {
@@ -268,6 +280,10 @@ export function MysqlPageRows(arg1) {
 
 export function MysqlPreviewCellUpdate(arg1) {
   return window['go']['backend']['App']['MysqlPreviewCellUpdate'](arg1);
+}
+
+export function MysqlTableColumns(arg1) {
+  return window['go']['backend']['App']['MysqlTableColumns'](arg1);
 }
 
 export function MysqlTruncateTable(arg1) {

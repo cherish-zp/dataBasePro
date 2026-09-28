@@ -80,6 +80,13 @@ import type {
   MysqlTruncateTableRequest,
   MysqlCellUpdateRequest,
   MysqlCellUpdatePreview,
+  MysqlDropTableRequest,
+  MysqlTableColumnsRequest,
+  MysqlTableColumnsResult,
+  MysqlColumnDef,
+  MysqlAlterTableRequest,
+  MysqlExportTableRequest,
+  MysqlExportTableResult,
   PostgresConfigShape,
   PostgresListSchemasRequest,
   PostgresListTablesRequest,
@@ -196,6 +203,12 @@ export interface Api {
   mysqlPreviewCellUpdate?(req: MysqlCellUpdateRequest): Promise<MysqlCellUpdatePreview>
   mysqlUpdateCell?(req: MysqlCellUpdateRequest): Promise<void>
   mysqlTruncateTable?(req: MysqlTruncateTableRequest): Promise<void>
+  // 表级 DDL/元数据(连接树右键菜单):接口侧声明为可选成员(既有 fake 零
+  // 改动),Wails 绑定已由 wails generate 生成;调用方用可选链(?.)访问。
+  mysqlDropTable?(req: MysqlDropTableRequest): Promise<void>
+  mysqlTableColumns?(req: MysqlTableColumnsRequest): Promise<MysqlTableColumnsResult>
+  mysqlAlterTable?(req: MysqlAlterTableRequest): Promise<void>
+  mysqlExportTable?(req: MysqlExportTableRequest): Promise<MysqlExportTableResult>
   testPostgresConnection?(cfg: PostgresConfigShape): Promise<void>
   listPostgresDatabases?(id: string): Promise<string[]>
   listPostgresSchemas?(req: PostgresListSchemasRequest): Promise<string[]>
@@ -473,6 +486,20 @@ export class WailsApi implements Api {
   }
   mysqlTruncateTable(req: MysqlTruncateTableRequest): Promise<void> {
     return (App as unknown as { MysqlTruncateTable: (req: never) => Promise<void> }).MysqlTruncateTable(req as unknown as never)
+  }
+  // 以下表级 DDL API 的 Wails 绑定已由 wails generate 生成;接口侧保留可选
+  // 成员(既有 fake 无需实现),运行期直接按生成签名调用。
+  mysqlDropTable(req: MysqlDropTableRequest): Promise<void> {
+    return (App as unknown as { MysqlDropTable: (req: never) => Promise<void> }).MysqlDropTable(req as unknown as never)
+  }
+  mysqlTableColumns(req: MysqlTableColumnsRequest): Promise<MysqlTableColumnsResult> {
+    return (App as unknown as { MysqlTableColumns: (req: never) => Promise<MysqlTableColumnsResult> }).MysqlTableColumns(req as unknown as never)
+  }
+  mysqlAlterTable(req: MysqlAlterTableRequest): Promise<void> {
+    return (App as unknown as { MysqlAlterTable: (req: never) => Promise<void> }).MysqlAlterTable(req as unknown as never)
+  }
+  mysqlExportTable(req: MysqlExportTableRequest): Promise<MysqlExportTableResult> {
+    return (App as unknown as { MysqlExportTable: (req: never) => Promise<MysqlExportTableResult> }).MysqlExportTable(req as unknown as never)
   }
   // 以下 PostgreSQL API 的后端绑定尚未由 wails generate 生成,先对模块形状
   // 断言,待主会话生成绑定后即可直接调用(接口侧为可选成员,fake 无需实现)。

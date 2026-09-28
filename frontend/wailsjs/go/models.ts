@@ -117,6 +117,8 @@ export namespace backend {
 	export class CHExecuteRequest {
 	    connection_id: string;
 	    sql: string;
+	    limit?: number;
+	    offset?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new CHExecuteRequest(source);
@@ -126,6 +128,8 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.connection_id = source["connection_id"];
 	        this.sql = source["sql"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
 	    }
 	}
 	export class CHPageRowsRequest {
@@ -475,6 +479,8 @@ export namespace backend {
 	export class EsExecuteRequest {
 	    connection_id: string;
 	    sql: string;
+	    limit?: number;
+	    offset?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new EsExecuteRequest(source);
@@ -484,6 +490,8 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.connection_id = source["connection_id"];
 	        this.sql = source["sql"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
 	    }
 	}
 	export class EsGetDocRequest {
@@ -632,10 +640,68 @@ export namespace backend {
 	        this.connection_id = source["connection_id"];
 	    }
 	}
+	export class MysqlAlterTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    add_columns: service.MysqlColumnDef[];
+	    modify_columns: service.MysqlColumnDef[];
+	    drop_columns: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlAlterTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.add_columns = this.convertValues(source["add_columns"], service.MysqlColumnDef);
+	        this.modify_columns = this.convertValues(source["modify_columns"], service.MysqlColumnDef);
+	        this.drop_columns = source["drop_columns"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MysqlDropTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlDropTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	    }
+	}
 	export class MysqlExecuteRequest {
 	    connection_id: string;
 	    database?: string;
 	    sql: string;
+	    limit?: number;
+	    offset?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new MysqlExecuteRequest(source);
@@ -646,6 +712,38 @@ export namespace backend {
 	        this.connection_id = source["connection_id"];
 	        this.database = source["database"];
 	        this.sql = source["sql"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class MysqlExportTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    include_data: boolean;
+	    data_limit?: number;
+	    include_ddl: boolean;
+	    insert_per_row: boolean;
+	    drop_table_if_exists: boolean;
+	    strip_auto_increment: boolean;
+	    include_create_db: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlExportTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.include_data = source["include_data"];
+	        this.data_limit = source["data_limit"];
+	        this.include_ddl = source["include_ddl"];
+	        this.insert_per_row = source["insert_per_row"];
+	        this.drop_table_if_exists = source["drop_table_if_exists"];
+	        this.strip_auto_increment = source["strip_auto_increment"];
+	        this.include_create_db = source["include_create_db"];
 	    }
 	}
 	export class MysqlPageRowsRequest {
@@ -672,6 +770,22 @@ export namespace backend {
 	        this.asc = source["asc"];
 	        this.limit = source["limit"];
 	        this.offset = source["offset"];
+	    }
+	}
+	export class MysqlTableColumnsRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlTableColumnsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
 	    }
 	}
 	export class MysqlTablesRequest {
@@ -709,6 +823,8 @@ export namespace backend {
 	    database?: string;
 	    schema?: string;
 	    sql: string;
+	    limit?: number;
+	    offset?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new PostgresExecuteRequest(source);
@@ -720,6 +836,8 @@ export namespace backend {
 	        this.database = source["database"];
 	        this.schema = source["schema"];
 	        this.sql = source["sql"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
 	    }
 	}
 	export class PostgresPageRowsRequest {
@@ -1482,6 +1600,7 @@ export namespace model {
 	    error?: string;
 	    columns?: CHColumn[];
 	    rows?: string[][];
+	    total_rows?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new CHStatementResult(source);
@@ -1494,6 +1613,7 @@ export namespace model {
 	        this.error = source["error"];
 	        this.columns = this.convertValues(source["columns"], CHColumn);
 	        this.rows = source["rows"];
+	        this.total_rows = source["total_rows"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1847,6 +1967,7 @@ export namespace model {
 	    error?: string;
 	    columns?: EsColumn[];
 	    rows?: string[][];
+	    total_rows?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new EsStatementResult(source);
@@ -1859,6 +1980,7 @@ export namespace model {
 	        this.error = source["error"];
 	        this.columns = this.convertValues(source["columns"], EsColumn);
 	        this.rows = source["rows"];
+	        this.total_rows = source["total_rows"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2258,6 +2380,7 @@ export namespace model {
 	    columns?: MysqlColumn[];
 	    rows?: string[][];
 	    primary_key?: string[];
+	    total_rows?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new MysqlStatementResult(source);
@@ -2271,6 +2394,7 @@ export namespace model {
 	        this.columns = this.convertValues(source["columns"], MysqlColumn);
 	        this.rows = source["rows"];
 	        this.primary_key = source["primary_key"];
+	        this.total_rows = source["total_rows"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2509,6 +2633,7 @@ export namespace model {
 	    rows?: string[][];
 	    primary_key?: string[];
 	    affected_rows: number;
+	    total_rows?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new PostgresStatementResult(source);
@@ -2524,6 +2649,7 @@ export namespace model {
 	        this.rows = source["rows"];
 	        this.primary_key = source["primary_key"];
 	        this.affected_rows = source["affected_rows"];
+	        this.total_rows = source["total_rows"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2854,6 +2980,107 @@ export namespace model {
 	        this.name = source["name"];
 	        this.partitions = this.convertValues(source["partitions"], Partition);
 	        this.configs = this.convertValues(source["configs"], TopicConfigEntry);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace service {
+	
+	export class MysqlColumnDef {
+	    name: string;
+	    column_type: string;
+	    nullable: boolean;
+	    default_value?: string;
+	    comment: string;
+	    auto_increment: boolean;
+	    after?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlColumnDef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.column_type = source["column_type"];
+	        this.nullable = source["nullable"];
+	        this.default_value = source["default_value"];
+	        this.comment = source["comment"];
+	        this.auto_increment = source["auto_increment"];
+	        this.after = source["after"];
+	    }
+	}
+	export class MysqlExportTableResult {
+	    filename: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlExportTableResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filename = source["filename"];
+	        this.content = source["content"];
+	    }
+	}
+	export class MysqlTableColumn {
+	    name: string;
+	    column_type: string;
+	    data_type: string;
+	    nullable: boolean;
+	    default_value?: string;
+	    extra: string;
+	    comment: string;
+	    is_primary_key: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlTableColumn(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.column_type = source["column_type"];
+	        this.data_type = source["data_type"];
+	        this.nullable = source["nullable"];
+	        this.default_value = source["default_value"];
+	        this.extra = source["extra"];
+	        this.comment = source["comment"];
+	        this.is_primary_key = source["is_primary_key"];
+	    }
+	}
+	export class MysqlTableColumnsResult {
+	    columns: MysqlTableColumn[];
+	    ddl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlTableColumnsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = this.convertValues(source["columns"], MysqlTableColumn);
+	        this.ddl = source["ddl"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

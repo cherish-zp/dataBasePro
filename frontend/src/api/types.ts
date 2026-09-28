@@ -589,15 +589,22 @@ export interface CHTruncateTableRequest {
 export interface CHExecuteRequest {
   connection_id: string
   sql: string
+  // >0 时启用服务端分页:仅返回 offset 起的 limit 行,total_rows 给出总数;
+  // 缺省 = 旧行为(全量返回)。
+  limit?: number
+  offset?: number
 }
 
 // 多语句逐条返回:每条一条结果,失败语句带 error 文本;成功语句带列与行。
+// total_rows 仅在请求带 limit 时返回:-1 表示无法计数(如 SHOW 类语句且
+// 本页已满),undefined 表示未启用分页。
 export interface CHStatementResult {
   sql: string
   duration_ms: number
   error?: string
   columns?: CHColumn[]
   rows?: (string | null)[][]
+  total_rows?: number
 }
 
 // --- MySQL / TiDB(镜像 backend/model/mysql.go) ---
@@ -665,21 +672,112 @@ export interface MysqlExecuteRequest {
   sql: string
   // 非空时后端在该库上执行(等效 USE);空串原样传,由后端按连接默认库处理。
   database?: string
+  // >0 时启用服务端分页:仅返回 offset 起的 limit 行,total_rows 给出总数;
+  // 缺省 = 旧行为(全量返回)。
+  limit?: number
+  offset?: number
 }
 
 // 多语句逐条返回:每条一条结果,失败语句带 error 文本;成功语句带列与行。
+// total_rows 仅在请求带 limit 时返回:-1 表示无法计数(如 SHOW 类语句且
+// 本页已满),undefined 表示未启用分页。
 export interface MysqlStatementResult {
   sql: string
   duration_ms: number
   error?: string
   columns?: MysqlColumn[]
   rows?: (string | null)[][]
+  total_rows?: number
 }
 
 export interface MysqlTruncateTableRequest {
   connection_id: string
   database: string
   table: string
+}
+
+// --- MySQL/TiDB 表级 DDL/元数据(连接树右键:删除表/编辑字段/导出) ---
+
+export interface MysqlDropTableRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+export interface MysqlTableColumnsRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+// 一列的完整定义(镜像 information_schema.columns):default_value 为 null
+// 表示「无默认值/DEFAULT NULL」;extra 承载 auto_increment / on update
+// CURRENT_TIMESTAMP 等原文。
+export interface MysqlTableColumn {
+  name: string
+  // column_type 为完整类型(如 varchar(64) / int unsigned);data_type 为基类型。
+  column_type: string
+  data_type: string
+  nullable: boolean
+  default_value: string | null
+  extra: string
+  comment: string
+  is_primary_key: boolean
+}
+
+export interface MysqlTableColumnsResult {
+  columns: MysqlTableColumn[]
+  // SHOW CREATE TABLE 原文。
+  ddl: string
+}
+
+// 新增/修改列的描述;后端据此拼 ALTER(前端禁止拼 SQL)。default_value 传
+// null 表示 DEFAULT NULL;auto_increment=true 时后端补 KEY 校验由 MySQL 报错。
+export interface MysqlColumnDef {
+  name: string
+  column_type: string
+  nullable: boolean
+  default_value: string | null
+  comment: string
+  auto_increment: boolean
+  // 仅新增列生效:null=追加表尾,非空=AFTER 指定列;修改列忽略。
+  after?: string | null
+}
+
+// add/modify/drop 三组按序执行:先 ADD,再 MODIFY,最后 DROP。
+export interface MysqlAlterTableRequest {
+  connection_id: string
+  database: string
+  table: string
+  add_columns: MysqlColumnDef[]
+  modify_columns: MysqlColumnDef[]
+  drop_columns: string[]
+}
+
+export interface MysqlExportTableRequest {
+  connection_id: string
+  database: string
+  table: string
+  // 是否导出表结构(SHOW CREATE TABLE);缺省 true。
+  include_ddl?: boolean
+  // 是否附带 INSERT 数据;缺省 true(旧调用恒传 true)。
+  include_data?: boolean
+  // INSERT 格式:true = 每行一条;缺省 false = 多行合并(每 100 行一条)。
+  insert_per_row?: boolean
+  // true = 导出内容前添加 DROP TABLE IF EXISTS;缺省 false。
+  drop_table_if_exists?: boolean
+  // true = 省略 AUTO_INCREMENT 计数;缺省 false。
+  strip_auto_increment?: boolean
+  // true = 附带 CREATE DATABASE / USE 建库语句;缺省 false。
+  include_create_db?: boolean
+  // 数据导出行数上限,0 或缺省 = 不限制。
+  data_limit?: number
+}
+
+export interface MysqlExportTableResult {
+  // 建议文件名,如 table_xxx.sql;前端可改后交 saveTextFile。
+  filename: string
+  content: string
 }
 
 // 单元格行内编辑的定位/目标描述(镜像 model.MysqlCellValue):value 为
@@ -769,15 +867,21 @@ export interface EsPageRowsResult {
 export interface EsExecuteRequest {
   connection_id: string
   sql: string
+  // >0 时启用服务端分页:仅返回 offset 起的 limit 行,total_rows 给出总数;
+  // 缺省 = 旧行为(全量返回)。
+  limit?: number
+  offset?: number
 }
 
 // 多语句逐条返回:每条一条结果,失败语句带 error 文本;成功语句带列与行。
+// total_rows 仅在请求带 limit 时返回:-1 表示无法计数,undefined 表示未启用分页。
 export interface EsStatementResult {
   sql: string
   duration_ms: number
   error?: string
   columns?: EsColumn[]
   rows?: (string | null)[][]
+  total_rows?: number
 }
 
 // 单元格行内编辑:按 _id 定位文档并更新单个字段;value 为 null 表示清空该
@@ -1039,9 +1143,14 @@ export interface PostgresExecuteRequest {
   sql: string
   database?: string
   schema?: string
+  // >0 时启用服务端分页:仅返回 offset 起的 limit 行,total_rows 给出总数;
+  // 缺省 = 旧行为(全量返回)。
+  limit?: number
+  offset?: number
 }
 
 // 多语句逐条返回:失败语句带 error;成功语句带列与行,单表 SELECT 附主键。
+// total_rows 仅在请求带 limit 时返回:-1 表示无法计数,undefined 表示未启用分页。
 export interface PostgresStatementResult {
   statement: string
   duration_ms: number
@@ -1051,6 +1160,7 @@ export interface PostgresStatementResult {
   affected_rows?: number
   has_rows: boolean
   primary_key?: string[]
+  total_rows?: number
 }
 
 export interface PostgresTruncateTableRequest {
