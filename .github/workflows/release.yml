@@ -163,6 +163,15 @@ jobs:
             N=$(basename "$f")
             case " ${EXISTING} " in *" ${N} "*) echo "skip(已存在) ${N}"; continue;; esac
             echo "sync ${N}"
-            G -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${RID}/attach_files" \
-              -F "access_token=${GITEE_TOKEN}" -F "file=@$f" || echo "::warning::上传失败: $f"
+            # 重试 4 次:上一份大文件在 Gitee 侧异步处理时,紧接着的请求会被拒
+            # (darwin-arm64 最小、上传最快,三次发布均在此失败);间隔 30s。
+            OK=""
+            for attempt in 1 2 3 4; do
+              RESP=$(G -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${RID}/attach_files" \
+                -F "access_token=${GITEE_TOKEN}" -F "file=@$f")
+              if echo "${RESP}" | grep -q '"browser_download_url"'; then OK=1; break; fi
+              echo "::warning::上传失败(第 ${attempt} 次) ${N}: ${RESP}"
+              sleep 30
+            done
+            [ -n "${OK}" ] || echo "::error::放弃上传 ${N}"
           done
