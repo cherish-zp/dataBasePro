@@ -136,6 +136,34 @@ describe('saveToFile', () => {
     expect(showSpy).toHaveBeenCalledWith('已保存到 SQL文件:a.sql')
   })
 
+  // 回归:同名覆盖保存时 currentFile 值不变,组件层经 onSaved 对齐脏检查
+  // 快照——否则刚保存的内容会被下一次载入误判为「未保存」。
+  it('成功:触发 onSaved 回调并携带规范化文件名', async () => {
+    const onSaved = vi.fn()
+    const { qf } = setup({ onSaved })
+
+    await qf.saveToFile('a')
+
+    expect(onSaved).toHaveBeenCalledTimes(1)
+    expect(onSaved).toHaveBeenCalledWith('a.sql')
+  })
+
+  it('失败:不触发 onSaved', async () => {
+    const onSaved = vi.fn()
+    const { qf } = setup({ onSaved })
+    queryFileApp.WriteQueryFile.mockRejectedValue(new Error('磁盘已满'))
+
+    await qf.saveToFile('a.sql')
+
+    expect(onSaved).not.toHaveBeenCalled()
+  })
+
+  it('未提供 onSaved 时不报错', async () => {
+    const { qf } = setup()
+
+    await expect(qf.saveToFile('a.sql')).resolves.toBeUndefined()
+  })
+
   it('失败:写入 fileError,不更新当前文件、不弹 toast', async () => {
     const { qf } = setup()
     const toast = useToastStore()

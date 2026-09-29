@@ -568,6 +568,11 @@ const qf = useQueryFiles({
     sql.value = s
     savedSnapshot.value = s
   },
+  // 同名覆盖保存时 currentFile 不变、下方 watcher 不触发,靠 onSaved 对齐
+  // 快照,避免刚保存的内容被下一次载入误判为「未保存」。
+  onSaved: () => {
+    savedSnapshot.value = sql.value
+  },
 })
 
 // composable 把 ref 嵌在普通对象里返回,模板不自动解包,这里统一取值。

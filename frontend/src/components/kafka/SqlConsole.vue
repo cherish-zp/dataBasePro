@@ -294,6 +294,11 @@ const qf = useQueryFiles({
     sql.value = s
     savedSnapshot.value = s
   },
+  // 同名覆盖保存时 currentFile 不变、下方 watcher 不触发,靠 onSaved 在写盘
+  // 成功后对齐快照,避免刚保存的内容被下一次载入误判为「未保存」。
+  onSaved: () => {
+    savedSnapshot.value = sql.value
+  },
 })
 
 // composable 把 ref 嵌在普通对象里返回,模板不自动解包,这里取到顶层。
@@ -324,10 +329,9 @@ watch(
   { immediate: true },
 )
 
-// 保存:已关联文件 → 直接覆盖写,此时无弹窗、currentFile 不变,先对齐基线;
-// 未关联 → 由 composable 打开名称输入弹窗,确认后经 currentFile watcher 校准。
+// 保存:全部路径(同名覆盖/首次关联/另存/覆盖确认)由 composable 在写盘成功
+// 后经 onSaved 校准基线;此处不再预先对齐——保存失败时基线不应变动。
 function saveCurrent(): void {
-  if (currentFile.value) savedSnapshot.value = sql.value
   qf.requestSave()
 }
 

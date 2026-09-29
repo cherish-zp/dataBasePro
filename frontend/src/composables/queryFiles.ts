@@ -21,6 +21,10 @@ export interface QueryFilesOptions {
   // 载入文件后回传文件头记录的库;空串也回调,表示文件未关联库(由
   // 消费者自行决定是否恢复,例如 MySQL 控制台空串保持当前库不动)。
   setDatabase?: (db: string) => void
+  // 保存写盘成功后回调(携带规范化文件名):同名覆盖保存时 currentFile 值
+  // 不变,消费者(各 SQL 控制台)靠它把脏检查快照对齐到刚保存的内容,
+  // 避免刚保存就被误判为「未保存」。失败不回调。
+  onSaved?: (name: string) => void
   // PG 控制台:保存把当前 schema 写入文件头;载入按文件头回传(空串 =
   // 文件未关联 schema,消费者保持当前 schema 不动)。
   getSchema?: () => string
@@ -107,6 +111,7 @@ export function useQueryFiles(opts: QueryFilesOptions): {
       await App.WriteQueryFile(payload as unknown as Parameters<typeof App.WriteQueryFile>[0])
       currentFile.value = target
       fileError.value = null
+      opts.onSaved?.(target)
       await refreshFiles()
       try {
         useToastStore().show(`已保存到 SQL文件:${target}`)

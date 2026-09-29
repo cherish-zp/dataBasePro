@@ -517,6 +517,38 @@ describe('EsSqlConsole', () => {
     wrapper.unmount()
   })
 
+  // 回归:同名覆盖保存成功后,再点右栏同一文件不得误弹「当前 SQL 未保存,
+  // 载入将替换?」——保存成功必须把脏检查快照对齐到刚保存的内容。
+  it('同名覆盖保存后再次载入同一文件不弹未保存确认', async () => {
+    app.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'e1' })
+    const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+    // 打开已关联文件「166[总控].sql」:编辑器与快照都是 SELECT 1。
+    exposedApi(wrapper).loadQueryFile('166[总控]')
+    await vi.waitFor(() => {
+      expect(exposedApi(wrapper).currentFile()).toBe('166[总控].sql')
+    })
+    // 编辑后同名覆盖保存(requestSave 路径,currentFile 不变)。
+    await typeSql(wrapper, 'SELECT 42')
+    exposedApi(wrapper).requestSave()
+    await vi.waitFor(() => {
+      expect(app.WriteQueryFile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: '166[总控].sql', content: 'SELECT 42' }),
+      )
+    })
+    // 保存后刷新列表(refreshFiles)完成,再进行下一步载入。
+    await vi.waitFor(() => {
+      expect(app.ListQueryFiles).toHaveBeenCalled()
+    })
+    // 再次点击右栏同一文件:不弹确认,直接重新载入(ReadQueryFile 第二次调用)。
+    const readsBefore = app.ReadQueryFile.mock.calls.length
+    exposedApi(wrapper).loadQueryFile('166[总控]')
+    await vi.waitFor(() => {
+      expect(app.ReadQueryFile.mock.calls.length).toBeGreaterThan(readsBefore)
+    })
+    expect(bodyEl('confirm-dialog')).toBeNull()
+    wrapper.unmount()
+  })
+
   // --- tab 标题跟随当前打开的 SQL 文件 ----------------------------------------
 
   describe('tab 标题跟随当前 SQL 文件', () => {

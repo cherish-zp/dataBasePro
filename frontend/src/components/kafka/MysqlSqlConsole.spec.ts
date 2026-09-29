@@ -808,6 +808,39 @@ describe('MysqlSqlConsole', () => {
       wrapper.unmount()
     })
 
+    // 回归:同名覆盖保存成功后,再点右栏同一文件不得误弹「当前 SQL 未保存,
+    // 载入将替换?」——保存成功必须把脏检查快照对齐到刚保存的内容。
+    it('同名覆盖保存后再次载入同一文件不弹未保存确认', async () => {
+      app.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'm1', database: 'shop' })
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      // 打开已关联文件「166[总控].sql」:编辑器与快照都是 SELECT 1。
+      exposedApi(wrapper).loadQueryFile('166[总控]')
+      await vi.waitFor(() => {
+        expect(exposedApi(wrapper).currentFile()).toBe('166[总控].sql')
+      })
+      // 编辑后同名覆盖保存(⌘S 路径,currentFile 不变)。
+      await typeSql(wrapper, 'SELECT 42')
+      exposedApi(wrapper).requestSave()
+      await vi.waitFor(() => {
+        expect(app.WriteQueryFile).toHaveBeenCalledWith(
+          expect.objectContaining({ name: '166[总控].sql', content: 'SELECT 42' }),
+        )
+      })
+      await vi.waitFor(() => {
+        expect(app.ListQueryFiles).toHaveBeenCalled()
+      })
+      // 再次点击右栏同一文件:不弹确认,直接重新载入(ReadQueryFile 第二次调用)。
+      const readsBefore = app.ReadQueryFile.mock.calls.length
+      exposedApi(wrapper).loadQueryFile('166[总控]')
+      await vi.waitFor(() => {
+        expect(app.ReadQueryFile.mock.calls.length).toBeGreaterThan(readsBefore)
+      })
+      expect(bodyEl('confirm-dialog')).toBeNull()
+      wrapper.unmount()
+    })
+
     it('载入文件头带库的 .sql → 选择器切到该库并重拉补全', async () => {
       app.ListMysqlTables.mockResolvedValue([{ name: 'users' }])
       app.MysqlExecute.mockImplementation(async (req: { sql: string }) => columnsQueryResult())

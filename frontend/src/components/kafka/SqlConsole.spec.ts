@@ -1033,6 +1033,39 @@ describe('SqlConsole', () => {
       expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 50')
     })
 
+    // 回归:同名覆盖保存成功后,再点右栏同一文件不得误弹「当前 SQL 未保存,
+    // 载入将替换?」——保存成功必须把脏检查快照对齐到刚保存的内容。
+    it('同名覆盖保存后再次载入同一文件不弹未保存确认', async () => {
+      mockFileBackend([file('166[总控].sql', 'c', 'SELECT * FROM errors LIMIT 10')])
+      const { wrapper } = mountConsole()
+      const vm = exposedApi(wrapper)
+      // 有 topic 的控制台带模板,先清空避免载入确认。
+      await setSql(wrapper, '')
+      vm.loadQueryFile('166[总控].sql')
+      await flushPromises()
+      expect(vm.currentFile()).toBe('166[总控].sql')
+      // 编辑后同名覆盖保存(⌘S 走 saveCurrent → requestSave,currentFile 不变)。
+      await setSql(wrapper, 'SELECT 42')
+      const listsBefore = queryFileMocks.ListQueryFiles.mock.calls.length
+      await cmContent(wrapper).trigger('keydown', { key: 's', metaKey: true })
+      await flushPromises()
+      expect(queryFileMocks.WriteQueryFile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: '166[总控].sql', content: 'SELECT 42' }),
+      )
+      // 保存后刷新列表(refreshFiles)完成,再进行下一步载入。
+      await vi.waitFor(() => {
+        expect(queryFileMocks.ListQueryFiles.mock.calls.length).toBeGreaterThan(listsBefore)
+      })
+      // 再次点击右栏同一文件:不弹确认,直接重新载入(ReadQueryFile 第二次调用)。
+      const readsBefore = queryFileMocks.ReadQueryFile.mock.calls.length
+      vm.loadQueryFile('166[总控].sql')
+      await nextTick()
+      expect(promptEl('confirm-dialog')).toBeNull()
+      await flushPromises()
+      expect(queryFileMocks.ReadQueryFile.mock.calls.length).toBeGreaterThan(readsBefore)
+      expect(editorSql(wrapper)).toBe('SELECT * FROM errors LIMIT 10')
+    })
+
     it('askRemoveCurrentFile → 删除确认 → DeleteQueryFile 并清空编辑器', async () => {
       mockFileBackend([file('近一小时错误.sql', 'c', 'SELECT * FROM errors LIMIT 10')])
       const { wrapper } = mountConsole()

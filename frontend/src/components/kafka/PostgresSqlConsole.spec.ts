@@ -210,6 +210,47 @@ describe('PostgresSqlConsole', () => {
     })
   })
 
+  // 回归:同名覆盖保存成功后,再点右栏同一文件不得误弹「当前 SQL 未保存,
+  // 载入将替换?」——保存成功必须把脏检查快照对齐到刚保存的内容。
+  it('同名覆盖保存后再次载入同一文件不弹未保存确认', async () => {
+    // 文件头缺省 database/schema:载入保持当前上下文不动,聚焦回归点。
+    appMocks.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'pg1' })
+    const wrapper = mountConsole()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-db-select"]').exists()).toBe(true)
+    })
+    const vm = wrapper.vm as unknown as {
+      requestSave(): void
+      loadQueryFile(name: string): void
+      currentFile(): string | null
+    }
+    // 打开已关联文件「166[总控].sql」:编辑器与快照都是 SELECT 1。
+    vm.loadQueryFile('166[总控]')
+    await vi.waitFor(() => {
+      expect(vm.currentFile()).toBe('166[总控].sql')
+    })
+    // 编辑后同名覆盖保存(requestSave 路径,currentFile 不变)。
+    await typeSql(wrapper, 'SELECT 42')
+    vm.requestSave()
+    await vi.waitFor(() => {
+      expect(appMocks.WriteQueryFile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: '166[总控].sql', content: 'SELECT 42' }),
+      )
+    })
+    // 保存后刷新列表(refreshFiles)完成,再进行下一步载入。
+    await vi.waitFor(() => {
+      expect(appMocks.ListQueryFiles).toHaveBeenCalled()
+    })
+    // 再次点击右栏同一文件:不弹确认,直接重新载入(ReadQueryFile 第二次调用)。
+    const readsBefore = appMocks.ReadQueryFile.mock.calls.length
+    vm.loadQueryFile('166[总控]')
+    await vi.waitFor(() => {
+      expect(appMocks.ReadQueryFile.mock.calls.length).toBeGreaterThan(readsBefore)
+    })
+    expect(document.body.querySelector('[data-test="confirm-dialog"]')).toBeNull()
+    wrapper.unmount()
+  })
+
   it('单表 SELECT 结果可编辑:回车预览携带 schema/relation,确认后执行并刷新', async () => {
     appMocks.PostgresExecute.mockResolvedValue([selectResult()])
     appMocks.PostgresPreviewCellUpdate.mockResolvedValue({
