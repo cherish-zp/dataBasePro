@@ -419,13 +419,15 @@ func (c *MysqlClient) Execute(ctx context.Context, database, sqlText string, lim
 	if db := strings.TrimSpace(database); db != "" {
 		return c.executeOnPinnedDatabase(ctx, db, statements, limit, offset)
 	}
-	return c.runMysqlStatements(ctx, c.db, c.defaultDB, statements, limit, offset)
+	return c.runMysqlStatements(ctx, c.db, c.defaultDB, statements, limit, offset, nil)
 }
 
 // executeOnPinnedDatabase grabs one dedicated connection, pins it to the
 // database with a backtick-escaped USE, and runs every statement there so the
 // selected schema persists across the script. The connection goes back to the
 // pool afterwards. USE 失败即中止(库不存在等),不执行任何语句。
+// 语句目标自带显式库名时(如 insert into other_db.t ...),逐语句切到目标库:
+// 未限定表名跟随目标库解析,不再受选中库影响(跨库初始化脚本的常见诉求)。
 func (c *MysqlClient) executeOnPinnedDatabase(ctx context.Context, database string, statements []string, limit, offset int) ([]model.MysqlStatementResult, error) {
 	conn, err := c.db.Conn(ctx)
 	if err != nil {
@@ -435,7 +437,7 @@ func (c *MysqlClient) executeOnPinnedDatabase(ctx context.Context, database stri
 	if _, err := conn.ExecContext(ctx, buildMysqlUseDatabase(database)); err != nil {
 		return nil, fmt.Errorf("use database: %w", err)
 	}
-	return c.runMysqlStatements(ctx, conn, database, statements, limit, offset)
+	return c.runMysqlStatements(ctx, conn, database, statements, limit, offset, mysqlStatementTargetSchema)
 }
 
 // buildMysqlUseDatabase renders the USE statement: the identifier is
@@ -448,13 +450,28 @@ func buildMysqlUseDatabase(database string) string {
 // per-statement results; the first failure records its error and stops the
 // run with the results gathered so far. defaultSchema 是未限定表名解析到的
 // 库(USE 过的专用连接为该库,连接池路径为连接默认库),供单表 SELECT 的
-// 主键元数据查询使用。limit>0 启用服务端分页(包装查询 + COUNT 计数,或
-// SHOW 类语句的客户端截断回退);limit<=0 保持全量旧行为。
-func (c *MysqlClient) runMysqlStatements(ctx context.Context, exec mysqlExecutor, defaultSchema string, statements []string, limit, offset int) ([]model.MysqlStatementResult, error) {
+// 主键元数据查询使用。resolveSchema 非空时(专用连接路径)逐语句解析目标
+// 显式库名,与当前库不同则在执行前 USE 切换,并同步主键解析的默认库;为 nil
+// 时(连接池路径)保持 defaultSchema 不变。limit>0 启用服务端分页(包装查询
+// + COUNT 计数,或 SHOW 类语句的客户端截断回退);limit<=0 保持全量旧行为。
+func (c *MysqlClient) runMysqlStatements(ctx context.Context, exec mysqlExecutor, defaultSchema string, statements []string, limit, offset int, resolveSchema func(string) string) ([]model.MysqlStatementResult, error) {
 	out := make([]model.MysqlStatementResult, 0, len(statements))
+	curSchema := defaultSchema
 	for _, stmt := range statements {
 		res := model.MysqlStatementResult{SQL: stmt}
 		start := time.Now()
+		if resolveSchema != nil {
+			// 语句目标带显式库名且与当前库不同:先切库再执行(USE 失败按该
+			// 语句失败处理,中止后续语句)。
+			if s := resolveSchema(stmt); s != "" && !strings.EqualFold(s, curSchema) {
+				if _, err := exec.ExecContext(ctx, buildMysqlUseDatabase(s)); err != nil {
+					res.DurationMs = msSince(start)
+					res.Error = "use database: " + err.Error()
+					return append(out, res), nil
+				}
+				curSchema = s
+			}
+		}
 		if mysqlStatementReturnsRows(stmt) {
 			// 分页决策:可包装语句改写为子查询 LIMIT/OFFSET;SHOW/DESC/
 			// EXPLAIN 等按原始语句执行但只消费 offset+limit 行。res.SQL 始终
@@ -507,8 +524,9 @@ func (c *MysqlClient) runMysqlStatements(ctx context.Context, exec mysqlExecutor
 		res.DurationMs = msSince(start)
 		// 单表 SELECT 附带主键列(information_schema,与 PageRows 同源),
 		// 供前端「复制为 INSERT」可选剥离主键;任何失败静默置空,不计入
-		// 语句耗时,不影响语句结果。
-		res.PrimaryKey = c.mysqlStatementPrimaryKey(ctx, exec, stmt, defaultSchema)
+		// 语句耗时,不影响语句结果。主键解析的默认库用当前生效库
+		// (目标库名切换后跟随目标库)。
+		res.PrimaryKey = c.mysqlStatementPrimaryKey(ctx, exec, stmt, curSchema)
 		out = append(out, res)
 	}
 	return out, nil

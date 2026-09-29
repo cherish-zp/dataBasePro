@@ -619,6 +619,115 @@ func TestMysqlExecuteWithDatabasePinsUSEAndStatements(t *testing.T) {
 	}
 }
 
+// mysqlStatementTargetSchema:语句 DML/DDL 目标带显式库名时提取该库名。
+func TestMysqlStatementTargetSchema(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"用户场景 INSERT 目标带库名", `insert into act_msdp.upc_menu (name)
+select (select menu_id from upc_menu) , 1
+from dual
+where not exists(select 1 from upc_menu);`, "act_msdp"},
+		{"INSERT 目标无库名", "insert into upc_menu values (1)", ""},
+		{"INSERT IGNORE 反引号限定", "INSERT IGNORE INTO `db`.`t` VALUES (1)", "db"},
+		{"反引号含空格与双写反引号", "insert into `my db``x`.t values (1)", "my db`x"},
+		{"REPLACE INTO 限定", "REPLACE INTO db.t VALUES (1)", "db"},
+		{"UPDATE 限定", "UPDATE db.t SET a = 1", "db"},
+		{"UPDATE 无限定", "UPDATE t SET a = 1", ""},
+		{"DELETE FROM 限定", "DELETE FROM db.t WHERE 1", "db"},
+		{"TRUNCATE TABLE 限定", "TRUNCATE TABLE db.t", "db"},
+		{"TRUNCATE 省略 TABLE", "truncate db.t", "db"},
+		{"DROP TABLE IF EXISTS 限定", "DROP TABLE IF EXISTS db.t", "db"},
+		{"CREATE TABLE IF NOT EXISTS 限定", "CREATE TABLE IF NOT EXISTS db.t (id int)", "db"},
+		{"ALTER TABLE 限定", "ALTER TABLE db.t ADD c int", "db"},
+		{"SELECT 不是目标语句", "SELECT a.b FROM t", ""},
+		{"字符串字面量中的点号不提取", "INSERT INTO t VALUES ('db.x')", ""},
+		{"前导块注释被跳过", "/* c.d */ INSERT INTO t VALUES (1)", ""},
+		{"前导行注释被跳过", "-- c.d\nINSERT INTO db.t VALUES (1)", "#"},
+		{"目标位置优先于后续别名限定", "INSERT INTO db.t (a, b) SELECT x.y FROM z", "db"},
+		{"SET 语句不提取", "SET @x = (SELECT 1)", ""},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.want
+			if want == "#" {
+				want = "db" // 行注释用例的预期值
+			}
+			if got := mysqlStatementTargetSchema(tc.in); got != want {
+				t.Fatalf("mysqlStatementTargetSchema(%q) = %q, want %q", tc.in, got, want)
+			}
+		})
+	}
+}
+
+// 回归:语句目标带显式库名时,整条语句应切到该库执行(未限定表名跟随目标库),
+// 不再受控制台选中库影响——否则跨库初始化脚本报 Error 1146 表不存在。
+func TestMysqlExecutePinsStatementTargetSchemaOverSelected(t *testing.T) {
+	c, created := newFakeMysqlClient(t, nil)
+	userSQL := `insert into act_msdp.upc_menu (parent_id, name)
+select (select menu_id from upc_menu where name = '基础配置'), '告警处理人配置'
+from dual
+where not exists(select 1 from upc_menu where name = '告警处理人配置');`
+	results, err := c.Execute(context.Background(), "act_monitor_system_ct", userSQL, 0, 0)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(results) != 1 || results[0].Error != "" {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+	if len(*created) != 1 {
+		t.Fatalf("must run on one dedicated connection: %+v", *created)
+	}
+	conn := (*created)[0]
+	if len(conn.execs) != 3 || conn.execs[0] != "USE `act_monitor_system_ct`" || conn.execs[1] != "USE `act_msdp`" {
+		t.Fatalf("statement target schema must override the selected one: %+v", conn.execs)
+	}
+	if !strings.HasPrefix(conn.execs[2], "insert into act_msdp.upc_menu") {
+		t.Fatalf("insert must run after the schema switch: %+v", conn.execs)
+	}
+}
+
+// 多语句脚本:各语句按各自目标库切换,未限定语句保持当前库。
+func TestMysqlExecuteSwitchesSchemaPerStatement(t *testing.T) {
+	c, created := newFakeMysqlClient(t, nil)
+	results, err := c.Execute(context.Background(), "app",
+		"INSERT INTO db1.t SELECT 1;\nUPDATE db2.u SET x = 1;\nSELECT 1;", 0, 0)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+	conn := (*created)[0]
+	want := []string{"USE `app`", "USE `db1`", "INSERT INTO db1.t SELECT 1", "USE `db2`", "UPDATE db2.u SET x = 1"}
+	if len(conn.execs) != len(want) {
+		t.Fatalf("execs = %+v, want %v", conn.execs, want)
+	}
+	for i := range want {
+		if conn.execs[i] != want[i] {
+			t.Fatalf("execs[%d] = %q, want %q (all: %+v)", i, conn.execs[i], want[i], conn.execs)
+		}
+	}
+	if len(conn.queries) != 1 || conn.queries[0] != "SELECT 1" {
+		t.Fatalf("SELECT must run after the last switch without another USE: %+v", conn.queries)
+	}
+}
+
+// 目标库名与选中库相同时不得多发 USE。
+func TestMysqlExecuteSameSchemaNoExtraUSE(t *testing.T) {
+	c, created := newFakeMysqlClient(t, nil)
+	if _, err := c.Execute(context.Background(), "app", "INSERT INTO app.t SELECT 1;", 0, 0); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	conn := (*created)[0]
+	if len(conn.execs) != 2 || conn.execs[0] != "USE `app`" || conn.execs[1] != "INSERT INTO app.t SELECT 1" {
+		t.Fatalf("same-schema target must not issue an extra USE: %+v", conn.execs)
+	}
+}
+
 func TestMysqlExecuteWithoutDatabaseSkipsUSE(t *testing.T) {
 	c, created := newFakeMysqlClient(t, nil)
 	if _, err := c.Execute(context.Background(), "", "SELECT 1", 0, 0); err != nil {

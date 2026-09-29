@@ -378,3 +378,194 @@ func postgresStatementContainsDML(stmt string) bool {
 	}
 	return false
 }
+
+// --- MySQL 方言:语句目标库名解析 ---
+
+// skipMySQLSpacesAndComments 跳过空白与注释(-- 行注释、# 行注释、/* */ 块
+// 注释),返回剩余串;注释未闭合时返回空串(语句非法,调用方按无限定处理)。
+func skipMySQLSpacesAndComments(s string) string {
+	for {
+		s = strings.TrimLeft(s, " \t\r\n")
+		switch {
+		case strings.HasPrefix(s, "--"), strings.HasPrefix(s, "#"):
+			i := strings.IndexAny(s, "\r\n")
+			if i < 0 {
+				return ""
+			}
+			s = s[i+1:]
+		case strings.HasPrefix(s, "/*"):
+			i := strings.Index(s, "*/")
+			if i < 0 {
+				return ""
+			}
+			s = s[i+2:]
+		default:
+			return s
+		}
+	}
+}
+
+// isMysqlIdentByte 报告裸标识符字符(字母/数字/_/$,未加引号的 MySQL 标识符
+// 允许数字开头)。
+func isMysqlIdentByte(c byte) bool {
+	return c == '_' || c == '$' ||
+		(c >= '0' && c <= '9') ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z')
+}
+
+// takeMysqlQuotedIdent 解析反引号标识符(内部反引号双写转义),i 应指向起始
+// 反引号;返回标识符原文与结束后的下标。未正确闭合时 ok=false。
+func takeMysqlQuotedIdent(s string, i int) (ident string, next int, ok bool) {
+	i++ // 跳过起始反引号
+	var b strings.Builder
+	for i < len(s) {
+		if s[i] == '`' {
+			if i+1 < len(s) && s[i+1] == '`' {
+				b.WriteByte('`')
+				i += 2
+				continue
+			}
+			return b.String(), i + 1, true
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return "", len(s), false
+}
+
+// takeMysqlTargetObject 解析目标对象:一个标识符,可选 `. 标识符` 后缀。
+// 返回限定库名(无限定返回空串)与剩余串。解析失败 ok=false(调用方按
+// 无限定处理,回退选中库)。
+func takeMysqlTargetObject(s string) (schema, rest string, ok bool) {
+	s = skipMySQLSpacesAndComments(s)
+	if s == "" {
+		return "", "", false
+	}
+	var first string
+	if s[0] == '`' {
+		ident, next, ok2 := takeMysqlQuotedIdent(s, 0)
+		if !ok2 {
+			return "", "", false
+		}
+		first, s = ident, s[next:]
+	} else if isMysqlIdentByte(s[0]) {
+		j := 0
+		for j < len(s) && isMysqlIdentByte(s[j]) {
+			j++
+		}
+		first, s = s[:j], s[j:]
+	} else {
+		return "", "", false
+	}
+	s = skipMySQLSpacesAndComments(s)
+	if !strings.HasPrefix(s, ".") {
+		return "", s, true // 目标无限定
+	}
+	return first, s[1:], true
+}
+
+// mysqlStatementTargetSchema 解析 DML/DDL 语句目标对象携带的显式库名限定
+// (引号与注释感知):INSERT/REPLACE/UPDATE/DELETE 与 TRUNCATE/DROP/ALTER/
+// CREATE TABLE 的目标写作 `db`.`tbl`、db.tbl 时返回 db,无限定或无法可靠
+// 解析时返回空串(调用方回退控制台选中库)。只认目标位置——语句体中后续
+// 出现的 x.y(表别名.列、字符串字面量)不参与,避免误提取。
+func mysqlStatementTargetSchema(stmt string) string {
+	rest := skipMySQLSpacesAndComments(stmt)
+	if rest == "" {
+		return ""
+	}
+	// 首关键词。
+	i := 0
+	for i < len(rest) && isMysqlIdentByte(rest[i]) {
+		i++
+	}
+	if i == 0 {
+		return ""
+	}
+	keyword := strings.ToUpper(rest[:i])
+	rest = rest[i:]
+
+	switch keyword {
+	case "INSERT", "REPLACE":
+		// 消费修饰词:INSERT [IGNORE|DELAYED|HIGH_PRIORITY|LOW_PRIORITY] INTO
+		for {
+			rest = skipMySQLSpacesAndComments(rest)
+			j := 0
+			for j < len(rest) && isMysqlIdentByte(rest[j]) {
+				j++
+			}
+			w := strings.ToUpper(rest[:j])
+			if j == 0 || w == "INTO" {
+				rest = rest[j:]
+				break
+			}
+			switch w {
+			case "IGNORE", "DELAYED", "HIGH_PRIORITY", "LOW_PRIORITY":
+				rest = rest[j:]
+				continue
+			default:
+				return ""
+			}
+		}
+	case "UPDATE":
+		// 目标紧跟 UPDATE。
+	case "DELETE":
+		rest = skipMySQLSpacesAndComments(rest)
+		if !strings.HasPrefix(strings.ToUpper(rest[:minMysqlWordLen(rest)]), "FROM") || minMysqlWordLen(rest) != 4 {
+			return ""
+		}
+		rest = rest[4:]
+	case "TRUNCATE":
+		rest = skipMySQLSpacesAndComments(rest)
+		if strings.HasPrefix(strings.ToUpper(rest), "TABLE") && minMysqlWordLen(rest) == 5 {
+			rest = rest[5:]
+		}
+	case "DROP", "ALTER", "CREATE":
+		rest = skipMySQLSpacesAndComments(rest)
+		// CREATE/DROP TEMPORARY TABLE;IF NOT EXISTS / DROP IF EXISTS。
+		for {
+			w := strings.ToUpper(rest[:minMysqlWordLen(rest)])
+			switch w {
+			case "TEMPORARY":
+				rest = rest[minMysqlWordLen(rest):]
+				rest = skipMySQLSpacesAndComments(rest)
+				continue
+			case "TABLE":
+				rest = rest[minMysqlWordLen(rest):]
+				rest = skipMySQLSpacesAndComments(rest)
+				if strings.HasPrefix(strings.ToUpper(rest), "IF") && minMysqlWordLen(rest) == 2 {
+					rest = rest[2:]
+					rest = skipMySQLSpacesAndComments(rest)
+					if strings.HasPrefix(strings.ToUpper(rest), "NOT") && minMysqlWordLen(rest) == 3 {
+						rest = rest[3:]
+						rest = skipMySQLSpacesAndComments(rest)
+					}
+					if strings.HasPrefix(strings.ToUpper(rest), "EXISTS") && minMysqlWordLen(rest) == 6 {
+						rest = rest[6:]
+					}
+				}
+			default:
+				return ""
+			}
+			break
+		}
+	default:
+		return ""
+	}
+	schema, _, ok := takeMysqlTargetObject(rest)
+	if !ok {
+		return ""
+	}
+	return schema
+}
+
+// minMysqlWordLen 返回 s 前导标识符词的长度(0 = 非标识符开头),供关键词
+// 匹配前判断词边界。
+func minMysqlWordLen(s string) int {
+	n := 0
+	for n < len(s) && isMysqlIdentByte(s[n]) {
+		n++
+	}
+	return n
+}
