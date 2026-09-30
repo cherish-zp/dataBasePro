@@ -433,6 +433,26 @@ describe('database 透传(保存/载入)', () => {
   })
 })
 
+describe('restoreFile', () => {
+  it('设置 currentFile 但不读盘、不回填内容(草稿恢复只重建文件关联)', async () => {
+    const { opts, qf } = setup()
+
+    qf.restoreFile('a.sql')
+
+    expect(qf.currentFile.value).toBe('a.sql')
+    expect(queryFileApp.ReadQueryFile).not.toHaveBeenCalled()
+    expect(opts.setContent).not.toHaveBeenCalled()
+    expect(opts.getContent).not.toHaveBeenCalled()
+  })
+
+  it('传 null 清除当前文件关联', () => {
+    const { qf } = setup()
+    qf.restoreFile('a.sql')
+    qf.restoreFile(null)
+    expect(qf.currentFile.value).toBeNull()
+  })
+})
+
 describe('多实例共享', () => {
   it('两个消费者共享同一 files 列表,实例状态彼此独立', async () => {
     const a = useQueryFiles({

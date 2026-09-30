@@ -228,6 +228,56 @@ describe('SqlConsole', () => {
     expect(wrapper.find('[data-test="btn-sql-file-area"]').exists()).toBe(false)
   })
 
+  // --- 草稿恢复与持久化:切 tab 销毁重建后内容/文件关联不丢 --------------------
+
+  describe('草稿恢复与持久化(切 tab 不丢内容)', () => {
+    function mountWithDraftTab(topic: string, draft?: { sql: string; file: string | null }) {
+      setActivePinia(createPinia())
+      setApi(fakeApi())
+      const tabsStore = useTabsStore()
+      tabsStore.openTabs.push({
+        id: 'tab1',
+        kind: 'sql',
+        title: topic ? `SQL · ${topic}` : 'SQL 查询',
+        connectionId: 'c',
+        topic,
+        partitions: [0, 1],
+        draft,
+      })
+      const wrapper = mount(SqlConsole, {
+        props: { tabId: 'tab1', connectionId: 'c', topic, partitions: [0, 1] },
+      })
+      return { wrapper, tabsStore }
+    }
+
+    it('挂载时从 tab draft 恢复编辑器内容与文件关联,标题跟随文件名', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab('orders', { sql: 'SELECT draft', file: '草稿.sql' })
+      await vi.waitFor(() => {
+        expect(editorSql(wrapper)).toBe('SELECT draft')
+      })
+      expect(tabsStore.openTabs[0].title).toBe('草稿.sql')
+      wrapper.unmount()
+    })
+
+    it('无 draft 的 tab 保留 topic 预填模板与默认标题', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab('orders')
+      await vi.waitFor(() => {
+        expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 100')
+      })
+      expect(tabsStore.openTabs[0].title).toBe('SQL · orders')
+      wrapper.unmount()
+    })
+
+    it('编辑内容写回 tab draft,文件关联同步持久化', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab('orders')
+      await setSql(wrapper, 'SELECT 42')
+      await vi.waitFor(() => {
+        expect(tabsStore.openTabs[0].draft).toEqual({ sql: 'SELECT 42', file: null })
+      })
+      wrapper.unmount()
+    })
+  })
+
   it('命令条收纳运行按钮与历史菜单,编辑器独立全宽(与结果区同宽)', () => {
     const { wrapper } = mountConsole()
     const toolbar = wrapper.find('[data-test="sql-toolbar"]')

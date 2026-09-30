@@ -600,6 +600,50 @@ describe('EsSqlConsole', () => {
     })
   })
 
+  // --- 草稿恢复与持久化:切 tab 销毁重建后内容/文件关联不丢 --------------------
+
+  describe('草稿恢复与持久化(切 tab 不丢内容)', () => {
+    function mountWithDraftTab(draft?: { sql: string; file: string | null }) {
+      const tabsStore = useTabsStore()
+      tabsStore.openTabs.push({
+        id: 'e-tab1',
+        kind: 'es-sql',
+        title: 'SQL 控制台',
+        connectionId: 'e1',
+        draft,
+      } as Tab)
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      return { wrapper, tabsStore }
+    }
+
+    it('挂载时从 tab draft 恢复编辑器内容与文件关联,标题跟随文件名,不读盘', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab({ sql: 'SELECT draft', file: '草稿.sql' })
+      await vi.waitFor(() => {
+        expect(cmInput(wrapper).state.doc.toString()).toBe('SELECT draft')
+      })
+      expect(tabsStore.openTabs[0].title).toBe('草稿.sql')
+      // 恢复只重建文件关联,不走载入链路。
+      expect(app.ReadQueryFile).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it('无 draft 的 tab 挂载行为不变(空编辑器、默认标题)', () => {
+      const { wrapper, tabsStore } = mountWithDraftTab()
+      expect(cmInput(wrapper).state.doc.toString()).toBe('')
+      expect(tabsStore.openTabs[0].title).toBe('SQL 控制台')
+      wrapper.unmount()
+    })
+
+    it('编辑内容写回 tab draft,文件关联同步持久化', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab()
+      await typeSql(wrapper, 'SELECT 42')
+      await vi.waitFor(() => {
+        expect(tabsStore.openTabs[0].draft).toEqual({ sql: 'SELECT 42', file: null })
+      })
+      wrapper.unmount()
+    })
+  })
+
   // --- DSL 模式(Kibana Dev Tools 风格) ---------------------------------------
 
   describe('DSL 模式', () => {

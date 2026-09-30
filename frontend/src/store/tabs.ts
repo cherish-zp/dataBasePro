@@ -25,6 +25,10 @@ export interface Tab {
   template?: string
   newTemplate?: boolean
   partitions?: number[]
+  // SQL 控制台草稿(SQL 控制台类 tab 专用):控制台组件随 :key=active.id 在切
+  // tab 时销毁重建,把编辑器内容、关联查询文件与库/schema 选择状态持久化到
+  // 所属 tab 上,切回时恢复;关闭 tab 时随对象自然丢弃。
+  draft?: { sql: string; file: string | null; database?: string; schema?: string }
 }
 
 export const useTabsStore = defineStore('tabs', () => {
@@ -441,6 +445,15 @@ export const useTabsStore = defineStore('tabs', () => {
     tab.title = title
   }
 
+  // setTabDraft persists a SQL console's editor draft onto its tab (see the
+  // Tab.draft field). Passing undefined clears the draft; both are silent
+  // no-ops when the id is not open.
+  function setTabDraft(id: string, draft: { sql: string; file: string | null; database?: string; schema?: string } | undefined): void {
+    const tab = openTabs.value.find((t) => t.id === id)
+    if (!tab) return
+    tab.draft = draft
+  }
+
   return {
     openTabs,
     activeTabId,
@@ -466,5 +479,6 @@ export const useTabsStore = defineStore('tabs', () => {
     move,
     setActive,
     renameTab,
+    setTabDraft,
   }
 })

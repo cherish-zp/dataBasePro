@@ -309,6 +309,17 @@ const overwriteConfirmOpen = qf.overwriteConfirm.open
 const deleteConfirmOpen = qf.deleteConfirm.open
 const deleteConfirmMessage = qf.deleteConfirm.message
 
+// 挂载恢复:本组件随 Layout 的 :key="active.id" 在切 tab 时销毁重建,编辑器
+// 内容与文件关联持久化在所属 tab 的 draft 上;有草稿则在首次渲染前同步恢复
+// (sql + 脏检查快照 + 文件关联,不读盘),优先级高于 topic 预填模板,
+// 标题由下方 renameTab watch 校准。
+const mountedDraft = useTabsStore().openTabs.find((t) => t.id === props.tabId)?.draft
+if (mountedDraft) {
+  sql.value = mountedDraft.sql
+  savedSnapshot.value = mountedDraft.sql
+  qf.restoreFile(mountedDraft.file)
+}
+
 // 保存成功(currentFile 变化,如另存/确认新名)也刷新快照,避免刚保存的
 // 内容被下一次载入误判为脏。
 watch(currentFile, () => {
@@ -328,6 +339,12 @@ watch(
   },
   { immediate: true },
 )
+
+// 编辑器内容或文件关联变化时写回 tab draft,供切 tab 销毁重建后恢复
+// (见上方挂载恢复);draft 随 tab 对象存在,关闭 tab 自然丢弃。
+watch([sql, currentFile], ([v, f]) => {
+  tabs.setTabDraft(props.tabId, { sql: v, file: f })
+})
 
 // 保存:全部路径(同名覆盖/首次关联/另存/覆盖确认)由 composable 在写盘成功
 // 后经 onSaved 校准基线;此处不再预先对齐——保存失败时基线不应变动。

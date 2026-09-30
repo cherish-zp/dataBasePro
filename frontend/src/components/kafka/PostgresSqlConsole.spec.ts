@@ -4,6 +4,7 @@ import { nextTick } from 'vue'
 import { EditorView } from '@codemirror/view'
 import { createPinia, setActivePinia } from 'pinia'
 import { QUERY_DIR_KEY } from '@/utils/queryDir'
+import { useTabsStore } from '@/store/tabs'
 import SqlResultCard from '@/components/common/SqlResultCard.vue'
 import PostgresSqlConsole from './PostgresSqlConsole.vue'
 
@@ -12,6 +13,8 @@ const appMocks = vi.hoisted(() => ({
   PostgresExecute: vi.fn(),
   PostgresPreviewCellUpdate: vi.fn(),
   PostgresUpdateCell: vi.fn(),
+  PostgresPreviewDeleteRow: vi.fn(),
+  PostgresDeleteRow: vi.fn(),
   ListPostgresTables: vi.fn(),
   ListPostgresDatabases: vi.fn(),
   ListPostgresSchemas: vi.fn(),
@@ -30,6 +33,9 @@ interface PgStatementResult {
   columns?: { name: string; type: string }[]
   rows?: (string | null)[][]
   primary_key?: string[]
+  source_schema?: string
+  source_relation?: string
+  source_kind?: 'table' | 'view' | 'materialized_view'
   total_rows?: number
 }
 
@@ -97,6 +103,11 @@ beforeEach(() => {
     { schema: 'public', relation: 'orders', relation_type: 'table' },
   ])
   appMocks.PostgresExecute.mockResolvedValue([])
+  appMocks.PostgresPreviewDeleteRow.mockResolvedValue({
+    statement: "DELETE FROM public.users WHERE id = '1'",
+    matched_rows: 1,
+  })
+  appMocks.PostgresDeleteRow.mockResolvedValue(undefined)
   appMocks.ListQueryFiles.mockResolvedValue([])
   appMocks.ReadQueryFile.mockResolvedValue({ content: '', connection_id: '' })
   appMocks.WriteQueryFile.mockResolvedValue(undefined)
@@ -308,6 +319,314 @@ describe('PostgresSqlConsole', () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="pg-sql-error"]').text()).toContain('连接超时')
     })
+  })
+})
+
+// --- 删除行(单表 SELECT + 主键 + 实体表) --------------------------------------
+describe('删除行(单表 SELECT + 主键)', () => {
+  // 可删除结果:主键 id + 后端回传的来源 schema/relation/kind,两行数据。
+  function deletableSelect(): PgStatementResult {
+    return {
+      statement: 'SELECT id, name FROM users',
+      duration_ms: 3,
+      columns: [
+        { name: 'id', type: 'integer' },
+        { name: 'name', type: 'text' },
+      ],
+      rows: [
+        ['1', 'alice'],
+        ['2', 'bob'],
+      ],
+      primary_key: ['id'],
+      source_schema: 'public',
+      source_relation: 'users',
+      source_kind: 'table',
+    }
+  }
+
+  // 等待 N 个结果 tab 就绪(全部脱离 running 态 = 本轮运行完成)。
+  async function waitForTabsSettled(wrapper: VueWrapper, n: number): Promise<void> {
+    await vi.waitFor(() => {
+      const tabs = wrapper.findAll('[data-test^="result-tab-"]')
+      expect(tabs).toHaveLength(n)
+      for (const t of tabs) {
+        expect(t.find('.tab-dot.running').exists()).toBe(false)
+      }
+    })
+  }
+
+  // 挂载并运行一条查询,返回已渲染结果卡的控制台;impl 提供时替代默认的
+  // 固定返回(刷新重跑按入参分发的用例需要)。
+  async function mountWithResults(
+    results: PgStatementResult[],
+    impl?: (req: { sql: string }) => unknown,
+  ): Promise<VueWrapper> {
+    if (impl) {
+      appMocks.PostgresExecute.mockImplementation(impl)
+    } else {
+      appMocks.PostgresExecute.mockResolvedValue(results)
+    }
+    const wrapper = mountConsole()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-db-select"]').exists()).toBe(true)
+    })
+    await typeSql(wrapper, results.map((r) => r.statement).join('; '))
+    pressRunShortcut(wrapper, { metaKey: true, shiftKey: true })
+    await waitForTabsSettled(wrapper, results.length)
+    await vi.waitFor(() => {
+      expect(wrapper.findAllComponents(SqlResultCard)).toHaveLength(1)
+    })
+    return wrapper
+  }
+
+  // 行首删除按钮(active 卡内)。
+  function rowDeleteBtns(wrapper: VueWrapper) {
+    return wrapper.findComponent(SqlResultCard).findAll('[data-test="btn-row-delete"]')
+  }
+
+  async function openDeleteConfirm(wrapper: VueWrapper, row = 0): Promise<void> {
+    await rowDeleteBtns(wrapper)[row].trigger('click')
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="confirm-dialog"]')).not.toBeNull()
+    })
+  }
+
+  it('启用判定:实体表+主键可删;视图/kind 未知/无主键/非单表禁用并给原因', async () => {
+    const wrapper = await mountWithResults([deletableSelect()])
+    const okBtn = rowDeleteBtns(wrapper)[0]
+    expect(okBtn.attributes('disabled')).toBeUndefined()
+    expect(okBtn.attributes('title')).toBe('删除该行')
+    wrapper.unmount()
+
+    const cases: { result: PgStatementResult; title: string }[] = [
+      {
+        result: { ...deletableSelect(), source_kind: 'view', source_relation: 'v_users' },
+        title: '视图/物化视图不支持删除行',
+      },
+      {
+        // kind 缺省 = 后端 relkind 查询失败,保守禁删。
+        result: { ...deletableSelect(), source_kind: undefined },
+        title: '无法确定对象类型,已禁用删除',
+      },
+      {
+        result: { ...deletableSelect(), primary_key: [] },
+        title: '该表无主键,无法定位行',
+      },
+      {
+        result: {
+          statement: 'SELECT a.id FROM users a JOIN orders b ON a.uid = b.id',
+          duration_ms: 1,
+          columns: [{ name: 'id', type: 'integer' }],
+          rows: [['x']],
+        },
+        title: '仅单表查询可删除:无法定位来源表',
+      },
+    ]
+    for (const tc of cases) {
+      const w = await mountWithResults([tc.result])
+      const btn = rowDeleteBtns(w)[0]
+      expect(btn.attributes('disabled')).toBeDefined()
+      expect(btn.attributes('title')).toBe(tc.title)
+      await btn.trigger('click')
+      w.unmount()
+    }
+    expect(appMocks.PostgresPreviewDeleteRow).not.toHaveBeenCalled()
+  })
+
+  it('点击删除:预览 where 仅含主键列原值,弹窗展示 DELETE 全文与命中行数', async () => {
+    appMocks.PostgresPreviewDeleteRow.mockResolvedValue({
+      statement: "DELETE FROM public.users WHERE id = '2'",
+      matched_rows: 1,
+    })
+    const wrapper = await mountWithResults([deletableSelect()])
+    await openDeleteConfirm(wrapper, 1)
+    expect(appMocks.PostgresPreviewDeleteRow).toHaveBeenCalledTimes(1)
+    expect(appMocks.PostgresPreviewDeleteRow).toHaveBeenCalledWith({
+      connection_id: 'pg1',
+      database: 'shop',
+      schema: 'public',
+      relation: 'users',
+      relation_kind: 'table',
+      where: [{ column: 'id', value: '2' }],
+    })
+    const msg = document.body.querySelector('[data-test="confirm-dialog-message"]')?.textContent ?? ''
+    expect(msg).toContain("DELETE FROM public.users WHERE id = '2'")
+    expect(msg).toContain('匹配 1 行')
+    wrapper.unmount()
+  })
+
+  it('命中多行:弹窗警示且确认按钮禁用,点击不执行', async () => {
+    appMocks.PostgresPreviewDeleteRow.mockResolvedValue({
+      statement: "DELETE FROM public.users WHERE region = 'cn'",
+      matched_rows: 3,
+    })
+    const wrapper = await mountWithResults([deletableSelect()])
+    await openDeleteConfirm(wrapper)
+    const msg = document.body.querySelector('[data-test="confirm-dialog-message"]')?.textContent ?? ''
+    expect(msg).toContain('命中 3 行')
+    expect(msg).toContain('已禁止执行')
+    const ok = document.body.querySelector('[data-test="confirm-dialog-ok"]') as HTMLButtonElement
+    expect(ok.disabled).toBe(true)
+    ok.click()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(appMocks.PostgresDeleteRow).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('确认后执行 PostgresDeleteRow 并按原语句同页刷新结果', async () => {
+    const base = deletableSelect()
+    const second: PgStatementResult = {
+      statement: 'SELECT 42',
+      duration_ms: 1,
+      columns: [{ name: 'answer', type: 'integer' }],
+      rows: [['42']],
+    }
+    // 两条语句:初跑整段脚本返回原行集,刷新单条时返回删除 id=1 后的行集。
+    const impl = async (req: { sql: string }) => {
+      if (req.sql === base.statement) return [{ ...base, rows: [['2', 'bob']] }]
+      if (req.sql === `${base.statement}; ${second.statement}`) return [base, second]
+      return []
+    }
+    const wrapper = await mountWithResults([base, second], impl)
+    await openDeleteConfirm(wrapper)
+    ;(document.body.querySelector('[data-test="confirm-dialog-ok"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => {
+      expect(appMocks.PostgresDeleteRow).toHaveBeenCalledTimes(1)
+    })
+    expect(appMocks.PostgresDeleteRow).toHaveBeenCalledWith({
+      connection_id: 'pg1',
+      database: 'shop',
+      schema: 'public',
+      relation: 'users',
+      relation_kind: 'table',
+      where: [{ column: 'id', value: '1' }],
+    })
+    // 刷新入参 = 该条语句原文 + 当前页 offset(第 1 页 = 0)。
+    await vi.waitFor(() => {
+      expect(appMocks.PostgresExecute).toHaveBeenLastCalledWith({
+        connection_id: 'pg1',
+        sql: base.statement,
+        database: 'shop',
+        schema: 'public',
+        limit: 500,
+        offset: 0,
+      })
+    })
+    await vi.waitFor(() => {
+      expect(wrapper.findComponent(SqlResultCard).props('rows')).toEqual([['2', 'bob']])
+    })
+    wrapper.unmount()
+  })
+
+  it('删除失败:错误展示且不刷新查询', async () => {
+    appMocks.PostgresDeleteRow.mockRejectedValue(new Error('模拟删除失败'))
+    const wrapper = await mountWithResults([deletableSelect()])
+    const execCalls = appMocks.PostgresExecute.mock.calls.length
+    await openDeleteConfirm(wrapper)
+    ;(document.body.querySelector('[data-test="confirm-dialog-ok"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-sql-error"]').text()).toContain('模拟删除失败')
+    })
+    expect(appMocks.PostgresExecute.mock.calls.length).toBe(execCalls)
+    wrapper.unmount()
+  })
+
+  it('取消确认弹窗不执行删除', async () => {
+    const wrapper = await mountWithResults([deletableSelect()])
+    await openDeleteConfirm(wrapper)
+    ;(document.body.querySelector('[data-test="confirm-dialog-cancel"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="confirm-dialog"]')).toBeNull()
+    })
+    expect(appMocks.PostgresDeleteRow).not.toHaveBeenCalled()
+    expect(wrapper.findComponent(SqlResultCard).props('rows')).toEqual(deletableSelect().rows)
+    wrapper.unmount()
+  })
+
+  it('预览失败时展示错误且不打开确认弹窗', async () => {
+    appMocks.PostgresPreviewDeleteRow.mockRejectedValue(new Error('模拟预览失败'))
+    const wrapper = await mountWithResults([deletableSelect()])
+    await rowDeleteBtns(wrapper)[0].trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-sql-error"]').text()).toContain('模拟预览失败')
+    })
+    expect(document.body.querySelector('[data-test="confirm-dialog"]')).toBeNull()
+    expect(appMocks.PostgresDeleteRow).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+// --- 草稿恢复与持久化:切 tab 销毁重建后内容/文件关联不丢 ----------------------
+describe('草稿恢复与持久化(切 tab 不丢内容)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    localStorage.setItem(QUERY_DIR_KEY, '/Users/test/queries')
+    appMocks.ListPostgresDatabases.mockResolvedValue(['shop', 'analytics'])
+    appMocks.ListPostgresSchemas.mockResolvedValue(['public', 'app'])
+    appMocks.ListPostgresTables.mockResolvedValue([])
+    appMocks.PostgresExecute.mockResolvedValue([])
+    appMocks.ListQueryFiles.mockResolvedValue([])
+    appMocks.ReadQueryFile.mockResolvedValue({ content: '', connection_id: '' })
+  })
+
+  function mountWithDraftTab(draft?: { sql: string; file: string | null; database?: string; schema?: string }) {
+    const tabsStore = useTabsStore()
+    tabsStore.openTabs.push({
+      id: 'pg-draft-tab',
+      kind: 'postgres-sql',
+      title: 'SQL 控制台',
+      connectionId: 'pg1',
+      database: 'shop',
+      schema: 'public',
+      draft,
+    })
+    return { tabsStore, wrapper: mountConsole({ tabId: 'pg-draft-tab' }) }
+  }
+
+  it('挂载时恢复 draft 中的库与 schema 选择(挂载补全按其加载)', async () => {
+    const { wrapper } = mountWithDraftTab({
+      sql: 'SELECT draft',
+      file: null,
+      database: 'report',
+      schema: 'billing',
+    })
+    await vi.waitFor(() => {
+      // 挂载补全按恢复的库/schema 加载,不再退回入口缺省。
+      expect(appMocks.ListPostgresTables).toHaveBeenLastCalledWith(
+        expect.objectContaining({ database: 'report', schema: 'billing' }),
+      )
+    })
+    wrapper.unmount()
+  })
+
+  it('挂载时从 tab draft 恢复编辑器内容与文件关联,标题跟随文件名,不读盘', async () => {
+    const { wrapper, tabsStore } = mountWithDraftTab({ sql: 'SELECT draft', file: 'pg-草稿.sql' })
+    await vi.waitFor(() => {
+      expect(cmInput(wrapper).state.doc.toString()).toBe('SELECT draft')
+    })
+    expect(tabsStore.openTabs[0].title).toBe('pg-草稿.sql')
+    // 恢复只重建文件关联,不走载入链路。
+    expect(app.ReadQueryFile).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('无 draft 的 tab 挂载行为不变(空编辑器、默认标题)', async () => {
+    const { wrapper, tabsStore } = mountWithDraftTab()
+    await vi.waitFor(() => {
+      expect(cmInput(wrapper).state.doc.toString()).toBe('')
+    })
+    expect(tabsStore.openTabs[0].title).toBe('SQL 控制台')
+    wrapper.unmount()
+  })
+
+  it('编辑内容写回 tab draft,文件关联同步持久化', async () => {
+    const { wrapper, tabsStore } = mountWithDraftTab()
+    await typeSql(wrapper, 'SELECT 42')
+    await vi.waitFor(() => {
+      expect(tabsStore.openTabs[0].draft).toEqual({ sql: 'SELECT 42', file: null, database: 'shop', schema: 'public' })
+    })
+    wrapper.unmount()
   })
 })
 

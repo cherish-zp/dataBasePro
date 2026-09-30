@@ -286,6 +286,31 @@ describe('tabs store', () => {
     expect(store.openTabs[0].title).toBe('SQL · orders')
   })
 
+  it('setTabDraft writes and updates the draft on the open tab', () => {
+    const store = useTabsStore()
+    const tab = store.openMysqlSql('conn-1', 'logs')
+    store.setTabDraft(tab.id, { sql: 'SELECT 1', file: 'a.sql' })
+    expect(store.openTabs[0].draft).toEqual({ sql: 'SELECT 1', file: 'a.sql' })
+    // 再次写入 = 更新(编辑器内容或文件关联变化时全量覆盖)。
+    store.setTabDraft(tab.id, { sql: 'SELECT 2', file: null })
+    expect(store.openTabs[0].draft).toEqual({ sql: 'SELECT 2', file: null })
+  })
+
+  it('setTabDraft clears the draft when called with undefined', () => {
+    const store = useTabsStore()
+    const tab = store.openCHSql('conn-1')
+    store.setTabDraft(tab.id, { sql: 'SELECT 1', file: 'a.sql' })
+    store.setTabDraft(tab.id, undefined)
+    expect(store.openTabs[0].draft).toBeUndefined()
+  })
+
+  it('setTabDraft is a silent no-op for an unknown tab id', () => {
+    const store = useTabsStore()
+    const tab = store.openEsSql('conn-1')
+    expect(() => store.setTabDraft('nope', { sql: 'SELECT 1', file: null })).not.toThrow()
+    expect(store.openTabs.find((t) => t.id === tab.id)?.draft).toBeUndefined()
+  })
+
   it('opens a clickhouse SQL console per connection and focuses it on reopen', () => {
     const store = useTabsStore()
     const tab = store.openCHSql('conn-1')

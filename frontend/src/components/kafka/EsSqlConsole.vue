@@ -811,6 +811,16 @@ const overwriteShow = computed(() => unref(qf.overwriteConfirm.open))
 const deleteConfirmShow = computed(() => unref(qf.deleteConfirm.open))
 const deleteConfirmMessage = computed(() => unref(qf.deleteConfirm.message))
 
+// 挂载恢复:本组件随 Layout 的 :key="active.id" 在切 tab 时销毁重建,编辑器
+// 内容与文件关联持久化在所属 tab 的 draft 上;有草稿则在首次渲染前同步恢复
+// (sql + 脏检查快照 + 文件关联,不读盘),标题由下方 renameTab watch 校准。
+const mountedDraft = useTabsStore().openTabs.find((t) => t.id === props.tabId)?.draft
+if (mountedDraft) {
+  sql.value = mountedDraft.sql
+  savedSnapshot.value = mountedDraft.sql
+  qf.restoreFile(mountedDraft.file)
+}
+
 // 保存成功(currentFile 变化)也刷新快照,避免刚保存的内容被误判为脏。
 watch(currentFile, () => {
   savedSnapshot.value = sql.value
@@ -827,6 +837,12 @@ watch(
   },
   { immediate: true },
 )
+
+// 编辑器内容或文件关联变化时写回 tab draft,供切 tab 销毁重建后恢复
+// (见上方挂载恢复);draft 随 tab 对象存在,关闭 tab 自然丢弃。
+watch([sql, currentFile], ([v, f]) => {
+  tabs.setTabDraft(props.tabId, { sql: v, file: f })
+})
 
 // ⌘S / Ctrl+S 保存;⌘Enter / Ctrl+Enter 执行当前语句(DSL 模式 = 当前请求);
 // ⌘Shift+Enter 运行全部(与 MySQL/CH SQL 控制台一致,忽略 IME 组合中的按键)。

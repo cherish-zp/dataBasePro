@@ -31,6 +31,10 @@ interface MysqlStatementResult {
   rows?: (string | null)[][]
   // 单表 SELECT 时后端填充的主键列名数组(供结果卡行选择/INSERT 选项)。
   primary_key?: string[]
+  // 单表 SELECT 的来源库/表(未限定表名按执行库解析),供「删除行」定位;
+  // 非单表或解析失败时缺省。
+  source_database?: string
+  source_table?: string
   // 服务端分页结果:≥0 精确总数;-1 无法计数(SHOW 类取满一页);缺省未启用。
   total_rows?: number
 }
@@ -50,13 +54,23 @@ interface MysqlCellUpdateTarget {
   database: string // '' = 连接当前库
   table: string
   set: MysqlCellRef
-  where: MysqlCellRef[] // 行定位(整行所有列原值)
+  where: MysqlCellRef[] // 行定位:主键列原值,无主键表整行所有列原值(NULL→null)
+}
+// 按行删除目标(与单元格更新同形状约束):where 只允许主键列(后端强制),
+// database/table 取后端回传的来源定位。
+interface MysqlDeleteRowTarget {
+  connection_id: string
+  database: string
+  table: string
+  where: MysqlCellRef[]
 }
 
 const app = App as unknown as {
   MysqlExecute(req: { connection_id: string; sql: string; database?: string; limit?: number; offset?: number }): Promise<MysqlStatementResult[]>
   MysqlPreviewCellUpdate(req: MysqlCellUpdateTarget): Promise<{ statement: string; matched_rows: number }>
   MysqlUpdateCell(req: MysqlCellUpdateTarget): Promise<void>
+  MysqlPreviewDeleteRow(req: MysqlDeleteRowTarget): Promise<{ statement: string; matched_rows: number }>
+  MysqlDeleteRow(req: MysqlDeleteRowTarget): Promise<void>
   ListMysqlTables(req: { connection_id: string; database: string }): Promise<MysqlTableInfo[]>
   // ListMysqlDatabases 绑定已生成,签名为 (connection_id: string) => Promise<string[]>;
   // 为与未生成方法统一经断言对象调用,这里按实际形状声明。
@@ -621,13 +635,19 @@ function cancelCellEdit(): void {
 // 卡片事件适配:edit-commit 的 value 契约为 string|null(实现恒为字符串),
 // 统一归一化为空串(空输入按 NULL 写入)。
 
-// where 条件 = 整行所有列的原值(NULL 列 value=null)。
+// where 条件定位:结果携带主键时仅取主键列原值(NULL→null,定位最精确);
+// 无主键表退化为整行所有列(后端允许整行定位,与 Navicat 行为一致)。
 function buildWhere(r: MysqlStatementResult, rowIndex: number): MysqlCellRef[] {
+  const cols = r.columns ?? []
   const row = r.rows?.[rowIndex] ?? []
-  return (r.columns ?? []).map((c, i) => ({ column: c.name, value: row[i] ?? null }))
+  const names = (r.primary_key?.length ?? 0) > 0 ? (r.primary_key as string[]) : cols.map((c) => c.name)
+  return names.map((name) => {
+    const ci = cols.findIndex((c) => c.name === name)
+    return { column: name, value: ci === -1 ? null : (row[ci] ?? null) }
+  })
 }
 
-// 回车提交:构造 set(空输入→null)与整行 where,交给预览并弹确认。
+// 回车提交:构造 set(空输入→null)与定位 where(主键列或整行),交给预览并弹确认。
 function commitCellEdit(stmtIndex: number, value: string): void {
   const e = cellEdit.value
   if (!e || e.stmtIndex !== stmtIndex) return
@@ -649,10 +669,12 @@ function commitCellEdit(stmtIndex: number, value: string): void {
 // 待刷新的结果索引:确认成功后重跑该条语句并原位替换结果。
 let pendingStmtIndex: number | null = null
 
-// 确认弹窗文案:UPDATE 语句全文 + 匹配行数;匹配多行时追加警示并把按钮置为危险色。
+// 确认弹窗文案:UPDATE 语句全文 + 匹配行数;匹配多行时追加警示,匹配 0 行
+// 提示未命中(两种异常都把按钮置为危险色并禁用执行)。
 const cellUpdateMessage = computed(() => {
   const n = cuMatchedRows.value
   const base = `${cuStatement.value}\n匹配 ${n} 行`
+  if (n === 0) return `${base}\n未命中任何行,数据可能已被修改或不存在`
   return n > 1 ? `${base}\n注意:该条件命中 ${n} 行,将全部更新。` : base
 })
 
@@ -708,6 +730,150 @@ function cancelCellUpdate(): void {
   cuError.value = null
 }
 
+// --- 查询结果删除行(第一期单行;仅后端回传来源库/表且表有主键时可用) ---
+// 行首 ✕ 按钮由 SqlResultCard 的 rowDelete prop 注入:hint 返回禁用原因或
+// null(可删);点击后取该行主键列原值构造 where → 预览(确认弹窗展示 DELETE
+// 全文与命中行数,命中 >1 视为定位不唯一禁用执行)→ 确认执行 → 同页刷新。
+
+// 单行删除的禁用判定:返回 null = 可删;非空 = 原因文案。
+function rowDeleteHint(r: MysqlStatementResult, rowIndex: number): string | null {
+  if (!r.source_database || !r.source_table) {
+    return '仅单表查询可删除:无法定位来源表'
+  }
+  const pk = r.primary_key ?? []
+  if (pk.length === 0) return '该表无主键,无法定位行'
+  const row = r.rows?.[rowIndex]
+  if (!row) return '行不存在'
+  const cols = r.columns ?? []
+  for (const name of pk) {
+    const ci = cols.findIndex((c) => c.name === name)
+    if (ci === -1 || row[ci] == null) return '主键值为 NULL,无法定位行'
+  }
+  return null
+}
+
+// 该行主键列原值(NULL → null)构造 where;调用前 hint 已保证主键值非 NULL。
+function buildPkWhere(r: MysqlStatementResult, rowIndex: number): MysqlCellRef[] {
+  const row = r.rows?.[rowIndex] ?? []
+  const cols = r.columns ?? []
+  return (r.primary_key ?? []).map((name) => {
+    const ci = cols.findIndex((c) => c.name === name)
+    return { column: name, value: ci === -1 ? null : (row[ci] ?? null) }
+  })
+}
+
+// 删除状态机(与单元格更新同构):预览 → 确认弹窗 → 执行 → 同页刷新。
+const drPreviewing = ref(false)
+const drError = ref<string | null>(null)
+const drConfirmOpen = ref(false)
+const drStatement = ref('')
+const drMatchedRows = ref(0)
+// 预览通过后暂存的待执行目标与结果索引,确认时原样发给执行。
+let drPending: MysqlDeleteRowTarget | null = null
+let drPendingStmtIndex: number | null = null
+
+async function requestDeleteRow(stmtIndex: number, rowIndex: number): Promise<void> {
+  const r = results.value[stmtIndex]
+  if (!r || running.value || drPreviewing.value) return
+  if (rowDeleteHint(r, rowIndex) !== null) return
+  const target: MysqlDeleteRowTarget = {
+    connection_id: props.connectionId,
+    database: r.source_database ?? '',
+    table: r.source_table ?? '',
+    where: buildPkWhere(r, rowIndex),
+  }
+  drPendingStmtIndex = stmtIndex
+  drPending = target
+  drPreviewing.value = true
+  drError.value = null
+  try {
+    const res = await app.MysqlPreviewDeleteRow(target)
+    drStatement.value = res.statement
+    drMatchedRows.value = res.matched_rows
+    drConfirmOpen.value = true
+  } catch (e) {
+    drError.value = e instanceof Error ? e.message : String(e)
+    drPending = null
+    drPendingStmtIndex = null
+  } finally {
+    drPreviewing.value = false
+  }
+}
+
+// 确认弹窗文案:DELETE 全文 + 命中行数;命中 >1 = 定位不唯一,警示并禁用执行。
+const deleteRowMessage = computed(() => {
+  const n = drMatchedRows.value
+  const base = `${drStatement.value}\n匹配 ${n} 行`
+  return n > 1 ? `${base}\n注意:该条件命中 ${n} 行,定位不唯一,已禁止执行。` : base
+})
+
+async function confirmDeleteRow(): Promise<void> {
+  if (drMatchedRows.value > 1) return // 定位不唯一:执行已被禁用,兜底拦截
+  const idx = drPendingStmtIndex
+  drPendingStmtIndex = null
+  if (!drPending) {
+    drError.value = '没有待执行的删除'
+    return
+  }
+  drError.value = null
+  try {
+    await app.MysqlDeleteRow(drPending)
+    drConfirmOpen.value = false
+    drPending = null
+  } catch (e) {
+    drError.value = e instanceof Error ? e.message : String(e)
+    return // 失败:弹窗保持打开,错误复用错误展示区显示
+  }
+  const target = idx === null ? undefined : results.value[idx]
+  if (!target) return
+  try {
+    // 刷新与该结果的原执行同页(当前页码),避免删除后整页跳变。
+    const fresh = await app.MysqlExecute({
+      connection_id: props.connectionId,
+      sql: target.sql,
+      database: activeDb.value,
+      limit: PAGE_SIZE,
+      offset: (page.value - 1) * PAGE_SIZE,
+    })
+    if (fresh.length > 0) {
+      // 仅替换该索引的结果,其他语句结果保持不变。
+      results.value = results.value.map((old, i) => (i === idx ? fresh[0] : old))
+      const m = markedStatements.value.find((x) => x.text.trim() === target.sql.trim())
+      if (m) {
+        m.status = fresh[0].error ? 'fail' : 'ok'
+        m.detail = fresh[0].error ?? `${fresh[0].duration_ms} ms`
+      }
+      if (idx !== null) {
+        const t = resultTabs.value[idx]
+        if (t) resultTabs.value[idx] = { ...t, status: fresh[0].error ? 'fail' : 'ok' }
+      }
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function cancelDeleteRow(): void {
+  drPendingStmtIndex = null
+  drPending = null
+  drConfirmOpen.value = false
+  drStatement.value = ''
+  drMatchedRows.value = 0
+  drError.value = null
+}
+
+// 传给结果卡的 rowDelete 能力:确认弹窗等逻辑留在控制台层。
+const activeRowDelete = computed(() => ({
+  hint: (rowIndex: number): string | null => {
+    const r = activeCard.value
+    if (!r || r.error) return '当前结果不可删除'
+    return rowDeleteHint(r, rowIndex)
+  },
+  delete: (rowIndex: number): void => {
+    void requestDeleteRow(activeResult.value, rowIndex)
+  },
+}))
+
 // --- 查询文件:保存/载入/删除由共享 composable 驱动,文件列表展示在全局右栏
 // (Layout 层);本组件只负责编辑器侧的对话框与脏检查。 ---
 // 快照:最近一次「载入/保存」完成时的编辑器内容,用于载入前的脏检查。
@@ -743,6 +909,18 @@ const overwriteShow = computed(() => unref(qf.overwriteConfirm.open))
 const deleteConfirmShow = computed(() => unref(qf.deleteConfirm.open))
 const deleteConfirmMessage = computed(() => unref(qf.deleteConfirm.message))
 
+// 挂载恢复:本组件随 Layout 的 :key="active.id" 在切 tab 时销毁重建,编辑器
+// 内容与文件关联持久化在所属 tab 的 draft 上;有草稿则在首次渲染前同步恢复
+// (sql + 脏检查快照 + 文件关联 + 库选择,不读盘),标题由下方 renameTab watch
+// 校准;恢复的 activeDb 让挂载补全按该库加载,不再退回「连接默认数据库」。
+const mountedDraft = useTabsStore().openTabs.find((t) => t.id === props.tabId)?.draft
+if (mountedDraft) {
+  sql.value = mountedDraft.sql
+  savedSnapshot.value = mountedDraft.sql
+  qf.restoreFile(mountedDraft.file)
+  if (mountedDraft.database) activeDb.value = mountedDraft.database
+}
+
 // 保存成功(currentFile 变化)也刷新快照,避免刚保存的内容被误判为脏。
 watch(currentFile, () => {
   savedSnapshot.value = sql.value
@@ -759,6 +937,12 @@ watch(
   },
   { immediate: true },
 )
+
+// 编辑器内容、文件关联与库选择变化时写回 tab draft,供切 tab 销毁重建后
+// 恢复(见上方挂载恢复);draft 随 tab 对象存在,关闭 tab 自然丢弃。
+watch([sql, currentFile, activeDb], ([v, f, db]) => {
+  tabs.setTabDraft(props.tabId, { sql: v, file: f, database: db })
+})
 
 // ⌘S / Ctrl+S 保存;⌘Enter / Ctrl+Enter 执行当前语句;⌘Shift+Enter 运行全部
 // (与 Kafka/CH SQL 控制台一致,忽略 IME 组合中的按键)。事件从 CodeMirror
@@ -881,9 +1065,9 @@ watch(
         />
       </div>
 
-      <!-- 运行错误与单元格更新失败(cuError)共用错误展示区;语句级错误由
-           SqlResultCard 的错误卡渲染。 -->
-      <div v-if="error || cuError" class="msg err" data-test="mysql-sql-error">{{ error || cuError }}</div>
+      <!-- 运行错误、单元格更新失败(cuError)与删除失败(drError)共用错误展示区;
+           语句级错误由 SqlResultCard 的错误卡渲染。 -->
+      <div v-if="error || cuError || drError" class="msg err" data-test="mysql-sql-error">{{ error || cuError || drError }}</div>
     </div>
 
     <!-- 结果区:仅打开时渲染,高度可拖拽(160..窗口 80%),双击分隔条恢复 50/50。 -->
@@ -924,6 +1108,7 @@ watch(
             :export-name="`mysql-result-${activeResult}`"
             :error="activeCard.error ?? null"
             :editing="editingFor(activeResult)"
+            :row-delete="activeRowDelete"
             selectable
             :primary-key="activeCard.primary_key ?? []"
             @cell-dblclick="(row, col) => startCellEdit(activeResult, row, col)"
@@ -975,14 +1160,27 @@ watch(
       @confirm="confirmLoad"
       @cancel="cancelLoad"
     />
-    <!-- 单元格更新确认:展示将执行的 UPDATE 语句全文与匹配行数(多行置危险色)。 -->
+    <!-- 单元格更新确认:展示将执行的 UPDATE 语句全文与匹配行数;多行误伤、
+         0 行未命中都置危险色并禁用执行(仅恰好命中 1 行可执行)。 -->
     <ConfirmDialog
       :show="cuConfirmOpen"
       :message="cellUpdateMessage"
       confirm-text="执行"
-      :danger="cuMatchedRows > 1"
+      :danger="cuMatchedRows !== 1"
+      :confirm-disabled="cuMatchedRows !== 1"
       @confirm="confirmCellUpdate"
       @cancel="cancelCellUpdate"
+    />
+    <!-- 删除行确认:展示将执行的 DELETE 语句全文与命中行数;命中 >1 = 定位
+         不唯一,禁用执行并警示。 -->
+    <ConfirmDialog
+      :show="drConfirmOpen"
+      :message="deleteRowMessage"
+      confirm-text="执行"
+      :danger="drMatchedRows > 1"
+      :confirm-disabled="drMatchedRows > 1"
+      @confirm="confirmDeleteRow"
+      @cancel="cancelDeleteRow"
     />
   </div>
 </template>

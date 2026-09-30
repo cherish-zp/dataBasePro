@@ -44,6 +44,10 @@ export function useQueryFiles(opts: QueryFilesOptions): {
   currentFile: Ref<string | null>
   refreshFiles(): Promise<void>
   loadQueryFile(name: string): Promise<void>
+  // 恢复文件关联(切 tab 草稿恢复用):仅设置 currentFile,不读盘、不回填
+  // 内容、不刷新列表——编辑器内容由调用方从 tab draft 恢复,这里只重建
+  // 关联,让后续 ⌘S 覆盖保存与脏检查落到正确文件上。
+  restoreFile(name: string | null): void
   saveToFile(name: string): Promise<void>
   requestSave(): void
   requestSaveAs(): void
@@ -173,6 +177,12 @@ export function useQueryFiles(opts: QueryFilesOptions): {
     }
   }
 
+  // 仅恢复文件关联(见返回值类型注释):控制台挂载时从 tab draft 重建
+  // currentFile,不走载入链路。
+  function restoreFile(name: string | null): void {
+    currentFile.value = name
+  }
+
   const nameDialog = {
     open: nameOpen,
     mode: nameMode,
@@ -213,6 +223,7 @@ export function useQueryFiles(opts: QueryFilesOptions): {
     currentFile,
     refreshFiles,
     loadQueryFile,
+    restoreFile,
     saveToFile,
     requestSave,
     requestSaveAs,
