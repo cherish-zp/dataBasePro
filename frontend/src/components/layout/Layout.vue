@@ -23,6 +23,7 @@ import EsTemplatesPanel from '@/components/kafka/EsTemplatesPanel.vue'
 import EsClusterMonitor from '@/components/kafka/EsClusterMonitor.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import UpdateDialog from './UpdateDialog.vue'
+import DocsDialog from '@/components/docs/DocsDialog.vue'
 import StatusBar from '@/components/layout/StatusBar.vue'
 import QueryFilesPanel, { type SqlConsoleApi } from './QueryFilesPanel.vue'
 import { useToastStore } from '@/store/toast'
@@ -58,6 +59,7 @@ const dragFrom = ref<number | null>(null)
 const showProducer = ref(false)
 const showSettings = ref(false)
 const showUpdate = ref(false)
+const showDocs = ref(false)
 
 // --- 顶栏更新红点 --------------------------------------------------------------
 // 挂载时静默探测一次新版本,之后每 30 分钟重查;has_update 点亮红点,
@@ -537,6 +539,7 @@ function onTabDragEnd(): void {
         新建查询
       </button>
       <button class="btn ghost" type="button" data-test="btn-settings" @click="showSettings = true">设置</button>
+      <button class="btn ghost" type="button" data-test="btn-docs-open" @click="showDocs = true">文档</button>
       <button
         class="btn ghost icon-btn"
         type="button"
@@ -766,6 +769,7 @@ function onTabDragEnd(): void {
     <!-- 设置面板「关于」页点检查更新:沿用已有 UpdateDialog,避免重复弹窗。 -->
     <SettingsPanel :show="showSettings" @close="showSettings = false" @check-update="showUpdate = true" />
     <UpdateDialog :show="showUpdate" @close="showUpdate = false" />
+    <DocsDialog :show="showDocs" @close="showDocs = false" />
     <CommandPalette ref="paletteRef" />
 
     <!-- Tab context menu. Teleported to <body> so a backdrop-filter ancestor

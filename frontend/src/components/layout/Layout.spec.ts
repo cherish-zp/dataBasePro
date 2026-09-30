@@ -192,6 +192,8 @@ describe('Layout', () => {
     // 右栏展开态/宽度也会跨用例泄漏(挂载时提前刷新导致拿到空列表)。
     localStorage.removeItem('dbclient-files-open')
     localStorage.removeItem('dbclient-files-width')
+    // 文档弹窗的上次篇章记忆同样不跨用例泄漏。
+    localStorage.removeItem('dbclient-docs-last')
   })
 
   it('shows the welcome view when no tab is open', () => {
@@ -272,6 +274,26 @@ describe('Layout', () => {
     await wrapper.findComponent(SettingsPanel).vm.$emit('check-update')
     await nextTick()
     expect(document.body.querySelector('[data-test="update-dialog"]')).not.toBeNull()
+  })
+
+  // --- 使用文档 ----------------------------------------------------------------
+
+  it('打开文档弹窗:顶栏按钮渲染弹窗与目录,✕ 关闭后消失', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    expect(document.body.querySelector('[data-test="docs-dialog"]')).toBeNull()
+    await wrapper.find('[data-test="btn-docs-open"]').trigger('click')
+    await nextTick()
+    // DocsDialog teleport 到 body,断言走 document。
+    const dialog = document.body.querySelector('[data-test="docs-dialog"]')
+    expect(dialog).not.toBeNull()
+    // 内置两篇篇章都在目录里,内容区渲染出第一篇。
+    expect(dialog!.querySelector('[data-test="docs-toc-item-shortcuts"]')).not.toBeNull()
+    expect(dialog!.querySelector('[data-test="docs-toc-item-quick-start"]')).not.toBeNull()
+    expect(dialog!.querySelector('[data-test="docs-content"]')).not.toBeNull()
+    ;(document.body.querySelector('[data-test="btn-docs-close"]') as HTMLElement).click()
+    await nextTick()
+    expect(document.body.querySelector('[data-test="docs-dialog"]')).toBeNull()
+    localStorage.removeItem('dbclient-docs-last')
   })
 
   it('keeps the top bar general (brand + settings, no connection/kafka actions)', () => {
