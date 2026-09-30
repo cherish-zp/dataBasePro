@@ -133,7 +133,7 @@ jobs:
           # 发布说明取 annotated tag 的注释(版本要点 + 发布人署名)。release job
           # 不 checkout 仓库,经 ls-remote 拿 tag 对象 sha 后走 GitHub API 读
           # message;取不到时回退默认文案。
-          TAGSHA=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${TAG}" 2>/dev/null | awk '{print $1}')
+          TAGSHA=$(git ls-remote "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${TAG}" 2>/dev/null | awk '{print $1}' || true)
           NOTES=""
           if [ -n "${TAGSHA}" ]; then
             NOTES=$(G -H "Authorization: Bearer ${GITHUB_TOKEN}" "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/tags/${TAGSHA}" \
@@ -167,8 +167,9 @@ jobs:
             # (darwin-arm64 最小、上传最快,三次发布均在此失败);间隔 30s。
             OK=""
             for attempt in 1 2 3 4; do
+              # || 兜底:Actions 的 bash 带 set -e,curl 直连失败会让整个步骤中止。
               RESP=$(G -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${RID}/attach_files" \
-                -F "access_token=${GITEE_TOKEN}" -F "file=@$f")
+                -F "access_token=${GITEE_TOKEN}" -F "file=@$f") || RESP=""
               if echo "${RESP}" | grep -q '"browser_download_url"'; then OK=1; break; fi
               echo "::warning::上传失败(第 ${attempt} 次) ${N}: ${RESP}"
               sleep 30
