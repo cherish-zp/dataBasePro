@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import * as App from '../../../wailsjs/go/backend/App'
-import { setApi, type Api } from '@/api/client'
+import type { Connection } from '@/api/types'
+import { useConnectionsStore } from '@/store/connections'
 import { useQueryFiles, type QueryFileInfo } from '@/composables/queryFiles'
 import QueryFilesPanel, { type SqlConsoleApi } from './QueryFilesPanel.vue'
 
@@ -45,15 +46,20 @@ function mountPanel(consoleApi: SqlConsoleApi | null = null): VueWrapper {
   return mount(QueryFilesPanel, { props: { consoleApi } })
 }
 
-// 注入含两个连接的 fake API,供条目解析「类型 · 名称」归属。
-function useFakeConnections(): void {
-  setApi({
-    listConnections: vi.fn(async () => [
-      { id: 'conn-1', name: '生产集群', type: 'kafka', config: {}, created_at: 0 },
-      { id: 'conn-2', name: '日志库', type: 'clickhouse', config: {}, created_at: 0 },
-    ]),
-  } as unknown as Api)
+// 面板的连接归属改读全局 pinia store(单一数据源:App.vue 挂载即 load,
+// 新建/编辑/删除连接时实时更新),测试直接往 store 预置连接,不再 mock API。
+function seedConnections(...conns: Connection[]): void {
+  useConnectionsStore().connections = conns
 }
+
+const conn = (id: string, name: string, type: Connection['type'] = 'kafka'): Connection => ({
+  id,
+  name,
+  type,
+  config: (type === 'kafka' ? { bootstrap_servers: ['h:1'] } : {}) as Connection['config'],
+  created_at: 0,
+  updated_at: 0,
+})
 
 describe('QueryFilesPanel', () => {
   beforeEach(async () => {
@@ -68,7 +74,7 @@ describe('QueryFilesPanel', () => {
   })
 
   it('按新→旧渲染全部查询文件,条目显示数据源类型与名称归属', async () => {
-    useFakeConnections()
+    seedConnections(conn('conn-1', '生产集群'), conn('conn-2', '日志库', 'clickhouse'))
     appMocks.ListQueryFiles.mockResolvedValue([
       file('newest.sql'),
       file('middle.sql', 'conn-2'),
@@ -92,7 +98,7 @@ describe('QueryFilesPanel', () => {
   })
 
   it('连接已删除或文件未关联连接时,归属行显示兜底文案', async () => {
-    useFakeConnections()
+    seedConnections(conn('conn-1', '生产集群'))
     appMocks.ListQueryFiles.mockResolvedValue([file('gone.sql', 'conn-gone'), file('loose.sql', '')])
     const wrapper = mountPanel()
     await flushPromises()
@@ -170,23 +176,20 @@ describe('QueryFilesPanel', () => {
     expect(appMocks.ListQueryFiles).toHaveBeenCalledTimes(1)
   })
 
-  it('refresh() 同时重拉连接列表:面板开着时新建的连接也能正确解析归属', async () => {
-    // 挂载时连接列表还没有 TiDB 连接 → 归属显示「未知连接」。
+  it('面板常开期间新建的连接也能正确解析归属(全局 store 实时更新,无需重拉)', async () => {
+    // 挂载时 store 里只有旧连接 A;面板展开后不再重拉连接列表。
+    seedConnections(conn('conn-1', '生产集群'))
     const wrapper = mountPanel()
     await flushPromises()
-    appMocks.ListQueryFiles.mockResolvedValue([file('ti.sql', 'conn-tidb')])
-    ;(wrapper.vm as unknown as { refresh(): void }).refresh()
-    await flushPromises()
-    expect(wrapper.find('[data-test="files-meta-0"]').text()).toBe('未知连接')
 
-    // refresh() 重拉连接列表后,新建的 TiDB 连接被识别。
-    setApi({
-      listConnections: vi.fn(async () => [
-        { id: 'conn-tidb', name: 'TiDB 集群', type: 'tidb', config: {}, created_at: 0 },
-      ]),
-    } as unknown as Api)
-    ;(wrapper.vm as unknown as { refresh(): void }).refresh()
+    // 面板常开期间新建连接 B(新建连接会实时进入 store),控制台首次保存
+    // 出新文件 → 共享 files 列表立即出现归属 B 的条目。
+    useConnectionsStore().connections.push(conn('conn-b', '名称B', 'mysql'))
+    appMocks.ListQueryFiles.mockResolvedValue([file('b.sql', 'conn-b')])
+    await useQueryFiles({ connectionId: () => '' }).refreshFiles()
     await flushPromises()
-    expect(wrapper.find('[data-test="files-meta-0"]').text()).toBe('TiDB · TiDB 集群')
+
+    // 归属立刻解析为「MySQL · 名称B」,而不是「未知连接」,无需重开面板。
+    expect(wrapper.find('[data-test="files-meta-0"]').text()).toBe('MySQL · 名称B')
   })
 })

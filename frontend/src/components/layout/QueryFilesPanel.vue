@@ -11,9 +11,9 @@ export interface SqlConsoleApi {
 </script>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { getApi } from '@/api/client'
-import type { Connection, ConnectionType } from '@/api/types'
+import { onMounted } from 'vue'
+import type { ConnectionType } from '@/api/types'
+import { useConnectionsStore } from '@/store/connections'
 import { useQueryFiles } from '@/composables/queryFiles'
 
 const props = defineProps<{ consoleApi: SqlConsoleApi | null }>()
@@ -27,7 +27,9 @@ const emit = defineEmits<{
 const { files, fileError, refreshFiles } = useQueryFiles({ connectionId: () => '' })
 
 // 连接 id → 「类型 · 名称」归属:条目上直观显示 SQL 文件属于哪个数据源。
-const connections = ref<Connection[]>([])
+// 直接读全局连接 store(App.vue 挂载即 load,新建/编辑/删除连接时实时更新),
+// 面板常开期间新建的连接也能立刻解析归属,无需本地缓存与重拉。
+const connStore = useConnectionsStore()
 
 const TYPE_LABELS: Record<ConnectionType, string> = {
   kafka: 'Kafka',
@@ -39,30 +41,21 @@ const TYPE_LABELS: Record<ConnectionType, string> = {
   clickhouse: 'ClickHouse',
 }
 
-async function loadConnections(): Promise<void> {
-  try {
-    connections.value = await getApi().listConnections()
-  } catch {
-    connections.value = []
-  }
-}
-
 function connLabel(connectionId: string): string {
   if (!connectionId) return '未关联连接'
-  const c = connections.value.find((x) => x.id === connectionId)
+  const c = connStore.connections.find((x) => x.id === connectionId)
   return c ? `${TYPE_LABELS[c.type] ?? c.type} · ${c.name}` : '未知连接'
 }
 
 onMounted(() => {
   void refreshFiles()
-  void loadConnections()
 })
 
-// 暴露给 Layout:面板展开(含首次展开)时主动刷新文件列表与连接列表。
-// 连接列表也必须重拉,否则面板常开期间新建的连接解析不出归属(未知连接)。
+// 暴露给 Layout:面板展开(含首次展开)时主动刷新文件列表。
+// 连接列表无需重拉:归属改读全局 store,连接增删改时 store 实时更新,
+// 面板常开期间新建的连接也能正确解析归属。
 function refresh(): void {
   void refreshFiles()
-  void loadConnections()
 }
 defineExpose({ refresh })
 
