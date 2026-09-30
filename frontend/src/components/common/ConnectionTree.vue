@@ -7,6 +7,7 @@ import { formatCount } from '@/utils/format'
 import { formatBytes } from '@/utils/bytes'
 import { CSV_MIME, exportCsv, saveFile, type ExportColumn } from '@/utils/export'
 import { useConnectionsStore, type ConnectionStatus } from '@/store/connections'
+import { useToastStore } from '@/store/toast'
 import ConfirmDialog from './ConfirmDialog.vue'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import PromptDialog from './PromptDialog.vue'
@@ -1023,6 +1024,17 @@ async function executeDelete(): Promise<void> {
         await getApi().mysqlTruncateTable?.({ connection_id: pending.connId, database: db, table: pending.name })
       } else {
         await getApi().mysqlDropTable?.({ connection_id: pending.connId, database: db, table: pending.name })
+      }
+      // 成功即时反馈:截断/删除已真实执行(后端审计可查),避免「静默成功」
+      // 让人误以为无效;打开中的表浏览器/控制台是旧结果,重新查询即见清空。
+      try {
+        useToastStore().show(
+          pending.action === 'truncate'
+            ? `表 ${db}.${pending.name} 已截断`
+            : `表 ${db}.${pending.name} 已删除`,
+        )
+      } catch {
+        // pinia 未激活时忽略提示,不能中断后续刷新
       }
       // 删除/截断成功后只刷新该库的表清单,不动整棵连接树。
       await reloadMysqlTables(pending.connId, db)
