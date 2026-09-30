@@ -5,6 +5,8 @@ export interface ContextMenuItem {
   key: string
   label: string
   danger?: boolean
+  // separator 为 true 时渲染为 1px 分隔线而非按钮(label 仅占位)。
+  separator?: true
 }
 
 const props = defineProps<{ show: boolean; x: number; y: number; items: ContextMenuItem[] }>()
@@ -18,9 +20,12 @@ const emit = defineEmits<{
 // the containing block for position:fixed (same rationale as the command
 // palette and the tab context menu in Layout).
 const MENU_W = 168
-// ~28px per item plus padding; generous so edge clamping never clips the last
-// item even with font rendering variance.
-const MENU_H = computed(() => props.items.length * 30 + 12)
+// ~30px per item, ~9px per separator, plus padding; generous so edge clamping
+// never clips the last item even with font rendering variance.
+const MENU_H = computed(() => {
+  const seps = props.items.filter((it) => it.separator).length
+  return (props.items.length - seps) * 30 + seps * 9 + 12
+})
 
 const left = ref(0)
 const top = ref(0)
@@ -68,17 +73,19 @@ function pick(key: string): void {
       @click.stop
       @contextmenu.prevent.stop
     >
-      <button
-        v-for="it in items"
-        :key="it.key"
-        class="context-item"
-        :class="{ danger: it.danger }"
-        type="button"
-        :data-test="`context-item-${it.key}`"
-        @click="pick(it.key)"
-      >
-        {{ it.label }}
-      </button>
+      <template v-for="it in items" :key="it.key">
+        <div v-if="it.separator" class="context-separator" data-test="context-separator"></div>
+        <button
+          v-else
+          class="context-item"
+          :class="{ danger: it.danger }"
+          type="button"
+          :data-test="`context-item-${it.key}`"
+          @click="pick(it.key)"
+        >
+          {{ it.label }}
+        </button>
+      </template>
     </div>
   </Teleport>
 </template>
@@ -113,6 +120,7 @@ function pick(key: string): void {
   white-space: nowrap;
 }
 .context-item:hover { background: var(--bg-hover); }
+.context-separator { height: 1px; background: var(--border); margin: 4px 0; }
 .context-item.danger { color: var(--danger); }
 .context-item.danger:hover { background: var(--danger-soft); }
 .context-item:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }

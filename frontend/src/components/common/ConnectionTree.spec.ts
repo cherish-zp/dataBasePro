@@ -131,6 +131,21 @@ function clickConfirmDialog(testId: string): void {
   document.body.querySelector(`[data-test="${testId}"]`)?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 }
 
+// 连接行内联操作按钮已收敛进右键菜单:右键 conn-row 打开菜单(teleport 到
+// body),再从 document.body 点击菜单项(与 ConfirmDialog 同一查询惯例)。
+async function openConnMenu(wrapper: VueWrapper, name: string): Promise<void> {
+  const row = wrapper.findAll('[data-test="conn-row"]').find((n) => n.text().includes(name))
+  if (!row) throw new Error(`conn-row not found: ${name}`)
+  await row.trigger('contextmenu', { clientX: 10, clientY: 10 })
+  await vi.waitFor(() => {
+    expect(document.body.querySelector('[data-test="context-menu"]')).not.toBeNull()
+  })
+}
+
+function clickCtxItem(key: string): void {
+  (document.body.querySelector(`[data-test="context-item-${key}"]`) as HTMLElement).click()
+}
+
 describe('ConnectionTree', () => {
   let api: Api
   beforeEach(() => {
@@ -177,7 +192,7 @@ describe('ConnectionTree', () => {
     expect(wrapper.find('[data-test="conn-caret"]').classes()).toContain('open')
   })
 
-  it('delete button does not collapse the row', async () => {
+  it('删除连接 via the context menu does not collapse the row', async () => {
     ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
@@ -185,21 +200,28 @@ describe('ConnectionTree', () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="topic-node"]').exists()).toBe(true)
     })
-    await wrapper.find('[data-test="btn-delete"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-delete')
+    await new Promise((r) => setTimeout(r, 0))
     expect(wrapper.emitted('delete')?.[0]).toEqual(['a'])
     expect(wrapper.find('[data-test="conn-caret"]').classes()).toContain('open')
   })
 
-  it('delete button carries a 删除连接 title hint', () => {
+  it('labels the connection menu delete entry 删除连接 as a danger item', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    expect(wrapper.find('[data-test="btn-delete"]').attributes('title')).toBe('删除连接')
+    await openConnMenu(wrapper, 'conn-a')
+    const del = document.body.querySelector('[data-test="context-item-conn-delete"]')
+    expect(del?.textContent).toBe('删除连接')
+    expect(del?.classList.contains('danger')).toBe(true)
   })
 
-  it('edit button emits edit-connection with the connection without toggling the row', async () => {
+  it('emits edit-connection with the connection from the context menu without toggling the row', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    await wrapper.find('[data-test="btn-edit-connection"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-edit')
+    await new Promise((r) => setTimeout(r, 0))
     expect(wrapper.emitted('edit-connection')?.[0]).toEqual([conn('a')])
-    // @click.stop：点击编辑不应触发行展开。
+    // 右键与菜单点击均不触发行展开。
     expect(wrapper.find('[data-test="conn-caret"]').classes()).not.toContain('open')
   })
 
@@ -585,18 +607,19 @@ describe('ConnectionTree', () => {
     })
   })
 
-  it('emits open-health from the connection row health entry and does not render a drawer itself', async () => {
-    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
-    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  it('emits open-health from the connection context menu and does not render a drawer itself', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    expect(wrapper.find('[data-test="btn-cluster-health"]').exists()).toBe(true)
-    await wrapper.find('[data-test="btn-cluster-health"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    expect(document.body.querySelector('[data-test="context-item-conn-health"]')?.textContent).toBe('集群健康')
+    clickCtxItem('conn-health')
+    await new Promise((r) => setTimeout(r, 0))
     expect(wrapper.emitted('open-health')?.[0]).toEqual(['a'])
   })
 
-  it('hides the cluster health entry for non-kafka connections', () => {
+  it('hides the cluster health entry for non-kafka connections', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('m', 'mysql')] } })
-    expect(wrapper.find('[data-test="btn-cluster-health"]').exists()).toBe(false)
+    await openConnMenu(wrapper, 'conn-m')
+    expect(document.body.querySelector('[data-test="context-item-conn-health"]')).toBeNull()
   })
 
   it('opens and closes the topic creation form from the Topics header', async () => {
@@ -800,9 +823,11 @@ describe('ConnectionTree', () => {
     expect(wrapper.findAll('[data-test="btn-delete-group"]')).toHaveLength(2)
   })
 
-  it('emits delete and new', async () => {
+  it('emits delete from the context menu and new', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    await wrapper.find('[data-test="btn-delete"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-delete')
+    await new Promise((r) => setTimeout(r, 0))
     expect(wrapper.emitted('delete')?.[0]).toEqual(['a'])
     await wrapper.find('[data-test="btn-new"]').trigger('click')
     expect(wrapper.emitted('new')).toBeTruthy()
@@ -843,10 +868,16 @@ describe('ConnectionTree', () => {
     expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(0)
   })
 
-  it('renders a status dot and a connect button for each connection', () => {
+  it('renders a status dot and no inline action buttons for each connection', () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
     expect(wrapper.findAll('[data-test="conn-status-dot"]')).toHaveLength(1)
-    expect(wrapper.find('[data-test="btn-connect"]').exists()).toBe(true)
+    // 行内操作(连接/健康/监控/编辑/删除)已全部收敛进右键菜单,行内仅剩
+    // 展开箭头 + 状态点 + 名称 + 类型徽标,不再渲染任何按钮。
+    expect(wrapper.find('[data-test="btn-connect"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-cluster-health"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-es-monitor"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-edit-connection"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-delete"]').exists()).toBe(false)
   })
 
   it('shows the type-specific color class on the dot when connected', () => {
@@ -871,31 +902,93 @@ describe('ConnectionTree', () => {
     expect(dot.classes()).toContain('conn-status-error')
   })
 
-  it('connects a disconnected connection via the connect button', async () => {
+  it('connects a disconnected connection via the context menu 打开连接', async () => {
     const store = useConnectionsStore()
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    expect(wrapper.find('[data-test="btn-connect"]').text()).toContain('连接')
-    await wrapper.find('[data-test="btn-connect"]').trigger('click')
-    expect(api.connect).toHaveBeenCalledWith('a')
+    await openConnMenu(wrapper, 'conn-a')
+    expect(document.body.querySelector('[data-test="context-item-conn-toggle"]')?.textContent).toBe('打开连接')
+    clickCtxItem('conn-toggle')
+    await vi.waitFor(() => {
+      expect(api.connect).toHaveBeenCalledWith('a')
+    })
     await vi.waitFor(() => {
       expect(store.statusById['a']).toBe('connected')
     })
   })
 
-  it('disconnects a connected connection via the connect button', async () => {
+  it('disconnects a connected connection via the context menu 断开连接', async () => {
     const store = useConnectionsStore()
     store.setStatus('a', 'connected')
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    expect(wrapper.find('[data-test="btn-connect"]').text()).toContain('断开')
-    await wrapper.find('[data-test="btn-connect"]').trigger('click')
-    expect(api.disconnect).toHaveBeenCalledWith('a')
-    expect(store.statusById['a']).toBe('disconnected')
+    await openConnMenu(wrapper, 'conn-a')
+    // 已连接时首项文案切换为「断开连接」。
+    expect(document.body.querySelector('[data-test="context-item-conn-toggle"]')?.textContent).toBe('断开连接')
+    clickCtxItem('conn-toggle')
+    await vi.waitFor(() => {
+      expect(api.disconnect).toHaveBeenCalledWith('a')
+    })
+    await vi.waitFor(() => {
+      expect(store.statusById['a']).toBe('disconnected')
+    })
   })
 
-  it('does not expand the row when clicking the connect button', async () => {
+  it('does not expand the row on right-click', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    await wrapper.find('[data-test="btn-connect"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
     expect(wrapper.find('[data-test="conn-caret"]').classes()).not.toContain('open')
+  })
+
+  // --- 连接右键菜单结构(行内按钮收敛后的专项回归锁) ---
+
+  it('kafka 连接菜单:打开连接/集群健康/分隔线/编辑/删除,且无集群监控', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await openConnMenu(wrapper, 'conn-a')
+    const menu = document.body.querySelector('[data-test="context-menu"]') as HTMLElement
+    // 顺序固定:类型专属项与编辑/删除之间以分隔线分组。
+    const tests = Array.from(menu.children).map((n) => n.getAttribute('data-test'))
+    expect(tests).toEqual([
+      'context-item-conn-toggle',
+      'context-item-conn-health',
+      'context-separator',
+      'context-item-conn-edit',
+      'context-item-conn-delete',
+    ])
+    const labels = Array.from(menu.querySelectorAll('.context-item')).map((n) => n.textContent)
+    expect(labels).toEqual(['打开连接', '集群健康', '编辑连接', '删除连接'])
+    // kafka 不渲染 es 专属的集群监控。
+    expect(document.body.querySelector('[data-test="context-item-conn-es-monitor"]')).toBeNull()
+  })
+
+  it('es 连接菜单:含集群监控、无集群健康', async () => {
+    const api2 = fakeApi({ listEsIndices: vi.fn(async () => []) })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await openConnMenu(wrapper, 'conn-es')
+    const menu = document.body.querySelector('[data-test="context-menu"]') as HTMLElement
+    const tests = Array.from(menu.children).map((n) => n.getAttribute('data-test'))
+    expect(tests).toEqual([
+      'context-item-conn-toggle',
+      'context-item-conn-es-monitor',
+      'context-separator',
+      'context-item-conn-edit',
+      'context-item-conn-delete',
+    ])
+    expect(document.body.querySelector('[data-test="context-item-conn-health"]')).toBeNull()
+  })
+
+  it('mysql 连接菜单:无类型专属项,仅 打开连接/分隔线/编辑/删除', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('m', 'mysql')] } })
+    await openConnMenu(wrapper, 'conn-m')
+    const menu = document.body.querySelector('[data-test="context-menu"]') as HTMLElement
+    const tests = Array.from(menu.children).map((n) => n.getAttribute('data-test'))
+    expect(tests).toEqual([
+      'context-item-conn-toggle',
+      'context-separator',
+      'context-item-conn-edit',
+      'context-item-conn-delete',
+    ])
+    expect(document.body.querySelector('[data-test="context-item-conn-health"]')).toBeNull()
+    expect(document.body.querySelector('[data-test="context-item-conn-es-monitor"]')).toBeNull()
   })
 
   it('marks a connection connected after a successful expand load', async () => {
@@ -1760,15 +1853,16 @@ describe('ConnectionTree', () => {
     expect(wrapper.find('[data-test="section-tab-es-templates"]').classes()).not.toContain('active')
   })
 
-  it('ES 连接行渲染集群监控图标(与 Kafka 🩺 同位,连接图标左侧),点击 emit open-es-monitor', async () => {
+  it('ES 连接右键菜单含集群监控项,点击 emit open-es-monitor', async () => {
     const api2 = fakeApi({ listEsIndices: vi.fn(async () => []) })
     setApi(api2)
     const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
-    // 图标在连接行上,无需展开即可见。
-    const btn = wrapper.find('[data-test="btn-es-monitor"]')
-    expect(btn.exists()).toBe(true)
-    expect(btn.text()).toBe('📈')
-    await btn.trigger('click')
+    // 菜单在连接行右键打开,无需展开。
+    await openConnMenu(wrapper, 'conn-es')
+    const item = document.body.querySelector('[data-test="context-item-conn-es-monitor"]')
+    expect(item?.textContent).toBe('集群监控')
+    ;(item as HTMLElement).click()
+    await new Promise((r) => setTimeout(r, 0))
     // 事件名与参数一字不差:open-es-monitor + 连接 id(Layout 由并行方接线)。
     expect(wrapper.emitted('open-es-monitor')?.[0]).toEqual(['es'])
   })
@@ -1777,8 +1871,10 @@ describe('ConnectionTree', () => {
     ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    await expand(wrapper)
-    expect(wrapper.find('[data-test="es-monitor-btn"]').exists()).toBe(false)
+    await openConnMenu(wrapper, 'conn-a')
+    expect(document.body.querySelector('[data-test="context-item-conn-es-monitor"]')).toBeNull()
+    // kafka 连接的类型专属项是集群健康。
+    expect(document.body.querySelector('[data-test="context-item-conn-health"]')).not.toBeNull()
   })
 
   it('lazily loads and renders es templates with order badges when the templates section activates', async () => {

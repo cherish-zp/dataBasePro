@@ -91,8 +91,9 @@ async function onToggleConnect(conn: Connection): Promise<void> {
 // actions, so adding MySQL tables later is a matter of declaring a new entry
 // here and a create/delete branch in the dispatch functions below. ES 的
 // es-index / es-template 不作为 collection 分区,但复用同一批交互状态
-// (右键菜单、删除确认),因此也纳入 ObjectKind。
-type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db' | 'es-index' | 'es-template' | 'mysql-table'
+// (右键菜单、删除确认),因此也纳入 ObjectKind。'connection' 承载连接节点
+// 自身的右键菜单(打开/断开、集群健康/监控、编辑、删除)。
+type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db' | 'es-index' | 'es-template' | 'mysql-table' | 'connection'
 interface ObjectCollection {
   key: string
   label: string
@@ -733,11 +734,28 @@ const detailMeta = ref<{ connId: string; topic: string; edit: boolean } | null>(
 // --- Right-click context menus ----------------------------------------------
 
 // ctxMenu targets the right-clicked tree node; items differ per object kind.
-// db 仅 mysql-table 节点使用(表所属的数据库)。
-const ctxMenu = ref<{ x: number; y: number; kind: ObjectKind; connId: string; name: string; partitions: number; db?: string } | null>(null)
+// db 仅 mysql-table 节点使用(表所属的数据库);conn 仅 connection 节点使用
+// (右键菜单需要按 type 与连接状态动态出项,并透传给编辑连接 emit)。
+const ctxMenu = ref<{ x: number; y: number; kind: ObjectKind; connId: string; name: string; partitions: number; db?: string; conn?: Connection } | null>(null)
 
 const ctxItems = computed<ContextMenuItem[]>(() => {
   if (!ctxMenu.value) return []
+  if (ctxMenu.value.kind === 'connection') {
+    const c = ctxMenu.value.conn
+    if (!c) return []
+    // 连接行的行内操作按钮已全部收敛进右键菜单:首项随连接状态切换文案,
+    // 类型专属项(kafka 健康诊断 / es 集群监控)居中,分隔线隔开破坏性较低的
+    // 编辑与破坏性的删除。
+    const items: ContextMenuItem[] = [{ key: 'conn-toggle', label: isConnected(c.id) ? '断开连接' : '打开连接' }]
+    if (c.type === 'kafka') items.push({ key: 'conn-health', label: '集群健康' })
+    if (c.type === 'es') items.push({ key: 'conn-es-monitor', label: '集群监控' })
+    items.push(
+      { key: 'conn-sep', label: '', separator: true },
+      { key: 'conn-edit', label: '编辑连接' },
+      { key: 'conn-delete', label: '删除连接', danger: true },
+    )
+    return items
+  }
   if (ctxMenu.value.kind === 'mysql-table') {
     return [
       { key: 'open-mysql-table', label: '打开表' },
@@ -797,6 +815,11 @@ function openMysqlTableMenu(e: MouseEvent, connId: string, db: string, name: str
   ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'mysql-table', connId, name, partitions: 0, db }
 }
 
+// openConnMenu 打开连接节点自身的右键菜单(conn-row 行内按钮已全部收敛于此)。
+function openConnMenu(conn: Connection, e: MouseEvent): void {
+  ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'connection', connId: conn.id, name: conn.name, partitions: 0, conn }
+}
+
 function closeCtxMenu(): void {
   ctxMenu.value = null
 }
@@ -805,6 +828,23 @@ function onCtxSelect(key: string): void {
   const m = ctxMenu.value
   if (!m) return
   switch (key) {
+    case 'conn-toggle':
+      // 打开/断开连接(与原行内按钮同一入口);菜单本身在 pick 后已关闭。
+      if (m.conn) void onToggleConnect(m.conn)
+      break
+    case 'conn-health':
+      emit('open-health', m.connId)
+      break
+    case 'conn-es-monitor':
+      emit('open-es-monitor', m.connId)
+      break
+    case 'conn-edit':
+      if (m.conn) emit('edit-connection', m.conn)
+      break
+    case 'conn-delete':
+      // 删除连接仍由 App.vue 的确认弹窗链路兜底,这里只透传 id。
+      emit('delete', m.connId)
+      break
     case 'browse':
       emit('open-topic', m.connId, m.name, (topicsByConn.value[m.connId] ?? []).find((t) => t.name === m.name)?.partitions.map((p) => p.id) ?? [])
       break
@@ -1094,7 +1134,7 @@ function exportTopics(conn: Connection): void {
     <button class="tree-new" type="button" data-test="btn-new" @click="emit('new')">＋ 新建连接</button>
     <div v-if="connections.length === 0" class="tree-empty" data-test="tree-empty">暂无连接</div>
     <div v-for="conn in connections" :key="conn.id" class="conn" data-test="connection">
-      <div class="conn-row" data-test="conn-row" @click="toggle(conn)">
+      <div class="conn-row" data-test="conn-row" @click="toggle(conn)" @contextmenu.prevent.stop="openConnMenu(conn, $event)">
         <span class="caret" data-test="conn-caret" :class="{ open: isExpanded(conn.id) }">
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
             <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
@@ -1109,14 +1149,6 @@ function exportTopics(conn: Connection): void {
         ></span>
         <span class="conn-name" data-test="conn-name">{{ conn.name }}</span>
         <span class="conn-type" :class="`conn-type-${conn.type}`" data-test="conn-type">{{ typeMeta(conn).label }}</span>
-        <button class="conn-toggle" type="button" data-test="btn-connect" :title="isConnected(conn.id) ? '关闭连接' : '打开连接'" @click.stop="onToggleConnect(conn)">
-          <span class="toggle-icon">⏻</span>
-          <span class="toggle-text">{{ isConnected(conn.id) ? '断开' : '连接' }}</span>
-        </button>
-        <button v-if="conn.type === 'kafka'" class="conn-health" type="button" data-test="btn-cluster-health" title="集群健康" @click.stop="emit('open-health', conn.id)">🩺</button>
-        <button v-if="conn.type === 'es'" class="conn-health" type="button" data-test="btn-es-monitor" title="集群监控" @click.stop="emit('open-es-monitor', conn.id)">📈</button>
-        <button class="conn-edit" type="button" data-test="btn-edit-connection" title="编辑连接" @click.stop="emit('edit-connection', conn)">✎</button>
-        <button class="conn-delete" type="button" data-test="btn-delete" title="删除连接" @click.stop="emit('delete', conn.id)">🗑</button>
       </div>
 
       <div v-if="isExpanded(conn.id) && (conn.type === 'kafka' || conn.type === 'redis')" class="conn-children">
@@ -1868,20 +1900,6 @@ function exportTopics(conn: Connection): void {
 .conn-status-disconnected { background: var(--text-tertiary); }
 .conn-status-unknown { background: var(--text-tertiary); }
 @keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-.conn-toggle {
-  display: flex; align-items: center; gap: 3px;
-  background: none; border: 1px solid var(--border-strong); color: var(--text-secondary);
-  font-size: 11px; font-weight: 500; border-radius: 6px; padding: 1px 7px; cursor: pointer; flex: none;
-  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
-}
-.conn-toggle:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
-.conn-toggle .toggle-icon { font-size: 12px; line-height: 1; }
-.conn-delete { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; flex: none; }
-.conn-delete:hover { color: var(--danger); background: var(--danger-soft); }
-.conn-health { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; font-size: 12px; line-height: 1; flex: none; transition: color 0.15s ease, background 0.15s ease; }
-.conn-health:hover { color: var(--ok); background: var(--ok-soft); }
-.conn-edit { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; flex: none; transition: color 0.15s ease, background 0.15s ease; }
-.conn-edit:hover { color: var(--accent); background: var(--accent-soft); }
 .conn-children { margin-left: 16px; border-left: 1px solid var(--border); padding-left: 8px; }
 .topic-search { margin: 6px 0 2px; }
 .topic-toolbar { display: flex; align-items: center; gap: 6px; margin: 4px 0 2px; }

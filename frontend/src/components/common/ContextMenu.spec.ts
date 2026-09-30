@@ -1,10 +1,18 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
-import ContextMenu from './ContextMenu.vue'
+import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 
 const items = [
   { key: 'open', label: '打开' },
   { key: 'edit', label: '编辑' },
+  { key: 'delete', label: '删除', danger: true },
+]
+
+// 连接菜单同构:类型专属项与编辑/删除之间以分隔线分组。
+const itemsWithSeparator: ContextMenuItem[] = [
+  { key: 'open', label: '打开' },
+  { key: 'conn-health', label: '集群健康' },
+  { key: 'sep', label: '', separator: true },
   { key: 'delete', label: '删除', danger: true },
 ]
 
@@ -47,6 +55,23 @@ describe('ContextMenu', () => {
     mount(ContextMenu, { props: { show: true, x: 0, y: 0, items } })
     expect(item('delete')?.classList.contains('danger')).toBe(true)
     expect(item('open')?.classList.contains('danger')).toBe(false)
+  })
+
+  it('renders separator items as dividers instead of buttons, keeping their order', () => {
+    mount(ContextMenu, { props: { show: true, x: 0, y: 0, items: itemsWithSeparator } })
+    // 分隔线渲染为 context-separator,不产生同名按钮。
+    const seps = document.body.querySelectorAll('[data-test="context-separator"]')
+    expect(seps).toHaveLength(1)
+    expect(seps[0].classList.contains('context-separator')).toBe(true)
+    expect(item('sep')).toBeNull()
+    // 分隔线两侧的普通项照常渲染,且顺序保持。
+    const tests = Array.from((menu() as HTMLElement).children).map((n) => n.getAttribute('data-test'))
+    expect(tests).toEqual([
+      'context-item-open',
+      'context-item-conn-health',
+      'context-separator',
+      'context-item-delete',
+    ])
   })
 
   it('closes on Escape', async () => {

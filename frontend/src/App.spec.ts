@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
@@ -101,6 +101,20 @@ function clickConfirmDialog(testId: string): void {
   document.body.querySelector(`[data-test="${testId}"]`)?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 }
 
+// 连接行内联操作按钮已收敛进右键菜单:右键 conn-row 打开菜单(teleport 到
+// body),再从 document.body 点击菜单项(与 ConfirmDialog 同一查询惯例)。
+async function openConnMenu(wrapper: VueWrapper, name: string): Promise<void> {
+  const row = wrapper.findAll('[data-test="conn-row"]').find((n) => n.text().includes(name))
+  if (!row) throw new Error(`conn-row not found: ${name}`)
+  await row.trigger('contextmenu', { clientX: 10, clientY: 10 })
+  await vi.waitFor(() => {
+    expect(document.body.querySelector('[data-test="context-menu"]')).not.toBeNull()
+  })
+}
+function clickCtxItem(key: string): void {
+  (document.body.querySelector(`[data-test="context-item-${key}"]`) as HTMLElement).click()
+}
+
 describe('App', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -143,7 +157,9 @@ describe('App', () => {
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(1)
     })
-    await wrapper.find('[data-test="btn-delete"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-delete')
+    await flushPromises()
     const dialog = confirmDialog()
     expect(dialog).not.toBeNull()
     expect(dialog?.textContent).toContain('conn-a')
@@ -161,7 +177,9 @@ describe('App', () => {
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(1)
     })
-    await wrapper.find('[data-test="btn-delete"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-delete')
+    await flushPromises()
     expect(confirmDialog()).not.toBeNull()
     clickConfirmDialog('confirm-dialog-ok')
     await flushPromises()
@@ -180,7 +198,9 @@ describe('App', () => {
       expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(1)
     })
 
-    await wrapper.find('[data-test="btn-edit-connection"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-edit')
+    await flushPromises()
     expect(wrapper.find('[data-test="new-connection-modal"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="modal-title"]').text()).toBe('编辑连接')
     expect((wrapper.find('[data-test="input-name"]').element as HTMLInputElement).value).toBe('conn-a')
