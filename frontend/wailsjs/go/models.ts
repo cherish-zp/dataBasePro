@@ -2380,6 +2380,8 @@ export namespace model {
 	    columns?: MysqlColumn[];
 	    rows?: string[][];
 	    primary_key?: string[];
+	    source_database?: string;
+	    source_table?: string;
 	    total_rows?: number;
 	
 	    static createFrom(source: any = {}) {
@@ -2394,6 +2396,8 @@ export namespace model {
 	        this.columns = this.convertValues(source["columns"], MysqlColumn);
 	        this.rows = source["rows"];
 	        this.primary_key = source["primary_key"];
+	        this.source_database = source["source_database"];
+	        this.source_table = source["source_table"];
 	        this.total_rows = source["total_rows"];
 	    }
 	
@@ -2633,6 +2637,9 @@ export namespace model {
 	    rows?: string[][];
 	    primary_key?: string[];
 	    affected_rows: number;
+	    source_schema?: string;
+	    source_relation?: string;
+	    source_kind?: string;
 	    total_rows?: number;
 	
 	    static createFrom(source: any = {}) {
@@ -2649,6 +2656,9 @@ export namespace model {
 	        this.rows = source["rows"];
 	        this.primary_key = source["primary_key"];
 	        this.affected_rows = source["affected_rows"];
+	        this.source_schema = source["source_schema"];
+	        this.source_relation = source["source_relation"];
+	        this.source_kind = source["source_kind"];
 	        this.total_rows = source["total_rows"];
 	    }
 	
@@ -3005,6 +3015,56 @@ export namespace model {
 
 export namespace service {
 	
+	export class CHDeleteRowPreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CHDeleteRowPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class CHDeleteRowRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    where: model.CHCellValue[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CHDeleteRowRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.where = this.convertValues(source["where"], model.CHCellValue);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class MysqlColumnDef {
 	    name: string;
 	    column_type: string;
@@ -3028,6 +3088,56 @@ export namespace service {
 	        this.auto_increment = source["auto_increment"];
 	        this.after = source["after"];
 	    }
+	}
+	export class MysqlDeleteRowPreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlDeleteRowPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class MysqlDeleteRowRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    where: model.MysqlCellValue[];
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlDeleteRowRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.where = this.convertValues(source["where"], model.MysqlCellValue);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class MysqlExportTableResult {
 	    filename: string;
@@ -3081,6 +3191,60 @@ export namespace service {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.columns = this.convertValues(source["columns"], MysqlTableColumn);
 	        this.ddl = source["ddl"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PostgresDeleteRowPreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresDeleteRowPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class PostgresDeleteRowRequest {
+	    connection_id: string;
+	    database: string;
+	    schema: string;
+	    relation: string;
+	    relation_kind: string;
+	    where: model.PostgresCellValue[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresDeleteRowRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.relation = source["relation"];
+	        this.relation_kind = source["relation_kind"];
+	        this.where = this.convertValues(source["where"], model.PostgresCellValue);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

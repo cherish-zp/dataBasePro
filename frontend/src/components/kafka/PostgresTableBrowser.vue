@@ -40,6 +40,17 @@ interface PgCellUpdateTarget {
   where: PgCellRef[]
 }
 
+// 按行删除请求:where 只允许主键列,视图/物化视图后端拒绝删除(前端
+// 对非 table 关系不渲染删除入口)。
+interface PgDeleteRowTarget {
+  connection_id: string
+  database: string
+  schema: string
+  relation: string
+  relation_kind: 'table' | 'view' | 'materialized_view'
+  where: PgCellRef[]
+}
+
 // Postgres* 绑定尚未由 wails generate module 生成,这里按显式形状断言调用
 // (req 为契约形状原样,Wails 按字段名序列化,snake_case 已对齐);生成后
 // 签名一致,无需改动本文件。
@@ -58,6 +69,8 @@ const app = App as unknown as {
   PostgresTruncateTable(req: { connection_id: string; database: string; schema: string; relation: string; relation_kind: 'table' | 'view' | 'materialized_view' }): Promise<void>
   PostgresPreviewCellUpdate(req: unknown): Promise<{ statement: string; matched_rows: number }>
   PostgresUpdateCell(req: unknown): Promise<void>
+  PostgresPreviewDeleteRow(req: unknown): Promise<{ statement: string; matched_rows: number }>
+  PostgresDeleteRow(req: unknown): Promise<void>
 }
 
 const columns = ref<PgColumn[]>([])
@@ -325,6 +338,89 @@ function onCellUpdateCancel(): void {
   matchedRows.value = 0
   cuError.value = null
 }
+
+// --- 按行删除:行首危险按钮 → 按主键原值预览 DELETE → 确认执行并刷新。 ---
+const delError = ref<string | null>(null)
+const confirmDeleteOpen = ref(false)
+const delStatement = ref('')
+const delMatchedRows = ref(0)
+// 预览通过后暂存的待执行删除请求,确认时原样发给执行。
+let pendingDelete: PgDeleteRowTarget | null = null
+
+// buildDeleteTarget 组装删除请求:where 只用主键列的当前行原值快照
+// (NULL 原值保持 null,由后端拼 IS NULL;前端不拼 SQL 文本)。
+function buildDeleteTarget(ri: number): PgDeleteRowTarget {
+  const cols = columns.value
+  const row = rows.value[ri] ?? []
+  return {
+    connection_id: props.connectionId,
+    database: props.database,
+    schema: props.schema,
+    relation: props.relation,
+    relation_kind: props.relationType ?? 'table',
+    where: primaryKey.value.map((name) => {
+      const i = cols.findIndex((c) => c.name === name)
+      return { column: name, value: row[i] ?? null }
+    }),
+  }
+}
+
+// askDeleteRow 点击行首删除:先预览拿语句全文与命中行数,成功才开确认
+// 弹窗;预览失败写入错误区,不弹框、不残留待执行目标。
+async function askDeleteRow(ri: number): Promise<void> {
+  if (!canEdit.value || !isTable.value) return
+  const target = buildDeleteTarget(ri)
+  delError.value = null
+  pendingDelete = target
+  try {
+    const res = await app.PostgresPreviewDeleteRow(target)
+    delStatement.value = res.statement
+    delMatchedRows.value = res.matched_rows
+    confirmDeleteOpen.value = true
+  } catch (e) {
+    delError.value = e instanceof Error ? e.message : String(e)
+    pendingDelete = null
+  }
+}
+
+// 弹窗文案:DELETE 语句全文 + 命中行数 + 不可恢复警示;命中多行说明主键
+// 定位不唯一,强警示并禁止执行。
+const deleteMessage = computed(() => {
+  const n = Number(delMatchedRows.value ?? 0)
+  const lines = [`将执行以下语句:\n${delStatement.value}`, `命中 ${n} 行`, '此操作不可恢复。']
+  if (n > 1) lines.push(`主键条件命中 ${n} 行,删除范围超出目标行,已禁止删除。`)
+  return lines.join('\n')
+})
+
+// onDeleteRowConfirm 确认执行:命中多行时直接禁止(弹窗保持,不执行);
+// 成功后关闭弹窗并刷新当前页;失败弹窗保持,错误同时进错误区。
+async function onDeleteRowConfirm(): Promise<void> {
+  if (Number(delMatchedRows.value) > 1) return
+  const target = pendingDelete
+  if (!target) {
+    confirmDeleteOpen.value = false
+    return
+  }
+  try {
+    await app.PostgresDeleteRow(target)
+    pendingDelete = null
+    confirmDeleteOpen.value = false
+    delStatement.value = ''
+    delMatchedRows.value = 0
+    void fetchPage()
+  } catch (e) {
+    delError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+// onDeleteRowCancel 取消:关闭弹窗并清空全部删除状态。
+function onDeleteRowCancel(): void {
+  pendingDelete = null
+  confirmDeleteOpen.value = false
+  delStatement.value = ''
+  delMatchedRows.value = 0
+  delError.value = null
+}
 </script>
 
 <template>
@@ -363,7 +459,7 @@ function onCellUpdateCancel(): void {
       >清空数据</button>
     </div>
 
-    <div v-if="error || cuError" class="msg err" data-test="pg-error">{{ error || cuError }}</div>
+    <div v-if="error || cuError || delError" class="msg err" data-test="pg-error">{{ error || cuError || delError }}</div>
 
     <div v-if="columns.length > 0 && rows.length === 0 && !loading" class="table-wrap">
       <div class="fields-panel" data-test="pg-fields-panel">
@@ -384,6 +480,8 @@ function onCellUpdateCancel(): void {
       <table class="table" data-test="pg-grid">
         <thead>
           <tr>
+            <!-- 行首操作列:每行挂删除按钮(仅 table,悬停行显现)。 -->
+            <th class="row-action" aria-hidden="true"></th>
             <th
               v-for="c in columns"
               :key="c.name"
@@ -411,6 +509,20 @@ function onCellUpdateCancel(): void {
         </thead>
         <tbody>
           <tr v-for="(row, ri) in rows" :key="ri" data-test="pg-row">
+            <!-- 行首删除:危险色小按钮,仅 table 渲染;无主键禁用并以 title 说明原因。 -->
+            <td class="row-action">
+              <button
+                v-if="isTable"
+                class="mini-btn danger row-del"
+                type="button"
+                data-test="btn-row-delete"
+                :disabled="!canEdit"
+                :title="canEdit ? '删除此行' : '结果无主键,无法定位行'"
+                @click="askDeleteRow(ri)"
+              >
+                ✕
+              </button>
+            </td>
             <td
               v-for="(cell, ci) in row"
               :key="ci"
@@ -438,7 +550,7 @@ function onCellUpdateCancel(): void {
             </td>
           </tr>
           <tr v-if="rows.length === 0 && !loading">
-            <td :colspan="columns.length || 1" class="empty" data-test="pg-grid-empty">
+            <td :colspan="columns.length + 1" class="empty" data-test="pg-grid-empty">
               <div class="empty-icon">◌</div>
               <div>该表暂无数据</div>
               <div class="empty-hint">数据写入后点击「刷新」查看</div>
@@ -471,6 +583,16 @@ function onCellUpdateCancel(): void {
       confirm-text="执行"
       @confirm="onCellUpdateConfirm"
       @cancel="onCellUpdateCancel"
+    />
+
+    <!-- 按行删除确认:展示将执行的 DELETE 语句全文、命中行数与不可恢复警示。 -->
+    <ConfirmDialog
+      :show="confirmDeleteOpen"
+      :message="deleteMessage"
+      confirm-text="删除"
+      danger
+      @confirm="onDeleteRowConfirm"
+      @cancel="onDeleteRowCancel"
     />
   </div>
 </template>
@@ -524,6 +646,17 @@ function onCellUpdateCancel(): void {
 .cell-trunc { color: var(--text-secondary); }
 /* 无主键表整表只读:不出现文本光标,提示走 title。 */
 .cell-readonly { cursor: default; }
+/* 行首操作列:危险色删除小按钮,悬停所在行时显现(对齐 EsTableBrowser)。 */
+.table .row-action { width: 34px; padding: 4px 8px; text-align: center; }
+.mini-btn {
+  flex: none; font-size: 10px; line-height: 1;
+  padding: 2px 5px; border-radius: 4px; cursor: pointer;
+  background: transparent; color: var(--danger); border: 1px solid var(--danger);
+}
+.mini-btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
+.mini-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.row-del { opacity: 0; transition: opacity 0.12s ease; }
+.table tbody tr:hover .row-del { opacity: 1; }
 /* 行内编辑输入框:覆盖单元格内容,细边框紧凑,与表格行高一致。 */
 .cell-editor {
   box-sizing: border-box; width: 100%; min-width: 80px;

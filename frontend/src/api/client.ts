@@ -69,6 +69,8 @@ import type {
   CHTruncateTableRequest,
   CHExecuteRequest,
   CHStatementResult,
+  CHDeleteRowRequest,
+  CHDeleteRowPreview,
   DriverInfo,
   MysqlConfigShape,
   MysqlListTablesRequest,
@@ -87,6 +89,8 @@ import type {
   MysqlAlterTableRequest,
   MysqlExportTableRequest,
   MysqlExportTableResult,
+  MysqlDeleteRowRequest,
+  MysqlDeleteRowPreview,
   PostgresConfigShape,
   PostgresListSchemasRequest,
   PostgresListTablesRequest,
@@ -98,6 +102,8 @@ import type {
   PostgresTruncateTableRequest,
   PostgresCellUpdateRequest,
   PostgresCellUpdatePreview,
+  PostgresDeleteRowRequest,
+  PostgresDeleteRowPreview,
   EsConfigShape,
   EsIndexInfo,
   EsColumn,
@@ -191,6 +197,9 @@ export interface Api {
   listCHTables(req: CHListTablesRequest): Promise<CHTableInfo[]>
   chPageRows(req: CHPageRowsRequest): Promise<CHPageRowsResult>
   chTruncateTable(req: CHTruncateTableRequest): Promise<void>
+  // 按行删除:可选成员(既有 fake 零改动);调用方用可选链(?.)访问。
+  chPreviewDeleteRow?(req: CHDeleteRowRequest): Promise<CHDeleteRowPreview>
+  chDeleteRow?(req: CHDeleteRowRequest): Promise<void>
   chExecute(req: CHExecuteRequest): Promise<CHStatementResult[]>
   listDrivers(): Promise<DriverInfo[]>
   // MySQL/TiDB 系列:后端绑定尚未由 wails generate 生成,先声明为可选成员,
@@ -203,6 +212,10 @@ export interface Api {
   mysqlPreviewCellUpdate?(req: MysqlCellUpdateRequest): Promise<MysqlCellUpdatePreview>
   mysqlUpdateCell?(req: MysqlCellUpdateRequest): Promise<void>
   mysqlTruncateTable?(req: MysqlTruncateTableRequest): Promise<void>
+  // 按行删除(控制台结果与表浏览器共用):绑定尚未由 wails generate 生成,
+  // 可选成员(既有 fake 零改动);调用方用可选链(?.)访问。
+  mysqlPreviewDeleteRow?(req: MysqlDeleteRowRequest): Promise<MysqlDeleteRowPreview>
+  mysqlDeleteRow?(req: MysqlDeleteRowRequest): Promise<void>
   // 表级 DDL/元数据(连接树右键菜单):接口侧声明为可选成员(既有 fake 零
   // 改动),Wails 绑定已由 wails generate 生成;调用方用可选链(?.)访问。
   mysqlDropTable?(req: MysqlDropTableRequest): Promise<void>
@@ -216,6 +229,8 @@ export interface Api {
   postgresPageRows?(req: PostgresPageRowsRequest): Promise<PostgresPageRowsResult>
   postgresExecute?(req: PostgresExecuteRequest): Promise<PostgresStatementResult[]>
   postgresTruncateTable?(req: PostgresTruncateTableRequest): Promise<void>
+  postgresPreviewDeleteRow?(req: PostgresDeleteRowRequest): Promise<PostgresDeleteRowPreview>
+  postgresDeleteRow?(req: PostgresDeleteRowRequest): Promise<void>
   postgresPreviewCellUpdate?(req: PostgresCellUpdateRequest): Promise<PostgresCellUpdatePreview>
   postgresUpdateCell?(req: PostgresCellUpdateRequest): Promise<void>
   // Elasticsearch 系列:后端绑定尚未由 wails generate 生成,同样声明为可选
@@ -455,6 +470,13 @@ export class WailsApi implements Api {
   chTruncateTable(req: CHTruncateTableRequest): Promise<void> {
     return (App as unknown as { CHTruncateTable: (req: never) => Promise<void> }).CHTruncateTable(req as unknown as never)
   }
+  // 按行删除:Wails 绑定由主会话稍后重生成,先对模块形状断言。
+  chPreviewDeleteRow(req: CHDeleteRowRequest): Promise<CHDeleteRowPreview> {
+    return (App as unknown as { CHPreviewDeleteRow: (req: never) => Promise<CHDeleteRowPreview> }).CHPreviewDeleteRow(req as unknown as never)
+  }
+  chDeleteRow(req: CHDeleteRowRequest): Promise<void> {
+    return (App as unknown as { CHDeleteRow: (req: never) => Promise<void> }).CHDeleteRow(req as unknown as never)
+  }
   chExecute(req: CHExecuteRequest): Promise<CHStatementResult[]> {
     return (App as unknown as { CHExecute: (req: never) => Promise<CHStatementResult[]> }).CHExecute(req as unknown as never)
   }
@@ -486,6 +508,13 @@ export class WailsApi implements Api {
   }
   mysqlTruncateTable(req: MysqlTruncateTableRequest): Promise<void> {
     return (App as unknown as { MysqlTruncateTable: (req: never) => Promise<void> }).MysqlTruncateTable(req as unknown as never)
+  }
+  // 按行删除:Wails 绑定由主会话稍后重生成,先对模块形状断言。
+  mysqlPreviewDeleteRow(req: MysqlDeleteRowRequest): Promise<MysqlDeleteRowPreview> {
+    return (App as unknown as { MysqlPreviewDeleteRow: (req: never) => Promise<MysqlDeleteRowPreview> }).MysqlPreviewDeleteRow(req as unknown as never)
+  }
+  mysqlDeleteRow(req: MysqlDeleteRowRequest): Promise<void> {
+    return (App as unknown as { MysqlDeleteRow: (req: never) => Promise<void> }).MysqlDeleteRow(req as unknown as never)
   }
   // 以下表级 DDL API 的 Wails 绑定已由 wails generate 生成;接口侧保留可选
   // 成员(既有 fake 无需实现),运行期直接按生成签名调用。
@@ -523,6 +552,13 @@ export class WailsApi implements Api {
   }
   postgresTruncateTable(req: PostgresTruncateTableRequest): Promise<void> {
     return (App as unknown as { PostgresTruncateTable: (req: never) => Promise<void> }).PostgresTruncateTable(req as unknown as never)
+  }
+  // 按行删除:Wails 绑定由主会话稍后重生成,先对模块形状断言。
+  postgresPreviewDeleteRow(req: PostgresDeleteRowRequest): Promise<PostgresDeleteRowPreview> {
+    return (App as unknown as { PostgresPreviewDeleteRow: (req: never) => Promise<PostgresDeleteRowPreview> }).PostgresPreviewDeleteRow(req as unknown as never)
+  }
+  postgresDeleteRow(req: PostgresDeleteRowRequest): Promise<void> {
+    return (App as unknown as { PostgresDeleteRow: (req: never) => Promise<void> }).PostgresDeleteRow(req as unknown as never)
   }
   postgresPreviewCellUpdate(req: PostgresCellUpdateRequest): Promise<PostgresCellUpdatePreview> {
     return (App as unknown as { PostgresPreviewCellUpdate: (req: never) => Promise<PostgresCellUpdatePreview> }).PostgresPreviewCellUpdate(req as unknown as never)

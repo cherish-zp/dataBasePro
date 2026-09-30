@@ -586,6 +586,30 @@ export interface CHTruncateTableRequest {
   on_cluster?: boolean
 }
 
+// --- ClickHouse 按行删除(控制台结果与表浏览器共用) ---
+
+// 行定位列(与 chCellUpdate.ts 的 CHCellRef 同构:type 为列类型,值可空)。
+export interface CHDeleteRowRef {
+  column: string
+  type: string
+  value: string | null
+}
+
+// where 允许主键/排序键列(类型来自列元数据)。
+export interface CHDeleteRowRequest {
+  connection_id: string
+  database: string
+  table: string
+  where: CHDeleteRowRef[]
+}
+
+// 删除预览:statement 为将执行的 ALTER TABLE ... DELETE 语句全文,
+// matched_rows 为同条件 count() 命中行数(>1 前端警示)。
+export interface CHDeleteRowPreview {
+  statement: string
+  matched_rows: number
+}
+
 export interface CHExecuteRequest {
   connection_id: string
   sql: string
@@ -680,7 +704,9 @@ export interface MysqlExecuteRequest {
 
 // 多语句逐条返回:每条一条结果,失败语句带 error 文本;成功语句带列与行。
 // total_rows 仅在请求带 limit 时返回:-1 表示无法计数(如 SHOW 类语句且
-// 本页已满),undefined 表示未启用分页。
+// 本页已满),undefined 表示未启用分页。source_database/source_table 为单表
+// SELECT 的来源定位(未限定表名按执行库解析),供「删除行」构造 DELETE;
+// 非单表或解析失败时缺省。
 export interface MysqlStatementResult {
   sql: string
   duration_ms: number
@@ -688,12 +714,31 @@ export interface MysqlStatementResult {
   columns?: MysqlColumn[]
   rows?: (string | null)[][]
   total_rows?: number
+  source_database?: string
+  source_table?: string
 }
 
 export interface MysqlTruncateTableRequest {
   connection_id: string
   database: string
   table: string
+}
+
+// --- MySQL/TiDB 按行删除(控制台结果与表浏览器共用) ---
+
+// where 只允许主键列(后端强制);与单元格编辑的定位形状一致,value 为 null 表示 NULL。
+export interface MysqlDeleteRowRequest {
+  connection_id: string
+  database: string
+  table: string
+  where: MysqlCellValue[]
+}
+
+// 删除预览:statement 为将执行的 DELETE 语句全文,matched_rows 为同条件
+// SELECT COUNT(*) 的命中行数(>1 说明定位键不唯一,前端警示)。
+export interface MysqlDeleteRowPreview {
+  statement: string
+  matched_rows: number
 }
 
 // --- MySQL/TiDB 表级 DDL/元数据(连接树右键:删除表/编辑字段/导出) ---
@@ -1151,6 +1196,9 @@ export interface PostgresExecuteRequest {
 
 // 多语句逐条返回:失败语句带 error;成功语句带列与行,单表 SELECT 附主键。
 // total_rows 仅在请求带 limit 时返回:-1 表示无法计数,undefined 表示未启用分页。
+// source_schema/source_relation/source_kind 为单表 SELECT 的来源定位(未限定
+// schema 按执行时 search_path 解析),供「删除行」构造 DELETE;非单表或解析
+// 失败时缺省。
 export interface PostgresStatementResult {
   statement: string
   duration_ms: number
@@ -1161,6 +1209,9 @@ export interface PostgresStatementResult {
   has_rows: boolean
   primary_key?: string[]
   total_rows?: number
+  source_schema?: string
+  source_relation?: string
+  source_kind?: 'table' | 'view' | 'materialized_view'
 }
 
 export interface PostgresTruncateTableRequest {
@@ -1170,6 +1221,25 @@ export interface PostgresTruncateTableRequest {
   relation: string
   // relation 类型:后端按类型生成 TRUNCATE/UPDATE 目标(视图不允许 TRUNCATE)。
   relation_kind: 'table' | 'view' | 'materialized_view'
+}
+
+// --- PostgreSQL 按行删除(控制台结果与表浏览器共用) ---
+
+// where 只允许主键列(后端强制);视图/物化视图后端拒绝删除。
+export interface PostgresDeleteRowRequest {
+  connection_id: string
+  database: string
+  schema: string
+  relation: string
+  relation_kind: 'table' | 'view' | 'materialized_view'
+  where: PostgresCellValue[]
+}
+
+// 删除预览:statement 为将执行的 DELETE 语句全文,matched_rows 为同条件
+// COUNT(*) 命中行数(>1 说明定位键不唯一,前端警示)。
+export interface PostgresDeleteRowPreview {
+  statement: string
+  matched_rows: number
 }
 
 // 单元格行内编辑的定位/写入描述;where 只允许引用主键列(后端强制)。

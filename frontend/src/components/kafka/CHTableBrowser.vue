@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch, type ComponentPublicInstance } from 'vue'
 import { getApi } from '@/api/client'
-import type { CHColumn, CHTableInfo } from '@/api/types'
+import type { CHColumn, CHTableInfo, CHDeleteRowPreview, CHDeleteRowRequest } from '@/api/types'
 import { formatBytes } from '@/utils/bytes'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { useCHCellUpdate } from '@/composables/chCellUpdate'
@@ -269,6 +269,97 @@ async function submitEdit(): Promise<void> {
 const cellUpdateOpen = computed(() => cu.confirmOpen.value)
 const cellUpdateError = computed(() => cu.error.value)
 
+// --- 按行删除:行首危险按钮 → 按主键原值预览 DELETE → 确认执行并刷新。 ---
+
+// 删除行 API:已在 Api 接口声明为可选成员,直接可选链调用。
+function deleteApi() {
+  return getApi()
+}
+
+const delError = ref<string | null>(null)
+const confirmDeleteOpen = ref(false)
+const delStatement = ref('')
+const delMatchedRows = ref(0)
+// 预览通过后暂存的待执行删除请求,确认时原样发给执行。
+let pendingDelete: CHDeleteRowRequest | null = null
+
+// 仅当有主键(排序键)时开放删除;无主键无法唯一定位行。
+const canDelete = computed(() => primaryKey.value.length > 0)
+
+// buildDeleteTarget 组装删除请求:where 只用主键列的当前行原值快照,列类型
+// 元数据来源与单元格编辑 buildTarget 完全一致(null 保持 null,后端拼 IS NULL)。
+function buildDeleteTarget(ri: number): CHDeleteRowRequest {
+  const cols = columns.value
+  const row = rows.value[ri] ?? []
+  return {
+    connection_id: props.connectionId,
+    database: props.database,
+    table: currentTable.value,
+    where: primaryKey.value.map((name) => {
+      const i = cols.findIndex((c) => c.name === name)
+      return { column: name, type: cols[i]?.type ?? 'String', value: row[i] ?? null }
+    }),
+  }
+}
+
+// askDeleteRow 点击行首删除:先预览拿语句全文与命中行数,成功才开确认
+// 弹窗;预览失败写入错误区,不弹框、不残留待执行目标。
+async function askDeleteRow(ri: number): Promise<void> {
+  if (!canDelete.value) return
+  const target = buildDeleteTarget(ri)
+  delError.value = null
+  pendingDelete = target
+  try {
+    const res = await deleteApi().chPreviewDeleteRow?.(target)
+    if (!res) throw new Error('当前环境不支持按行删除')
+    delStatement.value = res.statement
+    delMatchedRows.value = res.matched_rows
+    confirmDeleteOpen.value = true
+  } catch (e) {
+    delError.value = e instanceof Error ? e.message : String(e)
+    pendingDelete = null
+  }
+}
+
+// 弹窗文案:DELETE 语句全文 + 命中行数 + 不可恢复警示;命中多行说明主键
+// 定位不唯一,强警示并禁止执行。
+const deleteMessage = computed(() => {
+  const n = Number(delMatchedRows.value ?? 0)
+  const lines = [`将执行以下语句:\n${delStatement.value}`, `命中 ${n} 行`, '此操作不可恢复。']
+  if (n > 1) lines.push(`主键条件命中 ${n} 行,删除范围超出目标行,已禁止删除。`)
+  return lines.join('\n')
+})
+
+// onDeleteRowConfirm 确认执行:命中多行时直接禁止(弹窗保持,不执行);
+// 成功后关闭弹窗并刷新当前页;失败弹窗保持,错误同时进错误区。
+async function onDeleteRowConfirm(): Promise<void> {
+  if (Number(delMatchedRows.value) > 1) return
+  const target = pendingDelete
+  if (!target) {
+    confirmDeleteOpen.value = false
+    return
+  }
+  try {
+    await deleteApi().chDeleteRow?.(target)
+    pendingDelete = null
+    confirmDeleteOpen.value = false
+    delStatement.value = ''
+    delMatchedRows.value = 0
+    void fetchPage()
+  } catch (e) {
+    delError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+// onDeleteRowCancel 取消:关闭弹窗并清空全部删除状态。
+function onDeleteRowCancel(): void {
+  pendingDelete = null
+  confirmDeleteOpen.value = false
+  delStatement.value = ''
+  delMatchedRows.value = 0
+  delError.value = null
+}
+
 // 弹窗文案:ALTER 语句全文 + 匹配行数;将波及多行时追加警示。
 const cellUpdateMessage = computed(() => {
   const n = Number(cu.matchedRows.value ?? 0)
@@ -328,7 +419,7 @@ async function onCellUpdateConfirm(): Promise<void> {
       <button class="btn ghost danger" type="button" data-test="btn-ch-truncate" @click="confirmTruncate = true">清空数据</button>
     </div>
 
-    <div v-if="error || cellUpdateError" class="msg err" data-test="ch-error">{{ error || cellUpdateError }}</div>
+    <div v-if="error || cellUpdateError || delError" class="msg err" data-test="ch-error">{{ error || cellUpdateError || delError }}</div>
 
     <div v-if="columns.length > 0 && rows.length === 0 && !loading" class="table-wrap">
       <div class="fields-panel" data-test="ch-fields-panel">
@@ -350,6 +441,8 @@ async function onCellUpdateConfirm(): Promise<void> {
       <table class="table" data-test="ch-grid">
         <thead>
           <tr>
+            <!-- 行首操作列:每行挂删除按钮(悬停行显现)。 -->
+            <th class="row-action" aria-hidden="true"></th>
             <th
               v-for="c in columns"
               :key="c.name"
@@ -369,6 +462,19 @@ async function onCellUpdateConfirm(): Promise<void> {
         </thead>
         <tbody>
           <tr v-for="(row, ri) in rows" :key="ri" data-test="ch-row">
+            <!-- 行首删除:危险色小按钮,无主键禁用并以 title 说明原因。 -->
+            <td class="row-action">
+              <button
+                class="mini-btn danger row-del"
+                type="button"
+                data-test="btn-row-delete"
+                :disabled="!canDelete"
+                :title="canDelete ? '删除此行' : '结果无主键,无法定位行'"
+                @click="askDeleteRow(ri)"
+              >
+                ✕
+              </button>
+            </td>
             <td
               v-for="(cell, ci) in row"
               :key="ci"
@@ -393,7 +499,7 @@ async function onCellUpdateConfirm(): Promise<void> {
             </td>
           </tr>
           <tr v-if="rows.length === 0 && !loading">
-            <td :colspan="columns.length || 1" class="empty" data-test="ch-grid-empty">
+            <td :colspan="columns.length + 1" class="empty" data-test="ch-grid-empty">
               <div class="empty-icon">◌</div>
               <div>该表暂无数据</div>
               <div class="empty-hint">数据写入后点击「刷新」查看</div>
@@ -424,6 +530,16 @@ async function onCellUpdateConfirm(): Promise<void> {
       confirm-text="执行"
       @confirm="onCellUpdateConfirm"
       @cancel="cu.cancel()"
+    />
+
+    <!-- 按行删除确认:展示将执行的 DELETE 语句全文、命中行数与不可恢复警示。 -->
+    <ConfirmDialog
+      :show="confirmDeleteOpen"
+      :message="deleteMessage"
+      confirm-text="删除"
+      danger
+      @confirm="onDeleteRowConfirm"
+      @cancel="onDeleteRowCancel"
     />
   </div>
 </template>
@@ -482,6 +598,17 @@ async function onCellUpdateConfirm(): Promise<void> {
 .table td { padding: 5px 10px; border-bottom: 1px solid var(--border); word-break: break-all; max-width: 420px; }
 .cell-null { color: var(--text-tertiary); font-style: italic; }
 .cell-trunc { color: var(--text-secondary); }
+/* 行首操作列:危险色删除小按钮,悬停所在行时显现(对齐 EsTableBrowser)。 */
+.table .row-action { width: 34px; padding: 4px 8px; text-align: center; }
+.mini-btn {
+  flex: none; font-size: 10px; line-height: 1;
+  padding: 2px 5px; border-radius: 4px; cursor: pointer;
+  background: transparent; color: var(--danger); border: 1px solid var(--danger);
+}
+.mini-btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
+.mini-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.row-del { opacity: 0; transition: opacity 0.12s ease; }
+.table tbody tr:hover .row-del { opacity: 1; }
 /* 行内编辑输入框:覆盖单元格内容,细边框紧凑,与表格行高一致。 */
 .cell-editor {
   box-sizing: border-box; width: 100%; min-width: 80px;

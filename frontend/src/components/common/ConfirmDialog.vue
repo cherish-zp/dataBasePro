@@ -1,12 +1,25 @@
 <script setup lang="ts">
 const props = withDefaults(
-  defineProps<{ show: boolean; message: string; confirmText?: string; danger?: boolean }>(),
-  { confirmText: '删除', danger: true },
+  defineProps<{
+    show: boolean
+    message: string
+    confirmText?: string
+    danger?: boolean
+    /** true 时禁用确认按钮(如删除条件命中多行、定位不唯一的危险兜底)。 */
+    confirmDisabled?: boolean
+  }>(),
+  { confirmText: '删除', danger: true, confirmDisabled: false },
 )
 const emit = defineEmits<{ (e: 'confirm'): void; (e: 'cancel'): void }>()
 
 function close(): void {
   emit('cancel')
+}
+
+// 禁用态兜底:合成事件/重复触发绕过原生 disabled 时也不 emit confirm。
+function onConfirm(): void {
+  if (props.confirmDisabled) return
+  emit('confirm')
 }
 </script>
 
@@ -32,7 +45,8 @@ function close(): void {
             :class="{ danger }"
             type="button"
             data-test="confirm-dialog-ok"
-            @click="emit('confirm')"
+            :disabled="props.confirmDisabled"
+            @click="onConfirm"
           >
             {{ confirmText }}
           </button>
@@ -70,7 +84,8 @@ function close(): void {
 .btn.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); }
 .btn.ghost:hover { background: var(--bg-hover); }
 .btn.primary { background: var(--accent); color: #fff; }
-.btn.primary:hover { background: var(--accent-hover); }
+.btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn.primary:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn.primary.danger { background: var(--danger); }
-.btn.primary.danger:hover { background: var(--danger-hover, var(--danger)); }
+.btn.primary.danger:hover:not(:disabled) { background: var(--danger-hover, var(--danger)); }
 </style>

@@ -14,6 +14,10 @@ export function ApplyUpdate(arg1) {
   return window['go']['backend']['App']['ApplyUpdate'](arg1);
 }
 
+export function CHDeleteRow(arg1) {
+  return window['go']['backend']['App']['CHDeleteRow'](arg1);
+}
+
 export function CHExecute(arg1) {
   return window['go']['backend']['App']['CHExecute'](arg1);
 }
@@ -24,6 +28,10 @@ export function CHPageRows(arg1) {
 
 export function CHPreviewCellUpdate(arg1) {
   return window['go']['backend']['App']['CHPreviewCellUpdate'](arg1);
+}
+
+export function CHPreviewDeleteRow(arg1) {
+  return window['go']['backend']['App']['CHPreviewDeleteRow'](arg1);
 }
 
 export function CHTruncateTable(arg1) {
@@ -262,6 +270,10 @@ export function MysqlAlterTable(arg1) {
   return window['go']['backend']['App']['MysqlAlterTable'](arg1);
 }
 
+export function MysqlDeleteRow(arg1) {
+  return window['go']['backend']['App']['MysqlDeleteRow'](arg1);
+}
+
 export function MysqlDropTable(arg1) {
   return window['go']['backend']['App']['MysqlDropTable'](arg1);
 }
@@ -282,6 +294,10 @@ export function MysqlPreviewCellUpdate(arg1) {
   return window['go']['backend']['App']['MysqlPreviewCellUpdate'](arg1);
 }
 
+export function MysqlPreviewDeleteRow(arg1) {
+  return window['go']['backend']['App']['MysqlPreviewDeleteRow'](arg1);
+}
+
 export function MysqlTableColumns(arg1) {
   return window['go']['backend']['App']['MysqlTableColumns'](arg1);
 }
@@ -298,6 +314,10 @@ export function OpenURL(arg1) {
   return window['go']['backend']['App']['OpenURL'](arg1);
 }
 
+export function PostgresDeleteRow(arg1) {
+  return window['go']['backend']['App']['PostgresDeleteRow'](arg1);
+}
+
 export function PostgresExecute(arg1) {
   return window['go']['backend']['App']['PostgresExecute'](arg1);
 }
@@ -308,6 +328,10 @@ export function PostgresPageRows(arg1) {
 
 export function PostgresPreviewCellUpdate(arg1) {
   return window['go']['backend']['App']['PostgresPreviewCellUpdate'](arg1);
+}
+
+export function PostgresPreviewDeleteRow(arg1) {
+  return window['go']['backend']['App']['PostgresPreviewDeleteRow'](arg1);
 }
 
 export function PostgresTruncateTable(arg1) {

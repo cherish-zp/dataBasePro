@@ -8,6 +8,9 @@ const appMocks = vi.hoisted(() => ({
   PostgresTruncateTable: vi.fn(),
   PostgresPreviewCellUpdate: vi.fn(),
   PostgresUpdateCell: vi.fn(),
+  // 按行删除:预览 DELETE 语句全文与命中行数 / 执行删除。
+  PostgresPreviewDeleteRow: vi.fn(),
+  PostgresDeleteRow: vi.fn(),
 }))
 vi.mock('../../../wailsjs/go/backend/App', () => appMocks)
 const app = appMocks
@@ -292,5 +295,165 @@ describe('P1/P2 修正', () => {
     expect(cell.attributes('tabindex')).toBe('0')
     await cell.trigger('keydown.enter')
     expect(wrapper.find('[data-test="pg-cell-editor"]').exists()).toBe(true)
+  })
+})
+
+describe('按行删除', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    document.body.innerHTML = ''
+    appMocks.PostgresDeleteRow.mockResolvedValue(undefined)
+  })
+
+  // 第 ri 行的行首删除按钮。
+  function deleteBtn(wrapper: VueWrapper, row: number) {
+    return wrapper.findAll('[data-test="pg-row"]')[row].find('[data-test="btn-row-delete"]')
+  }
+
+  it('有主键的表每行渲染行首删除按钮且可点', async () => {
+    appMocks.PostgresPageRows.mockResolvedValue(page())
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    const btns = wrapper.findAll('[data-test="btn-row-delete"]')
+    expect(btns).toHaveLength(2)
+    expect((btns[0].element as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('无主键时删除按钮禁用并以 title 说明原因', async () => {
+    appMocks.PostgresPageRows.mockResolvedValue(page({ primary_key: [] }))
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    const btn = wrapper.find('[data-test="btn-row-delete"]')
+    expect(btn.exists()).toBe(true)
+    expect((btn.element as HTMLButtonElement).disabled).toBe(true)
+    expect(btn.attributes('title')).toContain('结果无主键,无法定位行')
+  })
+
+  it('视图与物化视图不渲染删除按钮', async () => {
+    appMocks.PostgresPageRows.mockResolvedValue(page())
+    const view = mountBrowser({ relationType: 'view' })
+    await waitCols(view)
+    expect(view.find('[data-test="btn-row-delete"]').exists()).toBe(false)
+    view.unmount()
+    const mat = mountBrowser({ relationType: 'materialized_view' })
+    await waitCols(mat)
+    expect(mat.find('[data-test="btn-row-delete"]').exists()).toBe(false)
+  })
+
+  it('点击删除:按主键原值预览 DELETE,弹窗含语句全文、命中行数与不可恢复', async () => {
+    appMocks.PostgresPageRows.mockResolvedValue(page())
+    appMocks.PostgresPreviewDeleteRow.mockResolvedValue({
+      statement: "DELETE FROM public.users WHERE id = '1'",
+      matched_rows: 1,
+    })
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await deleteBtn(wrapper, 0).trigger('click')
+    await vi.waitFor(() => {
+      expect(appMocks.PostgresPreviewDeleteRow).toHaveBeenCalledWith({
+        connection_id: 'pg1',
+        database: 'shop',
+        schema: 'public',
+        relation: 'users',
+        relation_kind: 'table',
+        where: [{ column: 'id', value: '1' }],
+      })
+    })
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    const msg = document.body.querySelector('[data-test="confirm-dialog-message"]')?.textContent ?? ''
+    expect(msg).toContain("DELETE FROM public.users WHERE id = '1'")
+    expect(msg).toContain('命中 1 行')
+    expect(msg).toContain('此操作不可恢复')
+    expect(msg).not.toContain('已禁止删除')
+  })
+
+  it('命中多行:弹窗强警示,确认不执行、不刷新且弹窗保持', async () => {
+    appMocks.PostgresPageRows.mockResolvedValue(page())
+    appMocks.PostgresPreviewDeleteRow.mockResolvedValue({
+      statement: "DELETE FROM public.users WHERE id = '1'",
+      matched_rows: 3,
+    })
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await deleteBtn(wrapper, 0).trigger('click')
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    const msg = document.body.querySelector('[data-test="confirm-dialog-message"]')?.textContent ?? ''
+    expect(msg).toContain('命中 3 行')
+    expect(msg).toContain('已禁止删除')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    expect(appMocks.PostgresDeleteRow).not.toHaveBeenCalled()
+    // 不执行也就不刷新:仍只有初始 1 次分页请求。
+    expect(appMocks.PostgresPageRows.mock.calls.length).toBe(1)
+  })
+
+  it('确认后执行删除并刷新当前页', async () => {
+    appMocks.PostgresPageRows.mockResolvedValue(page())
+    appMocks.PostgresPreviewDeleteRow.mockResolvedValue({
+      statement: "DELETE FROM public.users WHERE id = '2'",
+      matched_rows: 1,
+    })
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await deleteBtn(wrapper, 1).trigger('click')
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    const callsBefore = appMocks.PostgresPageRows.mock.calls.length
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(appMocks.PostgresDeleteRow).toHaveBeenCalledWith({
+        connection_id: 'pg1',
+        database: 'shop',
+        schema: 'public',
+        relation: 'users',
+        relation_kind: 'table',
+        where: [{ column: 'id', value: '2' }],
+      })
+    })
+    // 删除成功后重发当前页请求。
+    await vi.waitFor(() => {
+      expect(appMocks.PostgresPageRows.mock.calls.length).toBe(callsBefore + 1)
+    })
+  })
+
+  it('删除执行失败在错误区展示且不刷新', async () => {
+    appMocks.PostgresPageRows.mockResolvedValue(page())
+    appMocks.PostgresPreviewDeleteRow.mockResolvedValue({
+      statement: "DELETE FROM public.users WHERE id = '1'",
+      matched_rows: 1,
+    })
+    appMocks.PostgresDeleteRow.mockRejectedValue(new Error('删除失败:权限不足'))
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await deleteBtn(wrapper, 0).trigger('click')
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-error"]').text()).toContain('删除失败:权限不足')
+    })
+    expect(appMocks.PostgresDeleteRow).toHaveBeenCalledTimes(1)
+    expect(appMocks.PostgresPageRows.mock.calls.length).toBe(1)
+  })
+
+  it('删除预览失败在错误区展示且不弹确认框', async () => {
+    appMocks.PostgresPageRows.mockResolvedValue(page())
+    appMocks.PostgresPreviewDeleteRow.mockRejectedValue(new Error('删除预览失败'))
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await deleteBtn(wrapper, 0).trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-error"]').text()).toContain('删除预览失败')
+    })
+    expect(confirmDialog()).toBeNull()
+    expect(appMocks.PostgresDeleteRow).not.toHaveBeenCalled()
   })
 })

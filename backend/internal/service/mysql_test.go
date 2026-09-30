@@ -201,15 +201,160 @@ func TestRequireMysqlPrimaryKey(t *testing.T) {
 }
 
 func TestValidateMysqlEditWhere(t *testing.T) {
-	if err := validateMysqlEditWhere(nil, []string{"id"}); err == nil {
+	if err := validateMysqlEditWhere(nil, []string{"id"}, []string{"id", "name"}); err == nil {
 		t.Fatal("empty where must be rejected")
 	}
-	err := validateMysqlEditWhere([]model.MysqlCellValue{{Column: "name", Value: strPtrOf("x")}}, []string{"id"})
-	if err == nil || !strings.Contains(err.Error(), "主键") {
-		t.Fatalf("non-primary-key where column must be rejected, got %v", err)
-	}
-	if err := validateMysqlEditWhere([]model.MysqlCellValue{{Column: "id", Value: strPtrOf("1")}}, []string{"id", "tenant"}); err != nil {
+	// 主键模式:条件列 ⊆ 主键列。
+	if err := validateMysqlEditWhere([]model.MysqlCellValue{{Column: "id", Value: strPtrOf("1")}}, []string{"id", "tenant"}, []string{"id", "name", "tenant"}); err != nil {
 		t.Fatalf("primary-key where must pass: %v", err)
+	}
+	// 整行模式:条件列集合 == 表全部列集合(顺序无关)。
+	wholeRow := []model.MysqlCellValue{
+		{Column: "name", Value: strPtrOf("x")},
+		{Column: "id", Value: strPtrOf("1")},
+	}
+	if err := validateMysqlEditWhere(wholeRow, nil, []string{"id", "name"}); err != nil {
+		t.Fatalf("whole-row where must pass without primary key: %v", err)
+	}
+	if err := validateMysqlEditWhere(wholeRow, []string{"id"}, []string{"id", "name"}); err != nil {
+		t.Fatalf("whole-row where must pass with primary key too: %v", err)
+	}
+	// 混合/缺失列:非主键列且不覆盖整行 → 拒绝。
+	err := validateMysqlEditWhere([]model.MysqlCellValue{{Column: "name", Value: strPtrOf("x")}}, []string{"id"}, []string{"id", "name"})
+	if err == nil || !strings.Contains(err.Error(), "主键") || !strings.Contains(err.Error(), "整行") {
+		t.Fatalf("non-primary-key partial where must be rejected, got %v", err)
+	}
+	// 缺失列:集合差一列(整行不完整)→ 拒绝。
+	if err := validateMysqlEditWhere([]model.MysqlCellValue{{Column: "id", Value: strPtrOf("1")}}, nil, []string{"id", "name"}); err == nil {
+		t.Fatal("partial whole-row where on pk-less table must be rejected")
+	}
+	// 重复列:集合大小不足,不算整行 → 拒绝。
+	if err := validateMysqlEditWhere([]model.MysqlCellValue{{Column: "id", Value: strPtrOf("1")}, {Column: "id", Value: strPtrOf("2")}}, nil, []string{"id", "name"}); err == nil {
+		t.Fatal("duplicate-column where must not count as whole-row mode")
+	}
+	// 无主键且非整行:沿用表无主键文案。
+	err = validateMysqlEditWhere([]model.MysqlCellValue{{Column: "name", Value: strPtrOf("x")}}, nil, []string{"id", "name"})
+	if err == nil || !strings.Contains(err.Error(), "表无主键") {
+		t.Fatalf("pk-less partial where must report missing primary key, got %v", err)
+	}
+}
+
+// --- 集成:单元格更新按主键/整行两种模式定位(fake 驱动,不拨号) ---
+
+// TestMysqlPreviewCellUpdatePrimaryKeyLocate 回归主键模式:表有主键、条件列
+// 仅主键列时预览放行,COUNT 与展示语句按同一 WHERE 生成。
+func TestMysqlPreviewCellUpdatePrimaryKeyLocate(t *testing.T) {
+	conn := &fakeMysqlDrvConn{
+		pkByTable: map[string][]string{"app.users": {"id"}},
+		countRows: &fakeMysqlDrvRows{cols: []string{"COUNT(*)"}, vals: [][]driver.Value{{int64(1)}}},
+	}
+	c, created := newFakeMysqlClient(t, conn)
+	set := model.MysqlCellValue{Column: "name", Value: strPtrOf("carol")}
+	where := []model.MysqlCellValue{{Column: "id", Value: strPtrOf("1")}}
+	preview, err := c.PreviewCellUpdate(context.Background(), "app", "users", set, where)
+	if err != nil {
+		t.Fatalf("PreviewCellUpdate: %v", err)
+	}
+	if preview.MatchedRows != 1 {
+		t.Fatalf("matched rows = %d, want 1", preview.MatchedRows)
+	}
+	wantStmt := "UPDATE `app`.`users` SET `name` = 'carol' WHERE `id` = '1'"
+	if preview.Statement != wantStmt {
+		t.Fatalf("statement:\n got %s\nwant %s", preview.Statement, wantStmt)
+	}
+	var countQuery string
+	for _, cn := range *created {
+		for _, q := range cn.queries {
+			if strings.Contains(q, "COUNT(*)") {
+				countQuery = q
+			}
+		}
+	}
+	if want := "SELECT COUNT(*) FROM `app`.`users` WHERE `id` = ?"; countQuery != want {
+		t.Fatalf("count query:\n got %s\nwant %s", countQuery, want)
+	}
+}
+
+// TestMysqlCellUpdateWholeRowLocate 整行定位:无主键表条件列覆盖全部列(含
+// NULL 列)时预览与执行都放行;NULL 列必须渲染为 IS NULL 才能命中。
+func TestMysqlCellUpdateWholeRowLocate(t *testing.T) {
+	conn := &fakeMysqlDrvConn{
+		colsByTable: map[string][][2]string{"app.users": {{"id", "PRI"}, {"name", ""}, {"note", ""}}},
+		countRows:   &fakeMysqlDrvRows{cols: []string{"COUNT(*)"}, vals: [][]driver.Value{{int64(1)}}},
+	}
+	c, created := newFakeMysqlClient(t, conn)
+	set := model.MysqlCellValue{Column: "name", Value: strPtrOf("bob")}
+	where := []model.MysqlCellValue{
+		{Column: "id", Value: strPtrOf("2")},
+		{Column: "name", Value: strPtrOf("alice")},
+		{Column: "note"}, // NULL 原值 → IS NULL
+	}
+	ctx := context.Background()
+	preview, err := c.PreviewCellUpdate(ctx, "app", "users", set, where)
+	if err != nil {
+		t.Fatalf("whole-row preview must pass: %v", err)
+	}
+	wantStmt := "UPDATE `app`.`users` SET `name` = 'bob' WHERE `id` = '2' AND `name` = 'alice' AND `note` IS NULL"
+	if preview.Statement != wantStmt {
+		t.Fatalf("statement:\n got %s\nwant %s", preview.Statement, wantStmt)
+	}
+	if preview.MatchedRows != 1 {
+		t.Fatalf("matched rows = %d, want 1", preview.MatchedRows)
+	}
+	if err := c.UpdateCell(ctx, "app", "users", set, where); err != nil {
+		t.Fatalf("whole-row update must pass: %v", err)
+	}
+	var countQuery, updateExec string
+	for _, cn := range *created {
+		for _, q := range cn.queries {
+			if strings.Contains(q, "COUNT(*)") {
+				countQuery = q
+			}
+		}
+		updateExec = strings.Join(cn.execs, ";")
+	}
+	if want := "SELECT COUNT(*) FROM `app`.`users` WHERE `id` = ? AND `name` = ? AND `note` IS NULL"; countQuery != want {
+		t.Fatalf("count query:\n got %s\nwant %s", countQuery, want)
+	}
+	if want := "UPDATE `app`.`users` SET `name` = ? WHERE `id` = ? AND `name` = ? AND `note` IS NULL"; updateExec != want {
+		t.Fatalf("update exec:\n got %s\nwant %s", updateExec, want)
+	}
+}
+
+// TestMysqlUpdateCellRejectsMixedWhere 混合定位(非主键列且不覆盖整行)必须
+// 拒绝,主键表与无主键表都要拦住。
+func TestMysqlUpdateCellRejectsMixedWhere(t *testing.T) {
+	set := model.MysqlCellValue{Column: "note", Value: strPtrOf("x")}
+	where := []model.MysqlCellValue{{Column: "name", Value: strPtrOf("alice")}}
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		conn *fakeMysqlDrvConn
+		want string
+	}{
+		{
+			name: "主键表",
+			conn: &fakeMysqlDrvConn{
+				pkByTable:   map[string][]string{"app.users": {"id"}},
+				colsByTable: map[string][][2]string{"app.users": {{"id", "PRI"}, {"name", ""}}},
+			},
+			want: "仅支持按主键或整行定位",
+		},
+		{
+			name: "无主键表缺列",
+			conn: &fakeMysqlDrvConn{
+				colsByTable: map[string][][2]string{"app.users": {{"id", ""}, {"name", ""}}},
+			},
+			want: "表无主键",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newFakeMysqlClient(t, tc.conn)
+			err := c.UpdateCell(ctx, "app", "users", set, where)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("mixed where must be rejected with %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
 
@@ -469,6 +614,10 @@ type fakeMysqlDrvConn struct {
 	pkByTable map[string][]string
 	pkErr     error
 	pkArgs    [][]driver.Value
+	// colsByTable 按 "schema.table" 给出全部列的 (列名, column_key) 有序表,
+	// 模拟 information_schema.columns 的全列行;命中时优先于 pkByTable 渲染,
+	// 供整行定位校验(条件列集合须等于表全部列)的集成测试使用。
+	colsByTable map[string][][2]string
 	// queryRows 非空时,业务查询(非 information_schema)返回该结果集,
 	// 供 collectMysqlRows 的 wire 形状测试使用。
 	queryRows *fakeMysqlDrvRows
@@ -479,16 +628,21 @@ type fakeMysqlDrvConn struct {
 
 // pkResultRows 把桩数据渲染成 information_schema.columns 形状的结果集
 // (column_name, column_type, column_comment, column_key),PRI 行按给定
-// 顺序(即 ordinal 序)逐行给出。
+// 顺序(即 ordinal 序)逐行给出;colsByTable 命中时渲染其全列行。
 func (c *fakeMysqlDrvConn) pkResultRows(args []driver.Value) *fakeMysqlDrvRows {
-	var pk []string
-	if len(args) >= 2 {
-		pk = c.pkByTable[args[0].(string)+"."+args[1].(string)]
-	}
 	cols := []string{"column_name", "column_type", "column_comment", "column_key"}
 	var vals [][]driver.Value
-	for _, name := range pk {
-		vals = append(vals, []driver.Value{name, "bigint", "", "PRI"})
+	if len(args) >= 2 {
+		key := args[0].(string) + "." + args[1].(string)
+		if all, ok := c.colsByTable[key]; ok {
+			for _, col := range all {
+				vals = append(vals, []driver.Value{col[0], "bigint", "", col[1]})
+			}
+			return &fakeMysqlDrvRows{cols: cols, vals: vals}
+		}
+		for _, name := range c.pkByTable[key] {
+			vals = append(vals, []driver.Value{name, "bigint", "", "PRI"})
+		}
 	}
 	return &fakeMysqlDrvRows{cols: cols, vals: vals}
 }
@@ -1153,6 +1307,66 @@ func TestMysqlExecutePerStatementPrimaryKey(t *testing.T) {
 	}
 	if !reflect.DeepEqual(results[2].PrimaryKey, []string{"order_id"}) {
 		t.Fatalf("orders select must carry its own pk, got %+v", results[2].PrimaryKey)
+	}
+}
+
+// --- Execute:单表 SELECT 结果附带来源库/表(删除行定位) ---
+
+func TestMysqlExecuteFillsSourceForSingleTableSelect(t *testing.T) {
+	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{
+		"app.users":  {"id"},
+		"other.logs": {"lid"},
+	}}
+	c, _ := newFakeMysqlClient(t, conn)
+	c.defaultDB = "app"
+	results, err := c.Execute(context.Background(), "",
+		"SELECT * FROM users; SELECT id FROM other.logs WHERE lid > 1", 0, 0)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %+v", results)
+	}
+	// 未限定表名:来源库 = 语句执行的当前生效库(连接默认库)。
+	if results[0].SourceDatabase != "app" || results[0].SourceTable != "users" {
+		t.Fatalf("unqualified select must resolve source to (app, users), got (%q, %q)",
+			results[0].SourceDatabase, results[0].SourceTable)
+	}
+	// 显式库限定:来源库取 SQL 里的库名。
+	if results[1].SourceDatabase != "other" || results[1].SourceTable != "logs" {
+		t.Fatalf("qualified select must resolve source to (other, logs), got (%q, %q)",
+			results[1].SourceDatabase, results[1].SourceTable)
+	}
+}
+
+func TestMysqlExecuteSourceGating(t *testing.T) {
+	conn := &fakeMysqlDrvConn{pkByTable: map[string][]string{"app.logs": nil}}
+	c, _ := newFakeMysqlClient(t, conn)
+	results, err := c.Execute(context.Background(), "app",
+		"SELECT * FROM a JOIN b ON a.id = b.id; SELECT * FROM logs; SELECT 1", 0, 0)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %+v", results)
+	}
+	// 非单表(JOIN):来源不下发,前端无从定位删除。
+	if results[0].SourceDatabase != "" || results[0].SourceTable != "" {
+		t.Fatalf("join must not carry source, got (%q, %q)",
+			results[0].SourceDatabase, results[0].SourceTable)
+	}
+	// 无主键表:主键为空但来源仍下发(前端据此提示「该表无主键」)。
+	if len(results[1].PrimaryKey) != 0 {
+		t.Fatalf("pk-less table must leave primary key empty, got %+v", results[1].PrimaryKey)
+	}
+	if results[1].SourceDatabase != "app" || results[1].SourceTable != "logs" {
+		t.Fatalf("pk-less single table must still carry source, got (%q, %q)",
+			results[1].SourceDatabase, results[1].SourceTable)
+	}
+	// 无 FROM(SELECT 1):既无主键也无来源。
+	if results[2].SourceDatabase != "" || results[2].SourceTable != "" {
+		t.Fatalf("from-less select must not carry source, got (%q, %q)",
+			results[2].SourceDatabase, results[2].SourceTable)
 	}
 }
 

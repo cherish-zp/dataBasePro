@@ -144,6 +144,9 @@ type PostgresCellUpdatePreview struct {
 // PostgresStatementResult is one statement's execution outcome. TotalRows 仅
 // 在请求启用服务端分页时出现:nil=未启用(不下发);≥0=精确总数(包装
 // COUNT(*) 查询);-1=无法计数(如 EXPLAIN/SHOW 类语句取满一页)。
+// SourceSchema/SourceRelation/SourceKind 是单表 SELECT 来源的定位信息
+// (未限定 schema 按语句执行的 search_path 解析),供前端「删除行」构造
+// DELETE;非单表、跨库限定或解析失败时不下发(omitempty)。
 type PostgresStatementResult struct {
 	Statement    string           `json:"statement"`
 	HasRows      bool             `json:"has_rows"`
@@ -153,5 +156,9 @@ type PostgresStatementResult struct {
 	Rows         [][]*string      `json:"rows,omitempty"`
 	PrimaryKey   []string         `json:"primary_key,omitempty"`
 	AffectedRows int64            `json:"affected_rows"`
-	TotalRows    *int64           `json:"total_rows,omitempty"`
+	// SourceSchema/SourceRelation/SourceKind 单表 SELECT 的来源(omitempty)。
+	SourceSchema   string               `json:"source_schema,omitempty"`
+	SourceRelation string               `json:"source_relation,omitempty"`
+	SourceKind     PostgresRelationKind `json:"source_kind,omitempty"`
+	TotalRows      *int64               `json:"total_rows,omitempty"`
 }

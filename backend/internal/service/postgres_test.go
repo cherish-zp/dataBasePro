@@ -577,6 +577,84 @@ func TestPostgresExecuteWithoutLimitKeepsLegacyBehavior(t *testing.T) {
 	}
 }
 
+// --- Execute:单表 SELECT 结果附带来源 schema/relation/kind(删除行定位) ---
+
+// TestPostgresExecuteFillsSourceForSingleTableSelect 锁定来源回填契约:
+// 未限定 schema 按语句执行的 search_path 解析,kind 取 pg_class.relkind 的
+// 语义映射(实体表 → table)。
+func TestPostgresExecuteFillsSourceForSingleTableSelect(t *testing.T) {
+	conn := &recordingPGConn{rowsFor: func(query string) (driver.Rows, error) {
+		switch {
+		case strings.Contains(query, "indisprimary"):
+			return &staticPGRows{columns: []string{"coalesce"}, rows: [][]driver.Value{{`["id"]`}}}, nil
+		case strings.Contains(query, "relkind"):
+			return &staticPGRows{columns: []string{"relkind"}, rows: [][]driver.Value{{"r"}}}, nil
+		}
+		return &staticPGRows{columns: []string{"id"}, rows: [][]driver.Value{{int64(7)}}}, nil
+	}}
+	client := newPagedPGClient(t, conn)
+	res, err := client.Execute(context.Background(), "app", "public", "SELECT * FROM users", 0, 0)
+	if err != nil || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	r := res[0]
+	if r.SourceSchema != "public" || r.SourceRelation != "users" {
+		t.Fatalf("source must resolve to (public, users), got (%q, %q)", r.SourceSchema, r.SourceRelation)
+	}
+	if r.SourceKind != model.PostgresRelationKindTable {
+		t.Fatalf("ordinary table must report kind table, got %q", r.SourceKind)
+	}
+}
+
+// TestPostgresExecuteSourceGating 锁定不下发/部分下发的边界:非单表(JOIN)
+// 无来源;视图回填 kind=view 供前端禁删;relkind 查询失败时 schema/relation
+// 保留、kind 留空(前端禁删)。
+func TestPostgresExecuteSourceGating(t *testing.T) {
+	conn := &recordingPGConn{rowsFor: func(query string) (driver.Rows, error) {
+		switch {
+		case strings.Contains(query, "indisprimary"):
+			return &staticPGRows{columns: []string{"coalesce"}, rows: [][]driver.Value{{`["id"]`}}}, nil
+		case strings.Contains(query, "relkind"):
+			return &staticPGRows{columns: []string{"relkind"}, rows: [][]driver.Value{{"v"}}}, nil
+		}
+		return &staticPGRows{columns: []string{"id"}, rows: [][]driver.Value{{int64(1)}}}, nil
+	}}
+	client := newPagedPGClient(t, conn)
+	res, err := client.Execute(context.Background(), "app", "public",
+		"SELECT * FROM a JOIN b ON a.id = b.id; SELECT * FROM v_items", 0, 0)
+	if err != nil || res[0].Error != "" || res[1].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if res[0].SourceSchema != "" || res[0].SourceRelation != "" || res[0].SourceKind != "" {
+		t.Fatalf("join must not carry source, got (%q, %q, %q)",
+			res[0].SourceSchema, res[0].SourceRelation, res[0].SourceKind)
+	}
+	if res[1].SourceSchema != "public" || res[1].SourceRelation != "v_items" {
+		t.Fatalf("view select must carry source, got (%q, %q)",
+			res[1].SourceSchema, res[1].SourceRelation)
+	}
+	if res[1].SourceKind != model.PostgresRelationKindView {
+		t.Fatalf("view must report kind view, got %q", res[1].SourceKind)
+	}
+
+	// relkind 查询失败:kind 留空,schema/relation 不受影响,语句不报错。
+	failConn := &recordingPGConn{rowsFor: func(query string) (driver.Rows, error) {
+		if strings.Contains(query, "relkind") {
+			return nil, errors.New("pg_class unavailable")
+		}
+		return &staticPGRows{columns: []string{"id"}, rows: [][]driver.Value{{int64(1)}}}, nil
+	}}
+	failClient := newPagedPGClient(t, failConn)
+	res, err = failClient.Execute(context.Background(), "app", "public", "SELECT * FROM users", 0, 0)
+	if err != nil || res[0].Error != "" {
+		t.Fatalf("kind lookup failure must not fail the statement: %v %+v", err, res)
+	}
+	if res[0].SourceSchema != "public" || res[0].SourceRelation != "users" || res[0].SourceKind != "" {
+		t.Fatalf("kind failure must keep source names and leave kind empty, got (%q, %q, %q)",
+			res[0].SourceSchema, res[0].SourceRelation, res[0].SourceKind)
+	}
+}
+
 // --- P0-1:数据修改 CTE 禁用包装与计数 ---
 
 // postgresStatementContainsDML:顶层(深度 0)与 WITH 之后第一层 CTE 子查询

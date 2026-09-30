@@ -525,8 +525,8 @@ func (c *MysqlClient) runMysqlStatements(ctx context.Context, exec mysqlExecutor
 		// 单表 SELECT 附带主键列(information_schema,与 PageRows 同源),
 		// 供前端「复制为 INSERT」可选剥离主键;任何失败静默置空,不计入
 		// 语句耗时,不影响语句结果。主键解析的默认库用当前生效库
-		// (目标库名切换后跟随目标库)。
-		res.PrimaryKey = c.mysqlStatementPrimaryKey(ctx, exec, stmt, curSchema)
+		// (目标库名切换后跟随目标库)。来源库/表一并透出(删除行定位)。
+		res.PrimaryKey, res.SourceDatabase, res.SourceTable = c.mysqlStatementPrimaryKey(ctx, exec, stmt, curSchema)
 		out = append(out, res)
 	}
 	return out, nil
@@ -568,25 +568,30 @@ func countMysqlWrapped(ctx context.Context, exec mysqlExecutor, stmt string) *in
 }
 
 // mysqlStatementPrimaryKey 在语句是单表 SELECT 时查它的主键列
-// (information_schema.columns,与 PageRows 的 primary_key 同源同序)。
-// 未限定表名按 defaultSchema 解析;解析失败、无库可解析、查询报错、无主键
-// 一律返回 nil,绝不影响语句本身的执行结果。
-func (c *MysqlClient) mysqlStatementPrimaryKey(ctx context.Context, exec mysqlExecutor, stmt, defaultSchema string) []string {
+// (information_schema.columns,与 PageRows 的 primary_key 同源同序),并
+// 一并返回解析到的来源库/表,供前端「删除行」定位(未限定表名按
+// defaultSchema 解析)。来源在单表解析与库名解析成功后即返回(与主键有无
+// 无关,前端据此区分「无主键」与「非单表」两种禁用原因);主键查询报错、
+// 无库可解析、非单表一律返回零值,绝不影响语句本身的执行结果。
+func (c *MysqlClient) mysqlStatementPrimaryKey(ctx context.Context, exec mysqlExecutor, stmt, defaultSchema string) (pk []string, sourceDatabase, sourceTable string) {
 	schema, table, ok := singleTableName(stmt)
 	if !ok {
-		return nil
+		return nil, "", ""
 	}
 	if schema == "" {
 		schema = defaultSchema
 	}
 	if strings.TrimSpace(schema) == "" {
-		return nil // 未限定且连接无默认库,information_schema 无从查起
+		return nil, "", "" // 未限定且连接无默认库,information_schema 无从查起
 	}
-	_, pk, err := c.tableColumnsWithPK(ctx, exec, schema, table)
-	if err != nil || len(pk) == 0 {
-		return nil
+	_, pkCols, err := c.tableColumnsWithPK(ctx, exec, schema, table)
+	if err != nil {
+		return nil, "", "" // 表可能已不存在等;来源与主键都不下发
 	}
-	return pk
+	if len(pkCols) == 0 {
+		return nil, schema, table // 单表来源已知,但表无主键
+	}
+	return pkCols, schema, table
 }
 
 // singleTableName 判断一条 SQL 是否为「单表 SELECT」:首关键字 SELECT,
@@ -863,21 +868,22 @@ func (c *MysqlClient) UpdateCell(ctx context.Context, database, table string, se
 	return nil
 }
 
-// validateCellEdit enforces the WHERE contract for cell edits: the table must
-// have a primary key (information_schema, same source as PageRows metadata)
-// and every where condition must reference a primary key column.
+// validateCellEdit enforces the WHERE contract for cell edits: rows must be
+// located either by primary key (information_schema, same source as PageRows
+// metadata) or — for primary-key-less tables — by the table's full column set.
 func (c *MysqlClient) validateCellEdit(ctx context.Context, database, table string, where []model.MysqlCellValue) error {
 	if strings.TrimSpace(table) == "" {
 		return errors.New("表名不能为空")
 	}
-	_, pk, err := c.tableColumnsWithPK(ctx, c.db, database, table)
+	cols, pk, err := c.tableColumnsWithPK(ctx, c.db, database, table)
 	if err != nil {
 		return err
 	}
-	if err := requireMysqlPrimaryKey(pk); err != nil {
-		return err
+	allColumns := make([]string, len(cols))
+	for i, col := range cols {
+		allColumns[i] = col.Name
 	}
-	return validateMysqlEditWhere(where, pk)
+	return validateMysqlEditWhere(where, pk, allColumns)
 }
 
 // requireMysqlPrimaryKey rejects edits on primary-key-less tables.
@@ -888,25 +894,60 @@ func requireMysqlPrimaryKey(pk []string) error {
 	return nil
 }
 
-// validateMysqlEditWhere verifies the WHERE conditions: non-empty, every
-// condition column named and every column part of the primary key.
-func validateMysqlEditWhere(where []model.MysqlCellValue, pk []string) error {
+// validateMysqlEditWhere verifies the WHERE conditions locate rows in one of
+// two modes: primary-key mode (every condition column is part of the primary
+// key, the precise default) or whole-row mode (the condition column set equals
+// the table's full column set, order-insensitive — the fallback for
+// primary-key-less tables). 其它混合/缺失列组合一律拒绝,避免误伤面过大的
+// UPDATE;集合判断基于 information_schema 的表定义列序与列名。
+func validateMysqlEditWhere(where []model.MysqlCellValue, pk, allColumns []string) error {
 	if len(where) == 0 {
 		return errors.New("where 条件不能为空:已拒绝无定位的全表 UPDATE")
 	}
-	pkSet := make(map[string]bool, len(pk))
-	for _, name := range pk {
-		pkSet[name] = true
-	}
+	whereCols := make([]string, 0, len(where))
+	whereSet := make(map[string]bool, len(where))
 	for _, cond := range where {
 		if strings.TrimSpace(cond.Column) == "" {
 			return errors.New("where 条件列名不能为空")
 		}
-		if !pkSet[cond.Column] {
-			return fmt.Errorf("where 条件列 %q 不是主键列,仅允许按主键定位", cond.Column)
+		whereCols = append(whereCols, cond.Column)
+		whereSet[cond.Column] = true
+	}
+	// 主键模式:表有主键且条件列全部属于主键列。
+	if len(pk) > 0 {
+		pkSet := make(map[string]bool, len(pk))
+		for _, name := range pk {
+			pkSet[name] = true
+		}
+		pkMode := true
+		for _, name := range whereCols {
+			if !pkSet[name] {
+				pkMode = false
+				break
+			}
+		}
+		if pkMode {
+			return nil
 		}
 	}
-	return nil
+	// 整行模式:条件列集合与表全部列集合恰好相等(长度相等且逐一同名,
+	// 顺序无关;重复列因集合大小不等而不匹配)。
+	if len(whereCols) == len(allColumns) && len(whereSet) == len(allColumns) {
+		wholeRow := true
+		for _, name := range allColumns {
+			if !whereSet[name] {
+				wholeRow = false
+				break
+			}
+		}
+		if wholeRow {
+			return nil
+		}
+	}
+	if len(pk) == 0 {
+		return requireMysqlPrimaryKey(pk)
+	}
+	return errors.New("where 条件列必须是主键列或整行所有列,仅支持按主键或整行定位")
 }
 
 // buildMysqlCellUpdateStatement renders the display text of the full UPDATE:

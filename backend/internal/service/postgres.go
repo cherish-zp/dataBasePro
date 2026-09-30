@@ -432,6 +432,16 @@ func (c *PostgresClient) Execute(ctx context.Context, database, schema, sqlText 
 					res.PrimaryKey = pk
 				}
 				res.Columns = markPostgresPrimaryKeys(cols, res.PrimaryKey)
+				// 来源回填(删除行定位):跨库限定(db.schema.rel 指向非当前
+				// 执行库)时无法安全构造 DELETE,不下发来源;schema/relation
+				// 解析成功即下发,kind 尽力查询(失败留空,前端禁用删除)。
+				if table.database == "" || strings.EqualFold(table.database, database) {
+					res.SourceSchema = table.schema
+					res.SourceRelation = table.relation
+					if kind, kindErr := postgresRelationKind(ctx, conn, table.schema, table.relation); kindErr == nil {
+						res.SourceKind = kind
+					}
+				}
 			}
 		} else {
 			result, err := conn.ExecContext(ctx, statement)
@@ -738,6 +748,36 @@ SELECT COALESCE((SELECT json_agg(a.attname ORDER BY k.ord)::text
 		pk = []string{}
 	}
 	return pk, nil
+}
+
+// postgresRelationKind reads the semantic relation kind (table/view/
+// materialized view) of one relation, mapping pg_class.relkind like Tables().
+// 关系不存在或 relkind 未知时报错,调用方把来源 kind 留空(前端禁用删除)。
+func postgresRelationKind(ctx context.Context, q postgresQueryer, schema, relation string) (model.PostgresRelationKind, error) {
+	rows, err := q.QueryContext(ctx, `
+SELECT c.relkind::text
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = $1 AND c.relname = $2`, schema, relation)
+	if err != nil {
+		return "", fmt.Errorf("read relation kind: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("relation %s.%s 不存在", schema, relation)
+	}
+	var code string
+	if err := rows.Scan(&code); err != nil {
+		return "", fmt.Errorf("scan relation kind: %w", err)
+	}
+	kind := pgRelationKinds[code]
+	if !kind.Valid() {
+		return "", fmt.Errorf("未知的 relkind %q", code)
+	}
+	return kind, nil
 }
 
 // pqStringArray serializes a Go string slice to a PostgreSQL text[] literal.
