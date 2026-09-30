@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
+import { EditorSelection } from '@codemirror/state'
 import { EditorView } from '@codemirror/view'
 import { language } from '@codemirror/language'
 import { CompletionContext, type Completion } from '@codemirror/autocomplete'
+import { undo } from '@codemirror/commands'
 import SqlEditor from './SqlEditor.vue'
 
 // defineExpose 出来的方法(通过 wrapper.vm 访问)。
@@ -364,5 +366,108 @@ describe('SqlEditor 右键执行菜单', () => {
     await nextTick()
     expect(ev.defaultPrevented).toBe(false)
     expect(wrapper.find('[data-test="editor-run-menu"]').exists()).toBe(false)
+  })
+})
+
+// —— 复制当前行快捷键(mac ⌘D / Windows/Linux Ctrl+D,与 ⌘S/⌘Enter 同平台规则)——
+describe('SqlEditor 复制当前行快捷键', () => {
+  // 与 CM 运行时一致的平台判定(基于 navigator.platform):jsdom 下为空串 →
+  // 非 mac,Mod-d 归一化为 Ctrl-d;真实 mac 环境(platform 含 Mac)归一化为
+  // Meta-d,与 ⌘S/⌘Enter 同机制。
+  const mac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
+
+  // 真实 keydown 事件走 CM keymap 的 Mod 映射,返回事件供 defaultPrevented 断言。
+  function pressModD(view: EditorView): KeyboardEvent {
+    const init: KeyboardEventInit = { key: 'd', bubbles: true, cancelable: true }
+    if (mac) init.metaKey = true
+    else init.ctrlKey = true
+    const ev = new KeyboardEvent('keydown', init)
+    view.contentDOM.dispatchEvent(ev)
+    return ev
+  }
+
+  it('非本平台修饰键不触发(Mod 严格按平台解析为 ⌘ 或 Ctrl,不混用)', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: 'a\nbc\nd' } })
+    const view = cmView(wrapper)
+    view.dispatch({ selection: { anchor: 2 } })
+    const init: KeyboardEventInit = { key: 'd', bubbles: true, cancelable: true }
+    if (mac) init.ctrlKey = true
+    else init.metaKey = true
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', init))
+    expect(view.state.doc.toString()).toBe('a\nbc\nd')
+    wrapper.unmount()
+  })
+
+  it('无选区:复制光标行插入下一行,光标落到副本行同列,默认行为被阻止', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: 'a\nbc\nd' } })
+    const view = cmView(wrapper)
+    view.dispatch({ selection: { anchor: 2 } }) // 第 2 行第 1 列
+    const ev = pressModD(view)
+    expect(view.state.doc.toString()).toBe('a\nbc\nbc\nd')
+    const head = view.state.selection.main.head
+    expect(view.state.doc.lineAt(head).number).toBe(3)
+    expect(head - view.state.doc.lineAt(head).from).toBe(0)
+    expect(ev.defaultPrevented).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('光标在行中列位:复制后光标在新行保持同列', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: 'a\nbc\nd' } })
+    const view = cmView(wrapper)
+    view.dispatch({ selection: { anchor: 3 } }) // 第 2 行第 2 列
+    pressModD(view)
+    expect(view.state.doc.toString()).toBe('a\nbc\nbc\nd')
+    const head = view.state.selection.main.head
+    expect(view.state.doc.lineAt(head).number).toBe(3)
+    expect(head - view.state.doc.lineAt(head).from).toBe(1)
+    wrapper.unmount()
+  })
+
+  it('有选区跨两行:选区触及的每行各复制一份(VSCode 语义)', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: 'a\nbc\nd' } })
+    const view = cmView(wrapper)
+    view.dispatch({ selection: { anchor: 2, head: 5 } }) // 第 2 行首 → 第 3 行首
+    pressModD(view)
+    expect(view.state.doc.toString()).toBe('a\nbc\nbc\nd\nd')
+    // 光标(head)落在最后被复制行(原第 3 行)的副本行上。
+    expect(view.state.doc.lineAt(view.state.selection.main.head).number).toBe(5)
+    wrapper.unmount()
+  })
+
+  it('多光标两处:各自所在行各复制一份,光标分别落到副本行', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: 'a\nbc\nd' } })
+    const view = cmView(wrapper)
+    view.dispatch({
+      selection: EditorSelection.create([EditorSelection.cursor(0), EditorSelection.cursor(5)]),
+    })
+    pressModD(view)
+    expect(view.state.doc.toString()).toBe('a\na\nbc\nd\nd')
+    const ranges = view.state.selection.ranges
+    expect(ranges).toHaveLength(2)
+    expect(view.state.doc.lineAt(ranges[0].head).number).toBe(2)
+    expect(view.state.doc.lineAt(ranges[1].head).number).toBe(5)
+    wrapper.unmount()
+  })
+
+  it('同一行多个光标只复制一份(去重)', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: 'a\nbc\nd' } })
+    const view = cmView(wrapper)
+    view.dispatch({
+      selection: EditorSelection.create([EditorSelection.cursor(2), EditorSelection.cursor(3)]),
+    })
+    pressModD(view)
+    expect(view.state.doc.toString()).toBe('a\nbc\nbc\nd')
+    wrapper.unmount()
+  })
+
+  it('⌘Z 撤销:一步恢复原文(复制为单个 transaction)', () => {
+    const wrapper = mount(SqlEditor, { props: { modelValue: 'a\nbc\nd' } })
+    const view = cmView(wrapper)
+    view.dispatch({ selection: { anchor: 2 } })
+    pressModD(view)
+    expect(view.state.doc.toString()).toBe('a\nbc\nbc\nd')
+    undo(view)
+    expect(view.state.doc.toString()).toBe('a\nbc\nd')
+    wrapper.unmount()
   })
 })
