@@ -8,6 +8,7 @@ import { CSV_MIME, saveFile } from '@/utils/export'
 import { formatBytes } from '@/utils/bytes'
 import { formatCount } from '@/utils/format'
 import { useConnectionsStore } from '@/store/connections'
+import { useToastStore } from '@/store/toast'
 import * as App from '../../../wailsjs/go/backend/App'
 import ConnectionTree from './ConnectionTree.vue'
 
@@ -1524,6 +1525,270 @@ describe('ConnectionTree', () => {
       expect(document.body.querySelector('[data-test="mysql-structure-dialog"]')).not.toBeNull()
     })
     expect(mysqlTableColumns).toHaveBeenCalledWith({ connection_id: 'my', database: 'shop', table: 'users' })
+  })
+
+  // --- Hive 二级树(与 MySQL 同构:库 → 表,懒加载 + 模糊过滤 + 右键菜单) ---
+
+  const hiveConn = (id: string): Connection => ({
+    id, name: `conn-${id}`, type: 'hive',
+    config: { host: 'h.internal', port: 10000, auth_mode: 'nosasl' } as Connection['config'],
+    created_at: 1, updated_at: 1,
+  })
+
+  async function expandOneHiveTable(wrapper: VueWrapper): Promise<void> {
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="hive-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-table-node"]').exists()).toBe(true)
+    })
+  }
+
+  it('shows the Hive label with its bee icon for a hive connection', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    expect(wrapper.findAll('[data-test="conn-type"]').map((n) => n.text())).toEqual(['Hive'])
+    // 类型徽标走 hive 专属样式类。
+    expect(wrapper.find('[data-test="conn-type"]').classes()).toContain('conn-type-hive')
+  })
+
+  it('lists hive databases when a hive connection expands', async () => {
+    const api2 = fakeApi({
+      listHiveDatabases: vi.fn(async () => ['default', 'ods']),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="hive-db-node"]')).toHaveLength(2)
+    })
+    expect(api2.listHiveDatabases).toHaveBeenCalledWith('hv')
+    expect(api2.listTopics).not.toHaveBeenCalled()
+    expect(wrapper.findAll('[data-test="hive-db-name"]').map((n) => n.text())).toEqual(['default', 'ods'])
+  })
+
+  it('lazily loads hive tables when a database node expands and emits open-hive-table on double click', async () => {
+    const api2 = fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'events' }, { name: 'users' }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-db-node"]').exists()).toBe(true)
+    })
+    // 展开连接只拉数据库,表在数据库节点展开时才懒加载。
+    expect(api2.listHiveTables).not.toHaveBeenCalled()
+    await wrapper.find('[data-test="hive-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="hive-table-node"]')).toHaveLength(2)
+    })
+    expect(api2.listHiveTables).toHaveBeenCalledWith({ connection_id: 'hv', database: 'ods' })
+    expect(wrapper.findAll('[data-test="hive-table-name"]').map((n) => n.text())).toEqual(['events', 'users'])
+    // 库节点出现表计数徽标;表节点无引擎/行数徽标(HiveTableInfo 仅名称)。
+    expect(wrapper.find('[data-test="hive-db-count"]').text()).toBe('2')
+    expect(wrapper.find('[data-test="hive-table-engine"]').exists()).toBe(false)
+    // 双击表节点打开表。
+    await wrapper.findAll('[data-test="hive-table-node"]')[0].trigger('dblclick')
+    expect(wrapper.emitted('open-hive-table')?.[0]).toEqual(['hv', 'ods', 'events'])
+  })
+
+  it('fuzzy filters hive tables inside an expanded database', async () => {
+    const api2 = fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'user_events' }, { name: 'order_events' }, { name: 'dim_date' }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    // 未过滤时计数徽标显示表总数,过滤后显示「可见/总数」。
+    expect(wrapper.find('[data-test="hive-db-count"]').text()).toBe('3')
+    await wrapper.find('[data-test="hive-table-filter"]').setValue('events')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="hive-table-node"]')).toHaveLength(2)
+    })
+    expect(wrapper.findAll('[data-test="hive-table-name"]').map((n) => n.text())).toEqual(['user_events', 'order_events'])
+    expect(wrapper.find('[data-test="hive-db-count"]').text()).toBe('2/3')
+    // 清空恢复全部。
+    await wrapper.find('[data-test="hive-table-filter"]').setValue('')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="hive-table-node"]')).toHaveLength(3)
+    })
+  })
+
+  it('shows the empty hint when a hive database has no tables', async () => {
+    const api2 = fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => []),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="hive-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-table-empty"]').text()).toBe('（无表）')
+    })
+  })
+
+  it('shows the five hive table context menu items on right-click', async () => {
+    setApi(fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'events' }]),
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    expect(document.body.querySelector('[data-test="context-menu"]')).toBeNull()
+    await wrapper.find('[data-test="hive-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    const keys = Array.from(document.body.querySelectorAll('[data-test^="context-item-"]')).map((n) => n.getAttribute('data-test'))
+    expect(keys).toEqual([
+      'context-item-open-hive-table',
+      'context-item-hive-edit-columns',
+      'context-item-hive-export',
+      'context-item-hive-truncate',
+      'context-item-hive-drop',
+    ])
+  })
+
+  it('drops a hive table from the context menu after confirmation and refetches the table list', async () => {
+    const hiveDropTable = vi.fn(async () => {})
+    const listHiveTables = vi
+      .fn()
+      .mockResolvedValueOnce([{ name: 'events' }, { name: 'users' }])
+      .mockResolvedValue([{ name: 'users' }])
+    setApi(fakeApi({ listHiveDatabases: vi.fn(async () => ['ods']), listHiveTables, hiveDropTable }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    expect(wrapper.findAll('[data-test="hive-table-node"]')).toHaveLength(2)
+    await wrapper.findAll('[data-test="hive-table-node"]')[0].trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-hive-drop"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    // 危险确认文案含 db.table 与「不可恢复」。
+    expect(confirmDialog()?.textContent).toContain('ods.events')
+    expect(confirmDialog()?.textContent).toContain('不可恢复')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(hiveDropTable).toHaveBeenCalledWith({ connection_id: 'hv', database: 'ods', table: 'events' })
+    })
+    // 删除后重拉该库表清单,被删表消失。
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="hive-table-name"]').map((n) => n.text())).toEqual(['users'])
+    })
+    expect(listHiveTables).toHaveBeenCalledTimes(2)
+  })
+
+  it('truncates a managed hive table from the context menu after confirmation and refetches', async () => {
+    const hiveTruncateTable = vi.fn(async () => {})
+    const listHiveTables = vi.fn(async () => [{ name: 'events' }])
+    setApi(fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables,
+      hiveTruncateTable,
+      // 截断守卫:先探测表类型(MANAGED_TABLE 放行)。
+      hiveTableColumns: vi.fn(async () => ({
+        columns: [], partition_columns: [], transactional: false, primary_key: [], ddl: '', table_type: 'MANAGED_TABLE',
+      })),
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    await wrapper.find('[data-test="hive-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-hive-truncate"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    expect(confirmDialog()?.textContent).toContain('ods.events')
+    expect(confirmDialog()?.textContent).toContain('清空')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(hiveTruncateTable).toHaveBeenCalledWith({ connection_id: 'hv', database: 'ods', table: 'events' })
+    })
+    await vi.waitFor(() => {
+      expect(listHiveTables).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('blocks truncating a non-managed hive table with a hint instead of the confirm dialog', async () => {
+    const hiveTruncateTable = vi.fn(async () => {})
+    setApi(fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'ext_events' }]),
+      hiveTruncateTable,
+      // 外部表:守卫拦截,仅 toast 提示。
+      hiveTableColumns: vi.fn(async () => ({
+        columns: [], partition_columns: [], transactional: false, primary_key: [], ddl: '', table_type: 'EXTERNAL_TABLE',
+      })),
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    await wrapper.find('[data-test="hive-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-hive-truncate"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(useToastStore().message).toContain('仅内部表(MANAGED_TABLE)支持清空')
+    })
+    // 不弹确认、不发截断请求。
+    expect(confirmDialog()).toBeNull()
+    expect(hiveTruncateTable).not.toHaveBeenCalled()
+  })
+
+  it('opens the structure dialog from the 编辑表字段 menu item for a hive table', async () => {
+    const hiveTableColumns = vi.fn(async () => ({
+      columns: [], partition_columns: [], transactional: false, primary_key: [], ddl: '', table_type: 'MANAGED_TABLE',
+    }))
+    setApi(fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'events' }]),
+      hiveTableColumns,
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    expect(document.body.querySelector('[data-test="hive-structure-dialog"]')).toBeNull()
+    await wrapper.find('[data-test="hive-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-hive-edit-columns"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="hive-structure-dialog"]')).not.toBeNull()
+    })
+    expect(hiveTableColumns).toHaveBeenCalledWith({ connection_id: 'hv', database: 'ods', table: 'events' })
+  })
+
+  it('exports a hive table structure via hiveExportTable and saveFile', async () => {
+    const hiveExportTable = vi.fn(async () => ({ filename: 'events_20261003.sql', content: 'CREATE TABLE `events` (`id` bigint);' }))
+    setApi(fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'events' }]),
+      hiveExportTable,
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    await wrapper.find('[data-test="hive-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-hive-export"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(hiveExportTable).toHaveBeenCalledWith({ connection_id: 'hv', database: 'ods', table: 'events' })
+    })
+    await vi.waitFor(() => {
+      expect(vi.mocked(saveFile)).toHaveBeenCalledWith('events_20261003.sql', 'CREATE TABLE `events` (`id` bigint);', 'application/sql')
+    })
+  })
+
+  it('marks the hive connection as error and shows the message when listing databases fails', async () => {
+    const api2 = fakeApi({
+      listHiveDatabases: vi.fn(async () => {
+        throw new Error('dial tcp 127.0.0.1:10000 failed')
+      }),
+    })
+    setApi(api2)
+    const store = useConnectionsStore()
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="tree-error"]').text()).toBe('dial tcp 127.0.0.1:10000 failed')
+      expect(store.statusById['hv']).toBe('error')
+    })
   })
 
   it('lists clickhouse databases when a clickhouse connection expands', async () => {

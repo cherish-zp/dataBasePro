@@ -39,6 +39,7 @@ const TYPE_LABELS: Record<ConnectionType, string> = {
   es: 'ES',
   redis: 'Redis',
   clickhouse: 'ClickHouse',
+  hive: 'Hive',
 }
 
 function connLabel(connectionId: string): string {

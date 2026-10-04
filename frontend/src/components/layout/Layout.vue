@@ -17,6 +17,8 @@ import MysqlTableBrowser from '@/components/kafka/MysqlTableBrowser.vue'
 import MysqlSqlConsole from '@/components/kafka/MysqlSqlConsole.vue'
 import PostgresTableBrowser from '@/components/kafka/PostgresTableBrowser.vue'
 import PostgresSqlConsole from '@/components/kafka/PostgresSqlConsole.vue'
+import HiveTableBrowser from '@/components/kafka/HiveTableBrowser.vue'
+import HiveSqlConsole from '@/components/kafka/HiveSqlConsole.vue'
 import EsTableBrowser from '@/components/kafka/EsTableBrowser.vue'
 import EsSqlConsole from '@/components/kafka/EsSqlConsole.vue'
 import EsTemplatesPanel from '@/components/kafka/EsTemplatesPanel.vue'
@@ -161,7 +163,7 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
     toast.show('未找到文件关联的数据源,无法打开 SQL 控制台')
     return
   }
-  const target: 'sql' | 'ch-sql' | 'mysql-sql' | 'es-sql' | 'postgres-sql' | null =
+  const target: 'sql' | 'ch-sql' | 'mysql-sql' | 'es-sql' | 'postgres-sql' | 'hive-sql' | null =
     conn.type === 'kafka'
       ? 'sql'
       : conn.type === 'clickhouse'
@@ -172,7 +174,9 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
             ? 'es-sql'
             : conn.type === 'postgres'
               ? 'postgres-sql'
-              : null
+              : conn.type === 'hive'
+                ? 'hive-sql'
+                : null
   if (!target) {
     toast.show('该数据源类型暂不支持 SQL 控制台')
     return
@@ -190,6 +194,8 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
     tabs.openPostgresSql(connectionId)
   } else if (target === 'es-sql') {
     tabs.openEsSql(connectionId)
+  } else if (target === 'hive-sql') {
+    tabs.openHiveSql(connectionId)
   } else {
     // Kafka 不带 topic:通用「SQL 查询」tab,表名写在 SQL 的 FROM 子句里。
     tabs.openSql(connectionId, '', [])
@@ -229,6 +235,7 @@ const chSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const mysqlSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const pgSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const esSqlConsoleRef = ref<SqlConsoleApi | null>(null)
+const hiveSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 
 const activeConsoleApi = computed<SqlConsoleApi | null>(() => {
   const a = active.value
@@ -238,6 +245,7 @@ const activeConsoleApi = computed<SqlConsoleApi | null>(() => {
   if (a.kind === 'mysql-sql') return mysqlSqlConsoleRef.value
   if (a.kind === 'postgres-sql') return pgSqlConsoleRef.value
   if (a.kind === 'es-sql') return esSqlConsoleRef.value
+  if (a.kind === 'hive-sql') return hiveSqlConsoleRef.value
   return null
 })
 
@@ -266,6 +274,11 @@ function openNewQuery(): void {
   // ES 系 tab 打开 ES SQL 控制台(ES 无库概念,不携带 database)。
   if (kind === 'es-index' || kind === 'es-sql') {
     tabs.openEsSql(a.connectionId)
+    return
+  }
+  // Hive 系 tab 打开 Hive SQL 控制台,并带上当前库(缺省 = 通用控制台)。
+  if (kind === 'hive-table' || kind === 'hive-sql') {
+    tabs.openHiveSql(a.connectionId, a.database ?? '')
     return
   }
   tabs.openSql(a.connectionId, a.topic ?? '', a.partitions ?? [])
@@ -298,6 +311,11 @@ function openCHTable(connectionId: string, database: string, table: string): voi
 // MySQL 表浏览器:双击树上的表节点打开/聚焦对应 tab。
 function openMysqlTable(connectionId: string, database: string, table: string): void {
   tabs.openMysqlTable(connectionId, database, table)
+}
+
+// Hive 表浏览器:双击树上的表节点打开/聚焦对应 tab。
+function openHiveTable(connectionId: string, database: string, table: string): void {
+  tabs.openHiveTable(connectionId, database, table)
 }
 
 // PostgreSQL relation 浏览器:双击树上的 relation 节点打开/聚焦对应 tab。
@@ -359,7 +377,8 @@ function refreshActive(): void {
     active.value.kind === 'ch-sql' ||
     active.value.kind === 'mysql-sql' ||
     active.value.kind === 'postgres-sql' ||
-    active.value.kind === 'es-sql'
+    active.value.kind === 'es-sql' ||
+    active.value.kind === 'hive-sql'
   ) {
     return
   }
@@ -509,7 +528,7 @@ function onTabDragEnd(): void {
         class="btn ghost"
         type="button"
         data-test="btn-refresh-active"
-        :disabled="!active || active.kind === 'sql' || active.kind === 'ch-sql' || active.kind === 'mysql-sql' || active.kind === 'es-sql'"
+        :disabled="!active || active.kind === 'sql' || active.kind === 'ch-sql' || active.kind === 'mysql-sql' || active.kind === 'es-sql' || active.kind === 'hive-sql'"
         @click="refreshActive"
       >
         刷新
@@ -566,6 +585,7 @@ function onTabDragEnd(): void {
           @open-health="openHealth"
           @open-ch-table="openCHTable"
           @open-mysql-table="openMysqlTable"
+          @open-hive-table="openHiveTable"
           @open-postgres-table="openPostgresTable"
           @open-es-index="openEsIndex"
           @open-es-template="openEsTemplate"
@@ -684,6 +704,23 @@ function onTabDragEnd(): void {
               :database="active.database ?? ''"
             />
           </template>
+          <template v-else-if="active.kind === 'hive-table'">
+            <HiveTableBrowser
+              :key="active.id"
+              :connection-id="active.connectionId"
+              :database="active.database ?? ''"
+              :table="active.table ?? ''"
+            />
+          </template>
+          <template v-else-if="active.kind === 'hive-sql'">
+            <HiveSqlConsole
+              ref="hiveSqlConsoleRef"
+              :key="active.id"
+              :tab-id="active.id"
+              :connection-id="active.connectionId"
+              :database="active.database ?? ''"
+            />
+          </template>
           <template v-else-if="active.kind === 'postgres-table'">
             <PostgresTableBrowser
               :key="active.id"
@@ -793,7 +830,7 @@ function onTabDragEnd(): void {
         </button>
         <button class="context-item" type="button" data-test="context-close-all" @click="contextCloseAll">关闭全部</button>
         <button
-          v-if="contextTab.kind !== 'sql' && contextTab.kind !== 'ch-sql' && contextTab.kind !== 'mysql-sql' && contextTab.kind !== 'postgres-sql' && contextTab.kind !== 'es-sql'"
+          v-if="contextTab.kind !== 'sql' && contextTab.kind !== 'ch-sql' && contextTab.kind !== 'mysql-sql' && contextTab.kind !== 'postgres-sql' && contextTab.kind !== 'es-sql' && contextTab.kind !== 'hive-sql'"
           class="context-item"
           type="button"
           data-test="context-refresh"

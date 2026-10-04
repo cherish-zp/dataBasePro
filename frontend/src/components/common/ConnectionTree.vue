@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
-import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo, CHTableInfo, MysqlTableInfo, PostgresRelationInfo, EsIndexInfo, EsTemplateInfo } from '@/api/types'
+import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo, CHTableInfo, MysqlTableInfo, PostgresRelationInfo, EsIndexInfo, EsTemplateInfo, HiveTableInfo } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
 import { formatCount } from '@/utils/format'
 import { formatBytes } from '@/utils/bytes'
@@ -15,6 +15,7 @@ import TopicDetailDrawer from '@/components/kafka/TopicDetailDrawer.vue'
 import ResetOffsetDialog from '@/components/kafka/ResetOffsetDialog.vue'
 import MysqlTableStructure from '@/components/kafka/MysqlTableStructure.vue'
 import MysqlExportDialog from '@/components/kafka/MysqlExportDialog.vue'
+import HiveTableStructure from '@/components/kafka/HiveTableStructure.vue'
 
 const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
@@ -25,6 +26,7 @@ const emit = defineEmits<{
   (e: 'open-health', connectionId: string): void
   (e: 'open-ch-table', connectionId: string, database: string, table: string): void
   (e: 'open-mysql-table', connectionId: string, database: string, table: string): void
+  (e: 'open-hive-table', connectionId: string, database: string, table: string): void
   (e: 'open-postgres-table', connectionId: string, database: string, schema: string, relation: string, relationType: 'table' | 'view' | 'materialized_view'): void
   (e: 'open-es-index', connectionId: string, index: string): void
   (e: 'open-es-template', connectionId: string, template: string): void
@@ -46,6 +48,7 @@ const TYPE_META: Record<string, { label: string; icon: string }> = {
   tidb: { label: 'TiDB', icon: '🌿' },
   es: { label: 'ES', icon: '🔎' },
   postgres: { label: 'PostgreSQL', icon: '🐘' },
+  hive: { label: 'Hive', icon: '🐝' },
 }
 
 function typeMeta(conn: Connection): { label: string; icon: string } {
@@ -93,7 +96,7 @@ async function onToggleConnect(conn: Connection): Promise<void> {
 // es-index / es-template 不作为 collection 分区,但复用同一批交互状态
 // (右键菜单、删除确认),因此也纳入 ObjectKind。'connection' 承载连接节点
 // 自身的右键菜单(打开/断开、集群健康/监控、编辑、删除)。
-type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db' | 'es-index' | 'es-template' | 'mysql-table' | 'connection'
+type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db' | 'es-index' | 'es-template' | 'mysql-table' | 'hive-table' | 'connection'
 interface ObjectCollection {
   key: string
   label: string
@@ -136,6 +139,12 @@ const mysqlTablesByDb = ref<Record<string, MysqlTableInfo[]>>({})
 const mysqlTableLoadingByDb = ref<Record<string, boolean>>({})
 const mysqlExpandedByDb = ref<Record<string, boolean>>({})
 const mysqlTableFilterByDb = ref<Record<string, string>>({})
+// --- Hive 二级树(与 MySQL 同构:库 → 表,懒加载表清单;表节点仅名称) ---
+const hiveDBs = ref<Record<string, string[]>>({})
+const hiveTablesByDb = ref<Record<string, HiveTableInfo[]>>({})
+const hiveTableLoadingByDb = ref<Record<string, boolean>>({})
+const hiveExpandedByDb = ref<Record<string, boolean>>({})
+const hiveTableFilterByDb = ref<Record<string, string>>({})
 // --- PostgreSQL 三级树:数据库 → schema → relation(逐级懒加载并缓存) ---
 const pgDBs = ref<Record<string, string[]>>({})
 // 键 `${connId}/${db}`:每个数据库节点独立的 schema 清单与展开状态。
@@ -177,9 +186,9 @@ async function toggle(conn: Connection): Promise<void> {
     void loadEsTemplates(id)
   }
   if (
-    !topicsByConn.value[id] && !redisDBs.value[id] && !chDBs.value[id] && !mysqlDBs.value[id] && !esIndices.value[id] && !pgDBs.value[id]
+    !topicsByConn.value[id] && !redisDBs.value[id] && !chDBs.value[id] && !mysqlDBs.value[id] && !esIndices.value[id] && !pgDBs.value[id] && !hiveDBs.value[id]
     && (conn.type === 'kafka' || conn.type === 'redis' || conn.type === 'clickhouse'
-      || conn.type === 'mysql' || conn.type === 'tidb' || conn.type === 'es' || conn.type === 'postgres')
+      || conn.type === 'mysql' || conn.type === 'tidb' || conn.type === 'es' || conn.type === 'postgres' || conn.type === 'hive')
   ) {
     await load(id)
   }
@@ -201,6 +210,10 @@ async function load(connId: string): Promise<void> {
     } else if (type === 'mysql' || type === 'tidb') {
       // 后端默认已过滤系统库(information_schema/performance_schema 等)。
       mysqlDBs.value[connId] = (await getApi().listMysqlDatabases?.(connId)) ?? []
+      connStore.setStatus(connId, 'connected')
+    } else if (type === 'hive') {
+      // 后端默认已过滤系统库(default 保留)。
+      hiveDBs.value[connId] = (await getApi().listHiveDatabases?.(connId)) ?? []
       connStore.setStatus(connId, 'connected')
     } else if (type === 'es') {
       // 后端默认已过滤系统索引(.kibana* 等)。
@@ -333,6 +346,58 @@ function mysqlDbCountLabel(connId: string, db: string): string {
   const q = mysqlTableFilterOf(connId, db)
   if (!q) return String(total)
   return `${filteredMysqlTables(connId, db).length}/${total}`
+}
+
+// --- Hive 二级树:数据库 → 表(展开库节点时懒加载表清单) ---
+
+function hiveDbKey(connId: string, db: string): string {
+  return `${connId}/${db}`
+}
+
+function isHiveDbExpanded(connId: string, db: string): boolean {
+  return !!hiveExpandedByDb.value[hiveDbKey(connId, db)]
+}
+
+async function toggleHiveDb(connId: string, db: string): Promise<void> {
+  const key = hiveDbKey(connId, db)
+  hiveExpandedByDb.value[key] = !hiveExpandedByDb.value[key]
+  if (!hiveExpandedByDb.value[key] || hiveTablesByDb.value[key]) return
+  // 首次展开懒加载表清单(系统库表由后端过滤)。
+  hiveTableLoadingByDb.value[key] = true
+  try {
+    hiveTablesByDb.value[key] = (await getApi().listHiveTables?.({
+      connection_id: connId,
+      database: db,
+    })) ?? []
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    hiveTableLoadingByDb.value[key] = false
+  }
+}
+
+function hiveTableFilterOf(connId: string, db: string): string {
+  return (hiveTableFilterByDb.value[hiveDbKey(connId, db)] ?? '').trim()
+}
+
+// filteredHiveTables 对表名做本地模糊过滤(fuzzyScore),按相关度排序。
+function filteredHiveTables(connId: string, db: string): HiveTableInfo[] {
+  const list = hiveTablesByDb.value[hiveDbKey(connId, db)] ?? []
+  const q = hiveTableFilterOf(connId, db)
+  if (!q) return list
+  return list
+    .map((t) => ({ t, score: fuzzyScore(q, t.name) }))
+    .filter((x) => x.score !== Infinity)
+    .sort((a, b) => a.score - b.score)
+    .map((x) => x.t)
+}
+
+// hiveDbCountLabel 数据库节点的表计数徽标:未过滤显示总数,过滤中显示「可见/总数」。
+function hiveDbCountLabel(connId: string, db: string): string {
+  const total = (hiveTablesByDb.value[hiveDbKey(connId, db)] ?? []).length
+  const q = hiveTableFilterOf(connId, db)
+  if (!q) return String(total)
+  return `${filteredHiveTables(connId, db).length}/${total}`
 }
 
 // --- PostgreSQL 三级树:数据库 → schema → relation ---
@@ -707,7 +772,7 @@ const confirmMessage = computed(() => {
   const pending = confirm.value
   if (!pending) return ''
   if (pending.names) return `确认删除 ${pending.names.length} 个 Topic？此操作不可恢复。`
-  if (pending.kind === 'mysql-table') {
+  if (pending.kind === 'mysql-table' || pending.kind === 'hive-table') {
     const target = `${pending.db ?? ''}.${pending.name}`
     if (pending.action === 'truncate') return `确认截断表「${target}」？表数据将被清空，此操作不可恢复。`
     return `确认删除表「${target}」？表结构与数据将被删除，此操作不可恢复。`
@@ -721,7 +786,7 @@ const confirmText = computed(() => {
   const pending = confirm.value
   if (!pending) return '删除'
   if (pending.names) return `删除 ${pending.names.length} 个 Topic`
-  if (pending.kind === 'mysql-table') return pending.action === 'truncate' ? '截断表' : '删除表'
+  if (pending.kind === 'mysql-table' || pending.kind === 'hive-table') return pending.action === 'truncate' ? '截断表' : '删除表'
   if (pending.kind === 'es-index') return '删除索引'
   if (pending.kind === 'es-template') return '删除模板'
   return `删除 ${pending.kind === 'topic' ? 'Topic' : '消费组'}`
@@ -763,6 +828,15 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
       { key: 'mysql-export', label: '导出表…' },
       { key: 'mysql-truncate', label: '截断表', danger: true },
       { key: 'mysql-drop', label: '删除表', danger: true },
+    ]
+  }
+  if (ctxMenu.value.kind === 'hive-table') {
+    return [
+      { key: 'open-hive-table', label: '打开表' },
+      { key: 'hive-edit-columns', label: '编辑表字段…' },
+      { key: 'hive-export', label: '导出表结构' },
+      { key: 'hive-truncate', label: '截断表', danger: true },
+      { key: 'hive-drop', label: '删除表', danger: true },
     ]
   }
   if (ctxMenu.value.kind === 'topic') {
@@ -813,6 +887,10 @@ function openEsTemplateMenu(e: MouseEvent, connId: string, name: string): void {
 
 function openMysqlTableMenu(e: MouseEvent, connId: string, db: string, name: string): void {
   ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'mysql-table', connId, name, partitions: 0, db }
+}
+
+function openHiveTableMenu(e: MouseEvent, connId: string, db: string, name: string): void {
+  ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'hive-table', connId, name, partitions: 0, db }
 }
 
 // openConnMenu 打开连接节点自身的右键菜单(conn-row 行内按钮已全部收敛于此)。
@@ -905,6 +983,22 @@ function onCtxSelect(key: string): void {
     case 'mysql-drop':
       askMysqlTableConfirm(m.connId, m.db ?? '', m.name, 'drop')
       break
+    case 'open-hive-table':
+      emit('open-hive-table', m.connId, m.db ?? '', m.name)
+      break
+    case 'hive-edit-columns':
+      if (m.db !== undefined) hiveStructureMeta.value = { connId: m.connId, db: m.db, table: m.name }
+      break
+    case 'hive-export':
+      if (m.db !== undefined) void exportHiveTable(m.connId, m.db, m.name)
+      break
+    case 'hive-truncate':
+      // 仅内部表(MANAGED_TABLE)可清空:先探测表类型,非内部表 toast 提示。
+      if (m.db !== undefined) void askHiveTableConfirm(m.connId, m.db, m.name, 'truncate')
+      break
+    case 'hive-drop':
+      if (m.db !== undefined) confirm.value = { connId: m.connId, kind: 'hive-table', name: m.name, action: 'drop', db: m.db }
+      break
   }
 }
 
@@ -936,6 +1030,66 @@ async function reloadMysqlTables(connId: string, db: string): Promise<void> {
     errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
   } finally {
     mysqlTableLoadingByDb.value[key] = false
+  }
+}
+
+// --- Hive 表节点动作:结构编辑弹窗 / 导出表结构 / 截断(仅内部表)与删除 ---
+
+// hiveStructureMeta holds the hive table whose structure-editing dialog is open.
+const hiveStructureMeta = ref<{ connId: string; db: string; table: string } | null>(null)
+
+// exportHiveTable 导出表结构(SHOW CREATE TABLE 原文)并经原生对话框存为 .sql;
+// Hive 普通表不支持 INSERT VALUES,数据导出不提供,无需选项弹窗。
+async function exportHiveTable(connId: string, db: string, table: string): Promise<void> {
+  try {
+    const res = await getApi().hiveExportTable?.({ connection_id: connId, database: db, table })
+    if (res) await saveFile(res.filename, res.content, 'application/sql')
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  }
+}
+
+// askHiveTableConfirm 进入截断表确认前的守卫:hiveTableColumns 探测表类型,
+// 非 MANAGED_TABLE(外部表/视图等)或探测失败时 toast 提示并终止,不弹确认。
+async function askHiveTableConfirm(connId: string, db: string, table: string, action: 'truncate'): Promise<void> {
+  try {
+    const meta = await getApi().hiveTableColumns?.({ connection_id: connId, database: db, table })
+    if ((meta?.table_type ?? '') !== 'MANAGED_TABLE') {
+      try {
+        useToastStore().show('仅内部表(MANAGED_TABLE)支持清空')
+      } catch {
+        // pinia 未激活时忽略提示
+      }
+      return
+    }
+  } catch (e) {
+    // 探测失败视为不可清空,不能盲目开放危险操作。
+    try {
+      useToastStore().show(e instanceof Error ? e.message : String(e))
+    } catch {
+      // pinia 未激活时忽略提示
+    }
+    return
+  }
+  confirm.value = { connId, kind: 'hive-table', name: table, action, db }
+}
+
+// reloadHiveTables 重置某库的表清单缓存;库节点仍展开时立即重新拉取,
+// 让删除/截断后的树立即反映新状态(与 reloadMysqlTables 同构)。
+async function reloadHiveTables(connId: string, db: string): Promise<void> {
+  const key = hiveDbKey(connId, db)
+  delete hiveTablesByDb.value[key]
+  if (!isHiveDbExpanded(connId, db)) return
+  hiveTableLoadingByDb.value[key] = true
+  try {
+    hiveTablesByDb.value[key] = (await getApi().listHiveTables?.({
+      connection_id: connId,
+      database: db,
+    })) ?? []
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    hiveTableLoadingByDb.value[key] = false
   }
 }
 
@@ -1078,6 +1232,27 @@ async function executeDelete(): Promise<void> {
       }
       // 删除/截断成功后只刷新该库的表清单,不动整棵连接树。
       await reloadMysqlTables(pending.connId, db)
+      return
+    } else if (pending.kind === 'hive-table') {
+      const db = pending.db ?? ''
+      if (pending.action === 'truncate') {
+        await getApi().hiveTruncateTable?.({ connection_id: pending.connId, database: db, table: pending.name })
+      } else {
+        await getApi().hiveDropTable?.({ connection_id: pending.connId, database: db, table: pending.name })
+      }
+      // 成功即时反馈:截断/删除已真实执行(后端审计可查),避免「静默成功」
+      // 让人误以为无效;打开中的表浏览器/控制台是旧结果,重新查询即见清空。
+      try {
+        useToastStore().show(
+          pending.action === 'truncate'
+            ? `表 ${db}.${pending.name} 已截断`
+            : `表 ${db}.${pending.name} 已删除`,
+        )
+      } catch {
+        // pinia 未激活时忽略提示,不能中断后续刷新
+      }
+      // 删除/截断成功后只刷新该库的表清单,不动整棵连接树。
+      await reloadHiveTables(pending.connId, db)
       return
     } else if (pending.kind === 'es-index') {
       await getApi().esDeleteIndex?.({ connection_id: pending.connId, index: pending.name })
@@ -1514,6 +1689,66 @@ function exportTopics(conn: Connection): void {
           <div v-if="(mysqlDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="mysql-db-empty">（无数据库）</div>
         </template>
       </div>
+      <div v-else-if="isExpanded(conn.id) && conn.type === 'hive'" class="conn-children">
+        <div v-if="loadingByConn[conn.id]" class="conn-loading" data-test="tree-loading">加载中…</div>
+        <div v-else-if="errorByConn[conn.id]" class="conn-error" data-test="tree-error">{{ errorByConn[conn.id] }}</div>
+        <template v-else>
+          <template v-for="db in hiveDBs[conn.id] ?? []" :key="db">
+            <div class="leaf ch-db-node" data-test="hive-db-node" :title="`数据库 ${db}`" @click="toggleHiveDb(conn.id, db)">
+              <span class="caret" :class="{ open: isHiveDbExpanded(conn.id, db) }" data-test="hive-db-caret">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                  <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              <span class="leaf-name" data-test="hive-db-name">{{ db }}</span>
+              <span
+                v-if="hiveTablesByDb[hiveDbKey(conn.id, db)]"
+                class="leaf-badge"
+                data-test="hive-db-count"
+              >{{ hiveDbCountLabel(conn.id, db) }}</span>
+            </div>
+            <template v-if="isHiveDbExpanded(conn.id, db)">
+              <div class="ch-table-filter">
+                <input
+                  v-model="hiveTableFilterByDb[hiveDbKey(conn.id, db)]"
+                  class="search-input ch-filter-input"
+                  type="search"
+                  data-test="hive-table-filter"
+                  placeholder="🔍 模糊搜索表…"
+                  autocapitalize="off"
+                  autocorrect="off"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div
+                v-if="hiveTableLoadingByDb[hiveDbKey(conn.id, db)]"
+                class="leaf muted"
+                data-test="hive-tables-loading"
+              >加载中…</div>
+              <template v-else>
+                <div
+                  v-for="t in filteredHiveTables(conn.id, db)"
+                  :key="t.name"
+                  class="leaf ch-table"
+                  data-test="hive-table-node"
+                  :title="t.name"
+                  @dblclick="emit('open-hive-table', conn.id, db, t.name)"
+                  @contextmenu.prevent.stop="openHiveTableMenu($event, conn.id, db, t.name)"
+                >
+                  <span class="leaf-name" data-test="hive-table-name">{{ t.name }}</span>
+                </div>
+                <div
+                  v-if="filteredHiveTables(conn.id, db).length === 0"
+                  class="leaf muted"
+                  data-test="hive-table-empty"
+                >{{ (hiveTablesByDb[hiveDbKey(conn.id, db)] ?? []).length === 0 ? '（无表）' : '无匹配表' }}</div>
+              </template>
+            </template>
+          </template>
+          <div v-if="(hiveDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="hive-db-empty">（无数据库）</div>
+        </template>
+      </div>
       <div v-else-if="isExpanded(conn.id) && conn.type === 'postgres'" class="conn-children">
         <div v-if="loadingByConn[conn.id]" class="conn-loading" data-test="tree-loading">加载中…</div>
         <div v-else-if="errorByConn[conn.id]" class="conn-error" data-test="tree-error">{{ errorByConn[conn.id] }}</div>
@@ -1801,6 +2036,14 @@ function exportTopics(conn: Connection): void {
       :table="structureMeta?.table ?? ''"
       @close="structureMeta = null"
     />
+    <!-- Hive 编辑表字段弹窗(与 MySQL 同型,按 Hive 方言裁剪)。 -->
+    <HiveTableStructure
+      :show="!!hiveStructureMeta"
+      :connection-id="hiveStructureMeta?.connId ?? ''"
+      :database="hiveStructureMeta?.db ?? ''"
+      :table="hiveStructureMeta?.table ?? ''"
+      @close="hiveStructureMeta = null"
+    />
     <MysqlExportDialog
       v-if="exportMeta"
       :show="true"
@@ -1885,6 +2128,7 @@ function exportTopics(conn: Connection): void {
 .conn-type-redis { color: var(--danger); background: var(--danger-soft); }
 .conn-type-clickhouse { color: var(--warn); background: var(--warn-soft); }
 .conn-type-tidb { color: var(--ok); background: var(--ok-soft); }
+.conn-type-hive { color: var(--warn); background: var(--warn-soft); }
 .conn-status {
   width: 8px; height: 8px; border-radius: 50%; flex: none; margin: 0 6px;
   background: var(--text-tertiary);
@@ -1895,6 +2139,7 @@ function exportTopics(conn: Connection): void {
 .conn-status-redis { background: var(--danger); }
 .conn-status-clickhouse { background: var(--warn); }
 .conn-status-tidb { background: var(--ok); }
+.conn-status-hive { background: var(--warn); }
 .conn-status-connecting { background: var(--ok); animation: conn-pulse 1.1s ease-in-out infinite; }
 .conn-status-error { background: var(--danger); }
 .conn-status-disconnected { background: var(--text-tertiary); }

@@ -12,6 +12,8 @@ import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
 import CHSqlConsole from '@/components/kafka/CHSqlConsole.vue'
 import MysqlTableBrowser from '@/components/kafka/MysqlTableBrowser.vue'
 import MysqlSqlConsole from '@/components/kafka/MysqlSqlConsole.vue'
+import HiveTableBrowser from '@/components/kafka/HiveTableBrowser.vue'
+import HiveSqlConsole from '@/components/kafka/HiveSqlConsole.vue'
 import EsTableBrowser from '@/components/kafka/EsTableBrowser.vue'
 import EsSqlConsole from '@/components/kafka/EsSqlConsole.vue'
 import EsTemplatesPanel from '@/components/kafka/EsTemplatesPanel.vue'
@@ -136,6 +138,9 @@ const redisConn = (id: string): Connection => ({
 })
 const mysqlConn = (id: string): Connection => ({
   ...conn(id), type: 'mysql', config: {} as Connection['config'],
+})
+const hiveConn = (id: string): Connection => ({
+  ...conn(id), type: 'hive', config: {} as Connection['config'],
 })
 const tidbConn = (id: string): Connection => ({
   ...conn(id), type: 'tidb', config: {} as Connection['config'],
@@ -907,6 +912,76 @@ describe('Layout', () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="mysql-sql-console"]').exists()).toBe(true)
     })
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  // --- Hive 表浏览器 / SQL 控制台 ---------------------------------------------
+
+  it('opens a hive table browser tab from the tree and renders the table browser', async () => {
+    const { wrapper } = mountLayout([hiveConn('h1')])
+    emitTree(wrapper, 'open-hive-table', 'h1', 'ods', 'events')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-table-browser"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="home-view"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="tab"]').text()).toContain('events')
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['hive-table'])
+    expect(tabs.openTabs[0].title).toBe('表 · ods.events')
+    expect(wrapper.findComponent(HiveTableBrowser).props()).toEqual(
+      expect.objectContaining({ connectionId: 'h1', database: 'ods', table: 'events' }),
+    )
+    wrapper.unmount()
+  })
+
+  it('renders the hive sql console for an active hive-sql tab with refresh disabled', async () => {
+    const { wrapper } = mountLayout([hiveConn('h1')])
+    const tabs = useTabsStore()
+    tabs.openHiveSql('h1', 'ods')
+    await nextTick()
+    expect(wrapper.find('[data-test="hive-sql-console"]').exists()).toBe(true)
+    const console_ = wrapper.findComponent(HiveSqlConsole)
+    expect(console_.props('tabId')).toBe(tabs.openTabs[0].id)
+    expect(console_.props('connectionId')).toBe('h1')
+    expect(console_.props('database')).toBe('ods')
+    // SQL 控制台自持编辑器状态:刷新按钮禁用(与 MySQL/ES 控制台一致)。
+    expect(wrapper.find('[data-test="btn-refresh-active"]').attributes('disabled')).toBeDefined()
+    // 新建查询在 hive 系 tab 激活时可用。
+    expect(wrapper.find('[data-test="btn-new-query"]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('opens a hive sql console tab from 新建查询 on an active hive-table tab', async () => {
+    const { wrapper } = mountLayout([hiveConn('h1')])
+    emitTree(wrapper, 'open-hive-table', 'h1', 'ods', 'events')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-table-browser"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="btn-new-query"]').trigger('click')
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.some((t) => t.kind === 'hive-table')).toBe(true)
+    expect(tabs.openTabs.some((t) => t.kind === 'hive-sql' && t.database === 'ods')).toBe(true)
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-sql-console"]').exists()).toBe(true)
+    })
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('点击 Hive 归属文件自动打开 Hive SQL 控制台并载入内容', async () => {
+    const { wrapper } = mountLayout([hiveConn('h1')])
+    fileAppMocks.ListQueryFiles.mockResolvedValue([queryFileRow('hv.sql', 'h1')])
+    fileAppMocks.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'h1' })
+
+    await openPanelAndClickFile(wrapper, 0)
+
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['hive-sql'])
+    expect(tabs.openTabs[0].connectionId).toBe('h1')
+    expect(fileAppMocks.ReadQueryFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'hv.sql' }))
+    expect(wrapper.find('[data-test="hive-sql-console"]').exists()).toBe(true)
     wrapper.unmount()
     await drainPendingEdits()
   })

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys' | 'ch-table' | 'ch-sql' | 'mysql-table' | 'mysql-sql' | 'es-index' | 'es-sql' | 'es-templates' | 'es-monitor' | 'postgres-table' | 'postgres-sql'
+export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys' | 'ch-table' | 'ch-sql' | 'mysql-table' | 'mysql-sql' | 'es-index' | 'es-sql' | 'es-templates' | 'es-monitor' | 'postgres-table' | 'postgres-sql' | 'hive-table' | 'hive-sql'
 
 export interface Tab {
   id: string
@@ -397,6 +397,52 @@ export const useTabsStore = defineStore('tabs', () => {
     return tab
   }
 
+  // openHiveTable opens a Hive table browser keyed by connection + database +
+  // table (dedupe rules copied from openMysqlTable); reopening an already open
+  // table only focuses it. Title carries db.table to disambiguate same-named
+  // tables across databases.
+  function openHiveTable(connectionId: string, database: string, table: string): Tab {
+    const id = `hive:${connectionId}:${database}:${table}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'hive-table',
+      title: `表 · ${database}.${table}`,
+      connectionId,
+      database,
+      table,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  // openHiveSql opens the Hive SQL console. One console per connection +
+  // database (dedupe rules copied from openMysqlSql): database 为空表示「不限定
+  // 库」的通用控制台,id 省略库名段。
+  function openHiveSql(connectionId: string, database?: string): Tab {
+    const id = database ? `hive-sql:${connectionId}:${database}` : `hive-sql:${connectionId}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'hive-sql',
+      title: 'SQL 控制台',
+      connectionId,
+      database,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
   function closeTab(id: string): void {
     const idx = openTabs.value.findIndex((t) => t.id === id)
     if (idx < 0) return
@@ -473,6 +519,8 @@ export const useTabsStore = defineStore('tabs', () => {
     openEsSql,
     openEsTemplates,
     openEsMonitor,
+    openHiveTable,
+    openHiveSql,
     closeTab,
     closeOthers,
     closeAll,
