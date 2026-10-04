@@ -300,15 +300,17 @@ describe('SettingsPanel', () => {
     const wrapper = mountPanel()
     await openTab(wrapper, 'drivers')
     await vi.waitFor(() => {
-      expect(wrapper.findAll('[data-test="driver-row"]')).toHaveLength(3)
+      expect(wrapper.findAll('[data-test="driver-row"]')).toHaveLength(8)
     })
     const texts = wrapper.findAll('[data-test="driver-row"]').map((r) => r.text())
     expect(texts[0]).toContain('franz-go')
     expect(texts[0]).toContain('9092')
-    expect(texts[1]).toContain('go-redis')
-    expect(texts[1]).toContain('6379')
-    expect(texts[2]).toContain('clickhouse-go')
-    expect(texts[2]).toContain('9000')
+    expect(texts[1]).toContain('go-sql-driver/mysql')
+    expect(texts[1]).toContain('3306')
+    // Hive 已入清单(gohive,端口 10000)。
+    const hive = texts.find((t) => t.includes('gohive'))
+    expect(hive).toBeDefined()
+    expect(hive).toContain('10000')
   })
 
   // --- 通用 tab:查询文件目录 ---------------------------------------------------

@@ -31,9 +31,14 @@ describe('HomeView', () => {
     }
   })
 
-  it('引导文案指向左侧数据源树,不再承诺未支持的数据源', () => {
+  it('副标题说明八类数据源,徽标条与亮点卡片齐备', () => {
     const wrapper = mount(HomeView)
-    expect(wrapper.text()).toContain('左侧')
+    expect(wrapper.text()).toContain('八类数据源')
+    // 数据源徽标条:8 个,含 Hive。
+    const badges = wrapper.findAll('[data-test="home-source-badge"]')
+    expect(badges).toHaveLength(8)
+    expect(badges.map((b) => b.text()).join(',')).toContain('Hive')
+    // 不再有「后续将扩展」一类未完成承诺。
     expect(wrapper.text()).not.toContain('后续将扩展')
   })
 })
