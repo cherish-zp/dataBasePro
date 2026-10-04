@@ -190,6 +190,50 @@ export function GetTopicMessageCounts(arg1, arg2) {
   return window['go']['backend']['App']['GetTopicMessageCounts'](arg1, arg2);
 }
 
+export function HiveAlterTable(arg1) {
+  return window['go']['backend']['App']['HiveAlterTable'](arg1);
+}
+
+export function HiveDeleteRow(arg1) {
+  return window['go']['backend']['App']['HiveDeleteRow'](arg1);
+}
+
+export function HiveDropTable(arg1) {
+  return window['go']['backend']['App']['HiveDropTable'](arg1);
+}
+
+export function HiveExecute(arg1) {
+  return window['go']['backend']['App']['HiveExecute'](arg1);
+}
+
+export function HiveExportTable(arg1) {
+  return window['go']['backend']['App']['HiveExportTable'](arg1);
+}
+
+export function HivePageRows(arg1) {
+  return window['go']['backend']['App']['HivePageRows'](arg1);
+}
+
+export function HivePreviewCellUpdate(arg1) {
+  return window['go']['backend']['App']['HivePreviewCellUpdate'](arg1);
+}
+
+export function HivePreviewDeleteRow(arg1) {
+  return window['go']['backend']['App']['HivePreviewDeleteRow'](arg1);
+}
+
+export function HiveTableColumns(arg1) {
+  return window['go']['backend']['App']['HiveTableColumns'](arg1);
+}
+
+export function HiveTruncateTable(arg1) {
+  return window['go']['backend']['App']['HiveTruncateTable'](arg1);
+}
+
+export function HiveUpdateCell(arg1) {
+  return window['go']['backend']['App']['HiveUpdateCell'](arg1);
+}
+
 export function ListActiveConsumers(arg1) {
   return window['go']['backend']['App']['ListActiveConsumers'](arg1);
 }
@@ -228,6 +272,14 @@ export function ListESIndices(arg1) {
 
 export function ListEsTemplates(arg1) {
   return window['go']['backend']['App']['ListEsTemplates'](arg1);
+}
+
+export function ListHiveDatabases(arg1) {
+  return window['go']['backend']['App']['ListHiveDatabases'](arg1);
+}
+
+export function ListHiveTables(arg1) {
+  return window['go']['backend']['App']['ListHiveTables'](arg1);
 }
 
 export function ListMysqlDatabases(arg1) {
@@ -456,6 +508,10 @@ export function TestConnection(arg1) {
 
 export function TestESConnection(arg1) {
   return window['go']['backend']['App']['TestESConnection'](arg1);
+}
+
+export function TestHiveConnection(arg1) {
+  return window['go']['backend']['App']['TestHiveConnection'](arg1);
 }
 
 export function TestMysqlConnection(arg1) {

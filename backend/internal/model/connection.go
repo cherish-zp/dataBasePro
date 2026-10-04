@@ -30,7 +30,7 @@ const ConnectionTypeTiDB ConnectionType = "tidb"
 // Valid reports whether the type is currently supported.
 func (t ConnectionType) Valid() bool {
 	switch t {
-	case ConnectionTypeKafka, ConnectionTypeMySQL, ConnectionTypeES, ConnectionTypeRedis, ConnectionTypeClickHouse, ConnectionTypeTiDB, ConnectionTypePostgres:
+	case ConnectionTypeKafka, ConnectionTypeMySQL, ConnectionTypeES, ConnectionTypeRedis, ConnectionTypeClickHouse, ConnectionTypeTiDB, ConnectionTypePostgres, ConnectionTypeHive:
 		return true
 	}
 	return false
@@ -256,6 +256,15 @@ func (c Connection) Validate() error {
 			return fmt.Errorf("invalid postgres config: %w", err)
 		}
 		return cfg.Validate()
+	case ConnectionTypeHive:
+		if len(c.Config) == 0 {
+			return errors.New("hive config must not be empty")
+		}
+		var cfg HiveConfig
+		if err := json.Unmarshal(c.Config, &cfg); err != nil {
+			return fmt.Errorf("invalid hive config: %w", err)
+		}
+		return cfg.Validate()
 	}
 	return nil
 }
@@ -304,6 +313,16 @@ func (c Connection) MysqlConfig() (MysqlConfig, error) {
 // (postgres connections only).
 func (c Connection) PostgresConfig() (PostgresConfig, error) {
 	var cfg PostgresConfig
+	if err := json.Unmarshal(c.Config, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// HiveConfig decodes the connection's config as a HiveConfig (hive
+// connections only).
+func (c Connection) HiveConfig() (HiveConfig, error) {
+	var cfg HiveConfig
 	if err := json.Unmarshal(c.Config, &cfg); err != nil {
 		return cfg, err
 	}

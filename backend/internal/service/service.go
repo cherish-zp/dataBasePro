@@ -115,6 +115,8 @@ func (s *Service) ConnectConnection(ctx context.Context, id string) error {
 		ds, err = s.buildMysqlClient(c)
 	case model.ConnectionTypePostgres:
 		ds, err = s.buildPostgresClient(c)
+	case model.ConnectionTypeHive:
+		ds, err = s.buildHiveClient(c)
 	default:
 		ds, err = s.buildClient(ctx, c)
 	}
@@ -206,6 +208,22 @@ func (s *Service) buildMysqlClient(c *model.Connection) (*MysqlClient, error) {
 		return nil, fmt.Errorf("decode mysql config: %w", err)
 	}
 	return NewMysqlClientOfType(cfg, c.Type)
+}
+
+// buildHiveClient creates the Hive client for the connection (it opens the
+// HiveServer2 session as part of construction).
+func (s *Service) buildHiveClient(c *model.Connection) (*HiveClient, error) {
+	if c.Type != model.ConnectionTypeHive {
+		return nil, fmt.Errorf("connection %q is not a Hive source (type %q)", c.ID, c.Type)
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	cfg, err := c.HiveConfig()
+	if err != nil {
+		return nil, fmt.Errorf("decode hive config: %w", err)
+	}
+	return NewHiveClient(cfg)
 }
 
 // redis returns the pooled Redis client for the connection, auto-connecting

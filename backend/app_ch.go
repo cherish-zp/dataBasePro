@@ -70,6 +70,13 @@ var builtinDrivers = []DriverInfo{
 		DefaultPort: 4000,
 		Description: "TiDB 库表浏览、分页查询与 SQL 控制台(兼容 MySQL 协议)",
 	},
+	{
+		Name:        "Hive",
+		Library:     "gohive",
+		Version:     "v1.6.0",
+		DefaultPort: 10000,
+		Description: "HiveServer2 原生 Thrift 客户端,支持 NOSASL/LDAP/Kerberos",
+	},
 }
 
 // CHTablesRequest carries the table-listing parameters.

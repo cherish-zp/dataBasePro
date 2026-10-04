@@ -143,6 +143,40 @@ type PostgresDataSource interface {
 	UpdateCell(ctx context.Context, req model.PostgresCellUpdateRequest) error
 }
 
+// HiveDataSource extends DataSource with the Hive (HiveServer2) browser
+// operations: database/table listing, table metadata (DESCRIBE FORMATTED +
+// SHOW CREATE TABLE), ROW_NUMBER-window paged rows (Hive 无 OFFSET), a SQL
+// console, ACID-only row edits and table-level DDL/export.
+type HiveDataSource interface {
+	DataSource
+	Databases(ctx context.Context) ([]string, error)
+	Tables(ctx context.Context, database string) ([]model.HiveTableInfo, error)
+	// TableColumns returns the table's metadata bundle (columns/partition
+	// columns/transactional/primary key/DDL/table type).
+	TableColumns(ctx context.Context, database, table string) (model.HiveTableColumnsResult, error)
+	// PageRows returns one page of the table's rows (ROW_NUMBER() OVER()
+	// 窗口包装 + COUNT(*) 计数)。
+	PageRows(ctx context.Context, database, table string, limit, offset int) (model.HivePageRowsResult, error)
+	// Execute runs the SQL script statement by statement; database 非空时先
+	// USE 该库。limit>0 启用服务端分页:可包装的 SELECT/WITH 用 ROW_NUMBER
+	// 窗口改写并附 total_rows;SHOW/DESCRIBE 类走客户端截断回退。
+	Execute(ctx context.Context, database, sqlText string, limit, offset int) ([]model.HiveStatementResult, error)
+	// TruncateTable empties the table (MANAGED_TABLE only).
+	TruncateTable(ctx context.Context, database, table string) error
+	DropTable(ctx context.Context, database, table string) error
+	// PreviewCellUpdate renders the display text of the UPDATE and counts the
+	// rows matched by the same WHERE conditions (read-only, ACID 表限定).
+	PreviewCellUpdate(ctx context.Context, database, table string, set model.HiveCellRef, where []model.HiveCellRef) (model.HiveCellUpdatePreview, error)
+	// UpdateCell executes the ACID cell update.
+	UpdateCell(ctx context.Context, database, table string, set model.HiveCellRef, where []model.HiveCellRef) error
+	// PreviewDeleteRow renders the display text of the DELETE and counts the
+	// rows matched by the same WHERE conditions (read-only, ACID 表限定).
+	PreviewDeleteRow(ctx context.Context, database, table string, where []model.HiveCellRef) (model.HiveDeleteRowPreview, error)
+	DeleteRow(ctx context.Context, database, table string, where []model.HiveCellRef) error
+	AlterTable(ctx context.Context, spec HiveAlterTableSpec) error
+	ExportTable(ctx context.Context, database, table string) (HiveExportTableResult, error)
+}
+
 // EsDataSource extends DataSource with the Elasticsearch/OpenSearch browser
 // operations: index listing, paged document rows over REST (_search), mapping
 // inspection, document CRUD and a SQL console (endpoint auto-probed per

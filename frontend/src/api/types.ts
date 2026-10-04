@@ -1,6 +1,6 @@
 // Types mirroring the Go model package (snake_case JSON fields).
 
-export type ConnectionType = 'kafka' | 'mysql' | 'tidb' | 'es' | 'redis' | 'clickhouse' | 'postgres'
+export type ConnectionType = 'kafka' | 'mysql' | 'tidb' | 'es' | 'redis' | 'clickhouse' | 'postgres' | 'hive'
 
 export interface SASLConfig {
   enabled: boolean
@@ -35,8 +35,9 @@ export interface Connection {
   name: string
   type: ConnectionType
   // 按类型多态:kafka → KafkaConfig,redis → RedisConfigShape,
-  // clickhouse → CHConfigShape,mysql/tidb → MysqlConfigShape,es → EsConfigShape
-  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape | PostgresConfigShape
+  // clickhouse → CHConfigShape,mysql/tidb → MysqlConfigShape,es → EsConfigShape,
+  // hive → HiveConfigShape
+  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape | PostgresConfigShape | HiveConfigShape
   created_at: number
   updated_at: number
 }
@@ -50,7 +51,7 @@ export interface UpdateConnectionRequest {
   id: string
   name: string
   type?: ConnectionType
-  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape | PostgresConfigShape
+  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape | PostgresConfigShape | HiveConfigShape
 }
 
 export interface Partition {
@@ -1261,4 +1262,178 @@ export interface PostgresCellUpdateRequest {
 export interface PostgresCellUpdatePreview {
   statement: string
   matched_rows: number
+}
+
+// --- Hive(HiveServer2;镜像 backend/model/hive.go) ---
+
+// 认证方式:nosasl=无认证;ldap=用户名/密码;kerberos=Kerberos(keytab+principal)。
+export type HiveAuthMode = 'nosasl' | 'ldap' | 'kerberos'
+
+// kerberos 仅 auth_mode='kerberos' 时使用:principal 为服务 principal 或用户
+// principal,keytab 为 keytab 文件路径,krb5_conf 为 krb5.conf 路径(可选)。
+export interface HiveKerberosConfig {
+  principal: string
+  keytab: string
+  krb5_conf?: string
+}
+
+export interface HiveConfigShape {
+  host: string
+  port: number // 默认 10000
+  auth_mode: HiveAuthMode
+  username?: string // nosasl 可省略
+  password?: string // ldap 使用
+  database?: string // 连接默认库(可选,空 = default)
+  kerberos?: HiveKerberosConfig
+}
+
+// 列头:列名 + 类型(如 string/int/bigint;分区列在 partition_columns 单列)。
+export interface HiveColumn {
+  name: string
+  type: string
+  comment?: string
+}
+
+export interface HiveListTablesRequest {
+  connection_id: string
+  database: string
+}
+
+// SHOW TABLES 的条目;表类型(内部/外部/视图)经 hiveTableColumns 探测。
+export interface HiveTableInfo {
+  name: string
+}
+
+export interface HivePageRowsRequest {
+  connection_id: string
+  database: string
+  table: string
+  limit: number
+  offset: number
+}
+
+// rows 单元格为 string 或 null(NULL);Hive 不支持 OFFSET,后端用
+// ROW_NUMBER() OVER() 窗口包装实现翻页;total_rows 为 COUNT(*)。
+export interface HivePageRowsResult {
+  columns: HiveColumn[]
+  rows: (string | null)[][]
+  total_rows: number
+}
+
+export interface HiveExecuteRequest {
+  connection_id: string
+  sql: string
+  // 非空时后端在该库上执行(等效 USE database);空串按连接默认库。
+  database?: string
+  // >0 时启用服务端分页(可包装 SELECT 用 ROW_NUMBER 窗口;SHOW/DESCRIBE 类
+  // 截断回退);缺省全量返回。
+  limit?: number
+  offset?: number
+}
+
+// 多语句逐条返回:失败语句带 error 文本;成功语句带列与行。
+export interface HiveStatementResult {
+  sql: string
+  duration_ms: number
+  error?: string
+  columns?: HiveColumn[]
+  rows?: (string | null)[][]
+  total_rows?: number
+}
+
+// 行定位/写入描述:type 为列类型(ACID 类型化字面量构造用),value null=IS NULL。
+export interface HiveCellRef {
+  column: string
+  type: string
+  value: string | null
+}
+
+// 单元格编辑:仅 transactional(ACID)表支持,后端强制校验。
+export interface HiveCellUpdateRequest {
+  connection_id: string
+  database: string
+  table: string
+  set: HiveCellRef
+  where: HiveCellRef[]
+}
+
+export interface HiveCellUpdatePreview {
+  statement: string
+  matched_rows: number
+}
+
+// 按行删除:仅 transactional 表,定位规则同单元格编辑。
+export interface HiveDeleteRowRequest {
+  connection_id: string
+  database: string
+  table: string
+  where: HiveCellRef[]
+}
+
+export interface HiveDeleteRowPreview {
+  statement: string
+  matched_rows: number
+}
+
+export interface HiveTruncateTableRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+export interface HiveDropTableRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+export interface HiveTableColumnsRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+// 表元数据:columns 为普通列,partition_columns 为分区列;transactional 标记
+// ACID 表(行级更新/删除的前提);primary_key 为主键约束列(Hive 3,可能为空);
+// ddl 为 SHOW CREATE TABLE 原文。
+export interface HiveTableColumnsResult {
+  columns: HiveColumn[]
+  partition_columns: HiveColumn[]
+  transactional: boolean
+  primary_key: string[]
+  ddl: string
+  // 表类型:MANAGED_TABLE/EXTERNAL_TABLE/VIRTUAL_VIEW 等(DESCRIBE FORMATTED)。
+  table_type: string
+}
+
+// 编辑表字段:Hive DDL 与 MySQL 差异大——add_columns 只能追加到表尾(无
+// AFTER);modify_columns 仅注释/类型(类型变更受 Hive 版本兼容性限制,失败
+// 原样透出);drop_columns Hive 3 直接 DROP COLUMN,低版本自动降级
+// REPLACE COLUMNS 重建。
+export interface HiveColumnDef {
+  name: string
+  type: string
+  comment: string
+}
+
+export interface HiveAlterTableRequest {
+  connection_id: string
+  database: string
+  table: string
+  add_columns: HiveColumnDef[]
+  modify_columns: HiveColumnDef[]
+  drop_columns: string[]
+}
+
+export interface HiveExportTableRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+// 导出表结构(SHOW CREATE TABLE 原文;Hive 普通表不支持 INSERT VALUES,
+// 数据导出不提供)。
+export interface HiveExportTableResult {
+  filename: string
+  content: string
 }

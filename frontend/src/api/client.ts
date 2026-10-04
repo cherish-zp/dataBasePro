@@ -115,6 +115,27 @@ import type {
   EsCellUpdateRequest,
   EsCreateDocRequest,
   EsGetDocRequest,
+  HiveConfigShape,
+  HiveAuthMode,
+  HiveListTablesRequest,
+  HiveTableInfo,
+  HivePageRowsRequest,
+  HivePageRowsResult,
+  HiveExecuteRequest,
+  HiveStatementResult,
+  HiveCellRef,
+  HiveCellUpdateRequest,
+  HiveCellUpdatePreview,
+  HiveDeleteRowRequest,
+  HiveDeleteRowPreview,
+  HiveTruncateTableRequest,
+  HiveDropTableRequest,
+  HiveTableColumnsRequest,
+  HiveTableColumnsResult,
+  HiveColumnDef,
+  HiveAlterTableRequest,
+  HiveExportTableRequest,
+  HiveExportTableResult,
   EsDoc,
   EsPutDocRequest,
   EsDeleteDocRequest,
@@ -261,6 +282,22 @@ export interface Api {
   getEsTemplate?(req: EsGetTemplateRequest): Promise<EsTemplateContent>
   putEsTemplate?(req: EsPutTemplateRequest): Promise<void>
   esClusterStats?(req: EsClusterStatsRequest): Promise<EsClusterStats>
+  // Hive 系列:后端绑定尚未由 wails generate 生成,可选成员(既有 fake 零
+  // 改动);调用方用可选链(?.)访问。
+  testHiveConnection?(cfg: HiveConfigShape): Promise<void>
+  listHiveDatabases?(id: string): Promise<string[]>
+  listHiveTables?(req: HiveListTablesRequest): Promise<HiveTableInfo[]>
+  hivePageRows?(req: HivePageRowsRequest): Promise<HivePageRowsResult>
+  hiveExecute?(req: HiveExecuteRequest): Promise<HiveStatementResult[]>
+  hivePreviewCellUpdate?(req: HiveCellUpdateRequest): Promise<HiveCellUpdatePreview>
+  hiveUpdateCell?(req: HiveCellUpdateRequest): Promise<void>
+  hivePreviewDeleteRow?(req: HiveDeleteRowRequest): Promise<HiveDeleteRowPreview>
+  hiveDeleteRow?(req: HiveDeleteRowRequest): Promise<void>
+  hiveTruncateTable?(req: HiveTruncateTableRequest): Promise<void>
+  hiveDropTable?(req: HiveDropTableRequest): Promise<void>
+  hiveTableColumns?(req: HiveTableColumnsRequest): Promise<HiveTableColumnsResult>
+  hiveAlterTable?(req: HiveAlterTableRequest): Promise<void>
+  hiveExportTable?(req: HiveExportTableRequest): Promise<HiveExportTableResult>
 }
 
 // The Wails binding generator models Go `[]byte` fields as `number[]`, but
@@ -634,6 +671,49 @@ export class WailsApi implements Api {
   }
   esClusterStats(req: EsClusterStatsRequest): Promise<EsClusterStats> {
     return (App as unknown as { EsClusterStats: (req: never) => Promise<EsClusterStats> }).EsClusterStats(req as unknown as never)
+  }
+  // Hive 系列:后端绑定由主会话稍后 wails generate 重生成,先按模块形状断言。
+  testHiveConnection(cfg: HiveConfigShape): Promise<void> {
+    return (App as unknown as { TestHiveConnection: (cfg: never) => Promise<void> }).TestHiveConnection(cfg as unknown as never)
+  }
+  listHiveDatabases(id: string): Promise<string[]> {
+    return (App as unknown as { ListHiveDatabases: (id: string) => Promise<string[]> }).ListHiveDatabases(id)
+  }
+  listHiveTables(req: HiveListTablesRequest): Promise<HiveTableInfo[]> {
+    return (App as unknown as { ListHiveTables: (req: never) => Promise<HiveTableInfo[]> }).ListHiveTables(req as unknown as never)
+  }
+  hivePageRows(req: HivePageRowsRequest): Promise<HivePageRowsResult> {
+    return (App as unknown as { HivePageRows: (req: never) => Promise<HivePageRowsResult> }).HivePageRows(req as unknown as never)
+  }
+  hiveExecute(req: HiveExecuteRequest): Promise<HiveStatementResult[]> {
+    return (App as unknown as { HiveExecute: (req: never) => Promise<HiveStatementResult[]> }).HiveExecute(req as unknown as never)
+  }
+  hivePreviewCellUpdate(req: HiveCellUpdateRequest): Promise<HiveCellUpdatePreview> {
+    return (App as unknown as { HivePreviewCellUpdate: (req: never) => Promise<HiveCellUpdatePreview> }).HivePreviewCellUpdate(req as unknown as never)
+  }
+  hiveUpdateCell(req: HiveCellUpdateRequest): Promise<void> {
+    return (App as unknown as { HiveUpdateCell: (req: never) => Promise<void> }).HiveUpdateCell(req as unknown as never)
+  }
+  hivePreviewDeleteRow(req: HiveDeleteRowRequest): Promise<HiveDeleteRowPreview> {
+    return (App as unknown as { HivePreviewDeleteRow: (req: never) => Promise<HiveDeleteRowPreview> }).HivePreviewDeleteRow(req as unknown as never)
+  }
+  hiveDeleteRow(req: HiveDeleteRowRequest): Promise<void> {
+    return (App as unknown as { HiveDeleteRow: (req: never) => Promise<void> }).HiveDeleteRow(req as unknown as never)
+  }
+  hiveTruncateTable(req: HiveTruncateTableRequest): Promise<void> {
+    return (App as unknown as { HiveTruncateTable: (req: never) => Promise<void> }).HiveTruncateTable(req as unknown as never)
+  }
+  hiveDropTable(req: HiveDropTableRequest): Promise<void> {
+    return (App as unknown as { HiveDropTable: (req: never) => Promise<void> }).HiveDropTable(req as unknown as never)
+  }
+  hiveTableColumns(req: HiveTableColumnsRequest): Promise<HiveTableColumnsResult> {
+    return (App as unknown as { HiveTableColumns: (req: never) => Promise<HiveTableColumnsResult> }).HiveTableColumns(req as unknown as never)
+  }
+  hiveAlterTable(req: HiveAlterTableRequest): Promise<void> {
+    return (App as unknown as { HiveAlterTable: (req: never) => Promise<void> }).HiveAlterTable(req as unknown as never)
+  }
+  hiveExportTable(req: HiveExportTableRequest): Promise<HiveExportTableResult> {
+    return (App as unknown as { HiveExportTable: (req: never) => Promise<HiveExportTableResult> }).HiveExportTable(req as unknown as never)
   }
 }
 

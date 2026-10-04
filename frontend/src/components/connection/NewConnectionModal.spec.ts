@@ -1124,3 +1124,185 @@ describe('PostgreSQL database 必填校验', () => {
     })
   })
 })
+
+describe('Hive 连接卡片', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+  afterEach(() => document.body.innerHTML = '')
+
+  function mountModal() {
+    return mount(NewConnectionModal, { props: { show: true }, attachTo: document.body })
+  }
+
+  it('渲染 Hive 类型卡片,选中后显示 hive 字段且默认 nosasl / 端口 10000', async () => {
+    const wrapper = mountModal()
+    expect(wrapper.find('[data-test="type-card-hive"]').exists()).toBe(true)
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    expect(wrapper.find('[data-test="type-card-hive"]').classes()).toContain('active')
+    for (const f of ['input-hive-host', 'input-hive-port', 'hive-auth-mode', 'hive-database']) {
+      expect(wrapper.find(`[data-test="${f}"]`).exists(), f).toBe(true)
+    }
+    expect((wrapper.find('[data-test="input-hive-port"]').element as HTMLInputElement).value).toBe('10000')
+    expect((wrapper.find('[data-test="hive-auth-mode"]').element as HTMLSelectElement).value).toBe('nosasl')
+    // nosasl:不渲染凭据与 kerberos 字段。
+    expect(wrapper.find('[data-test="hive-username"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hive-password"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hive-kerberos-principal"]').exists()).toBe(false)
+  })
+
+  it('切换 kerberos 显示三个 kerberos 字段且 principal/keytab 必填', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    await wrapper.find('[data-test="hive-auth-mode"]').setValue('kerberos')
+    expect(wrapper.find('[data-test="hive-username"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hive-password"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hive-kerberos-principal"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="hive-kerberos-keytab"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="hive-kerberos-krb5-conf"]').exists()).toBe(true)
+    await wrapper.find('[data-test="input-hive-host"]').setValue('hive.internal')
+    await wrapper.find('[data-test="input-name"]').setValue('hive-kerb')
+    // principal/keytab 缺失:保存禁用并展示中文错误。
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(true)
+      expect(wrapper.find('[data-test="hive-kerberos-principal-err"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="hive-kerberos-keytab-err"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="hive-kerberos-principal"]').setValue('hive/_HOST@EXAMPLE.COM')
+    await wrapper.find('[data-test="hive-kerberos-keytab"]').setValue('/etc/security/keytabs/hive.keytab')
+    expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('LDAP 认证缺用户名时保存禁用并报错,填写后恢复', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    await wrapper.find('[data-test="hive-auth-mode"]').setValue('ldap')
+    expect(wrapper.find('[data-test="hive-username"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="hive-password"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="hive-kerberos-principal"]').exists()).toBe(false)
+    await wrapper.find('[data-test="input-hive-host"]').setValue('hive.internal')
+    await wrapper.find('[data-test="input-name"]').setValue('hive-ldap')
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(true)
+      expect(wrapper.find('[data-test="hive-username-err"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="hive-username"]').setValue('hive')
+    expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('保存 nosasl 连接:config 仅携带 host/port/auth_mode,database 填写则带上', async () => {
+    const api2 = fakeApi({ createConnection: vi.fn(async (c: never) => c) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('hive-local')
+    await wrapper.find('[data-test="input-hive-host"]').setValue('127.0.0.1')
+    await wrapper.find('[data-test="input-hive-port"]').setValue('10001')
+    await wrapper.find('[data-test="hive-database"]').setValue('warehouse')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'hive-local',
+          type: 'hive',
+          config: { host: '127.0.0.1', port: 10001, auth_mode: 'nosasl', database: 'warehouse' },
+        }),
+      )
+    })
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('保存 kerberos 连接:config 携带 kerberos 子对象,krb5_conf 留空省略', async () => {
+    const api2 = fakeApi({ createConnection: vi.fn(async (c: never) => c) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('hive-kerb')
+    await wrapper.find('[data-test="input-hive-host"]').setValue('hs2.internal')
+    await wrapper.find('[data-test="hive-auth-mode"]').setValue('kerberos')
+    await wrapper.find('[data-test="hive-kerberos-principal"]').setValue('hive/_HOST@EXAMPLE.COM')
+    await wrapper.find('[data-test="hive-kerberos-keytab"]').setValue('/etc/security/keytabs/hive.keytab')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'hive-kerb',
+          type: 'hive',
+          config: {
+            host: 'hs2.internal',
+            port: 10000,
+            auth_mode: 'kerberos',
+            kerberos: { principal: 'hive/_HOST@EXAMPLE.COM', keytab: '/etc/security/keytabs/hive.keytab' },
+          },
+        }),
+      )
+    })
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('编辑模式预填 hive 配置(含 kerberos)并经 updateConnection 保存', async () => {
+    const api2 = fakeApi({ updateConnection: vi.fn(async (r: never) => r) })
+    setApi(api2)
+    const conn: Connection = {
+      id: 'hive1',
+      name: 'hive-old',
+      type: 'hive',
+      config: {
+        host: 'hs2.internal',
+        port: 10000,
+        auth_mode: 'kerberos',
+        database: 'warehouse',
+        kerberos: { principal: 'hive/_HOST@EXAMPLE.COM', keytab: '/kt/hive.keytab', krb5_conf: '/etc/krb5.conf' },
+      },
+      created_at: 1,
+      updated_at: 1,
+    }
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: conn }, attachTo: document.body })
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="input-hive-host"]').element as HTMLInputElement).value).toBe('hs2.internal')
+    })
+    expect((wrapper.find('[data-test="input-hive-port"]').element as HTMLInputElement).value).toBe('10000')
+    expect((wrapper.find('[data-test="hive-auth-mode"]').element as HTMLSelectElement).value).toBe('kerberos')
+    expect((wrapper.find('[data-test="hive-kerberos-principal"]').element as HTMLInputElement).value).toBe('hive/_HOST@EXAMPLE.COM')
+    expect((wrapper.find('[data-test="hive-kerberos-keytab"]').element as HTMLInputElement).value).toBe('/kt/hive.keytab')
+    expect((wrapper.find('[data-test="hive-kerberos-krb5-conf"]').element as HTMLInputElement).value).toBe('/etc/krb5.conf')
+    expect((wrapper.find('[data-test="hive-database"]').element as HTMLInputElement).value).toBe('warehouse')
+    expect(wrapper.find('[data-test="type-card-hive"]').classes()).toContain('active')
+    await wrapper.find('[data-test="input-name"]').setValue('hive-new')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.updateConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'hive1',
+          name: 'hive-new',
+          type: 'hive',
+          config: expect.objectContaining({ host: 'hs2.internal', port: 10000, auth_mode: 'kerberos' }),
+        }),
+      )
+    })
+  })
+
+  it('测试连接走 testHiveConnection 并携带完整配置(LDAP 凭据)', async () => {
+    const api2 = fakeApi({ testHiveConnection: vi.fn(async () => {}) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    await wrapper.find('[data-test="input-hive-host"]').setValue('hs2.internal')
+    await wrapper.find('[data-test="hive-auth-mode"]').setValue('ldap')
+    await wrapper.find('[data-test="hive-username"]').setValue('hive')
+    await wrapper.find('[data-test="hive-password"]').setValue('pw')
+    await wrapper.find('[data-test="btn-test"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.testHiveConnection).toHaveBeenCalledWith({
+        host: 'hs2.internal',
+        port: 10000,
+        auth_mode: 'ldap',
+        username: 'hive',
+        password: 'pw',
+      })
+    })
+    expect(api2.testConnection).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="test-ok"]').exists()).toBe(true)
+  })
+})

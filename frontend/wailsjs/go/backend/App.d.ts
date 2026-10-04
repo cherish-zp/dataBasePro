@@ -99,6 +99,28 @@ export function GetPartitionLag(arg1:string,arg2:string,arg3:string):Promise<Rec
 
 export function GetTopicMessageCounts(arg1:string,arg2:Array<string>):Promise<Record<string, model.TopicMessageCounts>>;
 
+export function HiveAlterTable(arg1:backend.HiveAlterTableRequest):Promise<void>;
+
+export function HiveDeleteRow(arg1:model.HiveDeleteRowRequest):Promise<void>;
+
+export function HiveDropTable(arg1:backend.HiveTableRequest):Promise<void>;
+
+export function HiveExecute(arg1:backend.HiveExecuteRequest):Promise<Array<model.HiveStatementResult>>;
+
+export function HiveExportTable(arg1:backend.HiveTableRequest):Promise<service.HiveExportTableResult>;
+
+export function HivePageRows(arg1:backend.HivePageRowsRequest):Promise<model.HivePageRowsResult>;
+
+export function HivePreviewCellUpdate(arg1:model.HiveCellUpdateRequest):Promise<model.HiveCellUpdatePreview>;
+
+export function HivePreviewDeleteRow(arg1:model.HiveDeleteRowRequest):Promise<model.HiveDeleteRowPreview>;
+
+export function HiveTableColumns(arg1:backend.HiveTableRequest):Promise<model.HiveTableColumnsResult>;
+
+export function HiveTruncateTable(arg1:backend.HiveTableRequest):Promise<void>;
+
+export function HiveUpdateCell(arg1:model.HiveCellUpdateRequest):Promise<void>;
+
 export function ListActiveConsumers(arg1:backend.ActiveMembersRequest):Promise<Array<model.ActiveConsumer>>;
 
 export function ListActiveProducers(arg1:backend.ActiveMembersRequest):Promise<Array<model.ActiveProducer>>;
@@ -118,6 +140,10 @@ export function ListDrivers():Promise<Array<backend.DriverInfo>>;
 export function ListESIndices(arg1:string):Promise<Array<model.EsIndexInfo>>;
 
 export function ListEsTemplates(arg1:string):Promise<Array<model.EsTemplateInfo>>;
+
+export function ListHiveDatabases(arg1:string):Promise<Array<string>>;
+
+export function ListHiveTables(arg1:backend.HiveTablesRequest):Promise<Array<model.HiveTableInfo>>;
 
 export function ListMysqlDatabases(arg1:string):Promise<Array<string>>;
 
@@ -232,6 +258,8 @@ export function TestCHConnection(arg1:model.ClickHouseConfig):Promise<void>;
 export function TestConnection(arg1:model.KafkaConfig):Promise<void>;
 
 export function TestESConnection(arg1:model.EsConfig):Promise<void>;
+
+export function TestHiveConnection(arg1:model.HiveConfig):Promise<void>;
 
 export function TestMysqlConnection(arg1:model.MysqlConfig):Promise<void>;
 

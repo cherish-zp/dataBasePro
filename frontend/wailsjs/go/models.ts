@@ -626,6 +626,116 @@ export namespace backend {
 	        this.settings_json = source["settings_json"];
 	    }
 	}
+	export class HiveAlterTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    add_columns: service.HiveColumnDef[];
+	    modify_columns: service.HiveColumnDef[];
+	    drop_columns: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveAlterTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.add_columns = this.convertValues(source["add_columns"], service.HiveColumnDef);
+	        this.modify_columns = this.convertValues(source["modify_columns"], service.HiveColumnDef);
+	        this.drop_columns = source["drop_columns"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveExecuteRequest {
+	    connection_id: string;
+	    sql: string;
+	    database?: string;
+	    limit?: number;
+	    offset?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveExecuteRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.sql = source["sql"];
+	        this.database = source["database"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class HivePageRowsRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    limit: number;
+	    offset: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HivePageRowsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class HiveTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	    }
+	}
+	export class HiveTablesRequest {
+	    connection_id: string;
+	    database: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveTablesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	    }
+	}
 	export class ListSavedQueriesRequest {
 	    console_type?: string;
 	    connection_id?: string;
@@ -2110,6 +2220,325 @@ export namespace model {
 	        this.value = source["value"];
 	    }
 	}
+	export class HiveCellRef {
+	    column: string;
+	    type: string;
+	    value?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveCellRef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.column = source["column"];
+	        this.type = source["type"];
+	        this.value = source["value"];
+	    }
+	}
+	export class HiveCellUpdatePreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveCellUpdatePreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class HiveCellUpdateRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    set: HiveCellRef;
+	    where: HiveCellRef[];
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveCellUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.set = this.convertValues(source["set"], HiveCellRef);
+	        this.where = this.convertValues(source["where"], HiveCellRef);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveColumn {
+	    name: string;
+	    type: string;
+	    comment?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveColumn(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.comment = source["comment"];
+	    }
+	}
+	export class HiveKerberosConfig {
+	    principal: string;
+	    keytab: string;
+	    krb5_conf?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveKerberosConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.principal = source["principal"];
+	        this.keytab = source["keytab"];
+	        this.krb5_conf = source["krb5_conf"];
+	    }
+	}
+	export class HiveConfig {
+	    host: string;
+	    port: number;
+	    auth_mode: string;
+	    username?: string;
+	    password?: string;
+	    database?: string;
+	    kerberos?: HiveKerberosConfig;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.auth_mode = source["auth_mode"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.database = source["database"];
+	        this.kerberos = this.convertValues(source["kerberos"], HiveKerberosConfig);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveDeleteRowPreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveDeleteRowPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class HiveDeleteRowRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    where: HiveCellRef[];
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveDeleteRowRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.where = this.convertValues(source["where"], HiveCellRef);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class HivePageRowsResult {
+	    columns: HiveColumn[];
+	    rows: string[][];
+	    total_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HivePageRowsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = this.convertValues(source["columns"], HiveColumn);
+	        this.rows = source["rows"];
+	        this.total_rows = source["total_rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveStatementResult {
+	    sql: string;
+	    duration_ms: number;
+	    error?: string;
+	    columns?: HiveColumn[];
+	    rows?: string[][];
+	    total_rows?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveStatementResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sql = source["sql"];
+	        this.duration_ms = source["duration_ms"];
+	        this.error = source["error"];
+	        this.columns = this.convertValues(source["columns"], HiveColumn);
+	        this.rows = source["rows"];
+	        this.total_rows = source["total_rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveTableColumnsResult {
+	    columns: HiveColumn[];
+	    partition_columns: HiveColumn[];
+	    transactional: boolean;
+	    primary_key: string[];
+	    ddl: string;
+	    table_type: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveTableColumnsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = this.convertValues(source["columns"], HiveColumn);
+	        this.partition_columns = this.convertValues(source["partition_columns"], HiveColumn);
+	        this.transactional = source["transactional"];
+	        this.primary_key = source["primary_key"];
+	        this.ddl = source["ddl"];
+	        this.table_type = source["table_type"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveTableInfo {
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveTableInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	    }
+	}
 	export class TLSConfig {
 	    enabled: boolean;
 	    ca_cert?: string;
@@ -3064,6 +3493,36 @@ export namespace service {
 		    }
 		    return a;
 		}
+	}
+	export class HiveColumnDef {
+	    name: string;
+	    type: string;
+	    comment: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveColumnDef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.comment = source["comment"];
+	    }
+	}
+	export class HiveExportTableResult {
+	    filename: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveExportTableResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filename = source["filename"];
+	        this.content = source["content"];
+	    }
 	}
 	export class MysqlColumnDef {
 	    name: string;
