@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // --- 请求/响应形状(与前端 api/types.ts 的 ClickHouse 按行删除契约严格一致) ---

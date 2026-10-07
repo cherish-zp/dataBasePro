@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"dataBasePro/backend/internal/store"
+	"sheng-shou-yun-he/backend/internal/store"
 )
 
 // TestAppQueryFileRoundTrip 走通「写入 → 列表 → 读取 → 删除」:前端传目录与

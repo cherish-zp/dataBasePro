@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // CreateSavedQuery validates and persists a saved SQL console query, returning

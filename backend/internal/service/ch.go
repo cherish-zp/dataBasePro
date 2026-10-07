@@ -13,7 +13,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // CHCellMaxBytes 是结果单元格格式化后的截断阈值;超出部分替换为截断标记。

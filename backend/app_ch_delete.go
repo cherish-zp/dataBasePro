@@ -5,7 +5,7 @@
 package backend
 
 import (
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // CHPreviewDeleteRow 预览按行删除:渲染 ALTER TABLE ... DELETE 语句全文 +

@@ -13,7 +13,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 func strPtrOf(s string) *string { return &s }

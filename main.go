@@ -1,4 +1,4 @@
-// Command dataBasePro is the Wails desktop app entry point. It binds the
+// Command sheng-shou-yun-he is the Wails desktop app entry point. It binds the
 // backend.App (backend package) to the frontend. A CLI demo lives in
 // cmd/dbclient for non-GUI verification.
 package main
@@ -13,7 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 
-	"dataBasePro/backend"
+	"sheng-shou-yun-he/backend"
 )
 
 //go:embed all:frontend/dist
@@ -37,7 +37,7 @@ func main() {
 	defer closeDB()
 
 	err = wails.Run(&options.App{
-		Title:  "dataBasePro",
+		Title:  "圣手运河",
 		Width:  1280,
 		Height: 800,
 		AssetServer: &assetserver.Options{

@@ -20,8 +20,8 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // methodTimeout bounds each individual frontend call.

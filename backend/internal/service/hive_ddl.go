@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // HiveColumnDef 描述一条 ADD/MODIFY 的列定义,后端据此拼 ALTER。

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // NewMysqlClientWithConnector 基于 driver.Connector 直接构造客户端:不解析

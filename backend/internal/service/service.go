@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/store"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/store"
 )
 
 // Service coordinates persistence, the connection pool and the Kafka client

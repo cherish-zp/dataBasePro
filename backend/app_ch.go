@@ -6,7 +6,7 @@ package backend
 import (
 	"strings"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // DriverInfo describes one builtin driver for the driver management page.

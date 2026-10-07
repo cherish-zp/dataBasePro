@@ -6,7 +6,7 @@ package backend
 import (
 	"strings"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // EsMappingRequest carries the mapping-listing parameters.

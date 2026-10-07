@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // deleteRecordingPostgresApp 在既有 fakePostgresApp 上补按行删除能力,记录

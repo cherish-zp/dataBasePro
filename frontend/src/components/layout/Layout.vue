@@ -4,6 +4,7 @@ import { useTabsStore, type Tab } from '@/store/tabs'
 import type { Connection } from '@/api/types'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
 import CommandPalette from '@/components/common/CommandPalette.vue'
+import BrandLogo from '@/components/common/BrandLogo.vue'
 import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
 import ConsumerGroupView from '@/components/kafka/ConsumerGroupView.vue'
 import ProducerPanel from '@/components/kafka/ProducerPanel.vue'
@@ -522,7 +523,10 @@ function onTabDragEnd(): void {
 <template>
   <div class="layout" :class="{ resizing, 'files-resizing': filesResizing }" data-test="layout">
     <header class="topbar" data-test="topbar">
-      <div class="brand" data-test="brand">🪐 dataBasePro</div>
+      <div class="brand" data-test="brand">
+        <BrandLogo class="brand-logo" />
+        <span>圣手运河</span>
+      </div>
       <div class="spacer"></div>
       <button
         class="btn ghost"
@@ -863,7 +867,8 @@ function onTabDragEnd(): void {
   backdrop-filter: var(--glass-blur);
   z-index: 10;
 }
-.brand { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+.brand { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+.brand-logo { width: 18px; height: 18px; color: var(--accent); flex-shrink: 0; }
 .spacer { flex: 1; }
 .btn {
   border-radius: 7px;

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 func newTestStore(t *testing.T) *Store {

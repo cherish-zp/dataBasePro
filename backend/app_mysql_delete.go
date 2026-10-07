@@ -5,7 +5,7 @@
 package backend
 
 import (
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // MysqlPreviewDeleteRow 预览按行删除:渲染 DELETE 语句全文 + 同 WHERE 命中

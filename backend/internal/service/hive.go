@@ -21,7 +21,7 @@ import (
 
 	"github.com/beltran/gohive"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // hiveDialTimeout bounds the initial connect of a new client (gohive 的

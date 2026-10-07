@@ -1,6 +1,6 @@
 # 快速上手
 
-dataBasePro 是一款多数据源管理客户端,支持 **Kafka / MySQL / TiDB / PostgreSQL / ClickHouse / Elasticsearch / Redis** 的连接管理与常用操作。本篇帮助新用户快速建立第一印象。
+圣手运河（Canal）是一款多数据源管理客户端,支持 **Kafka / MySQL / TiDB / PostgreSQL / ClickHouse / Elasticsearch / Redis** 的连接管理与常用操作。本篇帮助新用户快速建立第一印象。
 
 ## 新建连接
 

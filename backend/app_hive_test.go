@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // --- App 层离线 fake:实现 service.HiveConn/HiveRows,按查询文本路由

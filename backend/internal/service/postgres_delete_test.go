@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // --- 纯函数:参数化 DELETE 语句构造 ---

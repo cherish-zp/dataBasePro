@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // These cases bind a local loopback port via kfake, so they are compile-only in

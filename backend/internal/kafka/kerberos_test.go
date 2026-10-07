@@ -24,7 +24,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/spnego"
 	"github.com/jcmturner/gokrb5/v8/types"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // scriptedHandshaker replays a pre-programmed GSSAPI token exchange, standing

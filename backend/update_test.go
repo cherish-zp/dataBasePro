@@ -76,9 +76,9 @@ func TestCheckUpdateFindsNewerVersion(t *testing.T) {
 	  "tag_name": "v1.1.0",
 	  "body": "修复若干问题",
 	  "assets": [
-	    {"name": "dataBasePro-v1.1.0-darwin-arm64.zip", "browser_download_url": "http://x/mac-arm.zip"},
-	    {"name": "dataBasePro-v1.1.0-darwin-amd64.zip", "browser_download_url": "http://x/mac-intel.zip"},
-	    {"name": "dataBasePro-v1.1.0-windows-amd64.zip", "browser_download_url": "http://x/win.zip"}
+	    {"name": "圣手运河-v1.1.0-darwin-arm64.zip", "browser_download_url": "http://x/mac-arm.zip"},
+	    {"name": "圣手运河-v1.1.0-darwin-amd64.zip", "browser_download_url": "http://x/mac-intel.zip"},
+	    {"name": "圣手运河-v1.1.0-windows-amd64.zip", "browser_download_url": "http://x/win.zip"}
 	  ]
 	}`)
 	app := newUpdateApp(t, srv)
@@ -103,8 +103,8 @@ func TestCheckUpdatePicksAssetByArch(t *testing.T) {
 	srv := fakeGiteeServer(t, `{
 	  "tag_name": "v1.1.0",
 	  "assets": [
-	    {"name": "dataBasePro-v1.1.0-darwin-arm64.zip", "browser_download_url": "http://x/mac-arm.zip"},
-	    {"name": "dataBasePro-v1.1.0-darwin-amd64.zip", "browser_download_url": "http://x/mac-intel.zip"}
+	    {"name": "圣手运河-v1.1.0-darwin-arm64.zip", "browser_download_url": "http://x/mac-arm.zip"},
+	    {"name": "圣手运河-v1.1.0-darwin-amd64.zip", "browser_download_url": "http://x/mac-intel.zip"}
 	  ]
 	}`)
 	app := newUpdateApp(t, srv)
@@ -153,9 +153,9 @@ func TestPickAssetURL(t *testing.T) {
 		Name               string `json:"name"`
 		BrowserDownloadURL string `json:"browser_download_url"`
 	}{
-		{Name: "dataBasePro-v1.6.0-darwin-amd64.zip", BrowserDownloadURL: "intel"},
-		{Name: "dataBasePro-v1.6.0-darwin-arm64.zip", BrowserDownloadURL: "arm"},
-		{Name: "dataBasePro-v1.6.0-windows-amd64.zip", BrowserDownloadURL: "win"},
+		{Name: "圣手运河-v1.6.0-darwin-amd64.zip", BrowserDownloadURL: "intel"},
+		{Name: "圣手运河-v1.6.0-darwin-arm64.zip", BrowserDownloadURL: "arm"},
+		{Name: "圣手运河-v1.6.0-windows-amd64.zip", BrowserDownloadURL: "win"},
 		{Name: "v1.6.0.zip", BrowserDownloadURL: "source"},
 	}}
 	if got := pickAssetURL(rel, "darwin", "arm64"); got != "arm" {
@@ -184,7 +184,7 @@ func TestPickAssetURL(t *testing.T) {
 	}
 }
 
-// makeUpdateZip writes a zip containing a minimal dataBasePro.app tree.
+// makeUpdateZip writes a zip containing a minimal 圣手运河.app tree.
 func makeUpdateZip(t *testing.T, path string) {
 	t.Helper()
 	var buf bytes.Buffer
@@ -196,9 +196,9 @@ func makeUpdateZip(t *testing.T, path string) {
 		}
 		io.WriteString(w, content)
 	}
-	add("dataBasePro.app/Contents/", "")
-	add("dataBasePro.app/Contents/MacOS/dataBasePro", "#!/bin/sh\n")
-	add("dataBasePro.app/Contents/Info.plist", "<plist/>")
+	add("圣手运河.app/Contents/", "")
+	add("圣手运河.app/Contents/MacOS/圣手运河", "#!/bin/sh\n")
+	add("圣手运河.app/Contents/Info.plist", "<plist/>")
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,10 @@ func TestDownloadUpdateUnzipsApp(t *testing.T) {
 		t.Fatalf("DownloadUpdate: %v", err)
 	}
 	staging := app.stagingDir.Load().(string)
-	bin := filepath.Join(staging, "dataBasePro.app", "Contents", "MacOS", "dataBasePro")
+	if !strings.HasPrefix(filepath.Base(staging), "sheng-shou-yun-he-update-") {
+		t.Fatalf("staging dir must use the sheng-shou-yun-he-update- prefix, got %q", staging)
+	}
+	bin := filepath.Join(staging, "圣手运河.app", "Contents", "MacOS", "圣手运河")
 	if _, err := os.Stat(bin); err != nil {
 		t.Fatalf("expected extracted binary, got %v", err)
 	}
@@ -254,7 +257,7 @@ func makeWindowsUpdateZip(t *testing.T, path string) {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	w, err := zw.Create("dataBasePro.exe")
+	w, err := zw.Create("圣手运河.exe")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +290,7 @@ func TestDownloadUpdateWindowsStagesExe(t *testing.T) {
 		t.Fatalf("DownloadUpdate: %v", err)
 	}
 	staging := app.stagingDir.Load().(string)
-	if _, err := os.Stat(filepath.Join(staging, "dataBasePro.exe")); err != nil {
+	if _, err := os.Stat(filepath.Join(staging, "圣手运河.exe")); err != nil {
 		t.Fatalf("expected staged exe, got %v", err)
 	}
 	if app.UpdateProgress().Phase != "done" {
@@ -304,11 +307,11 @@ func TestApplyUpdateRequiresStaging(t *testing.T) {
 
 // TestBundleFromExe 验证从可执行文件路径反查 .app 包目录。
 func TestBundleFromExe(t *testing.T) {
-	bundle, err := bundleFromExe("/Applications/dataBasePro.app/Contents/MacOS/dataBasePro")
-	if err != nil || bundle != "/Applications/dataBasePro.app" {
+	bundle, err := bundleFromExe("/Applications/圣手运河.app/Contents/MacOS/圣手运河")
+	if err != nil || bundle != "/Applications/圣手运河.app" {
 		t.Fatalf("bundleFromExe = %q, %v", bundle, err)
 	}
-	if _, err := bundleFromExe("/opt/homebrew/bin/dataBasePro"); err == nil {
+	if _, err := bundleFromExe("/opt/homebrew/bin/圣手运河"); err == nil {
 		t.Fatal("non-bundle executable must fail")
 	}
 }
@@ -316,13 +319,14 @@ func TestBundleFromExe(t *testing.T) {
 // TestBuildUpdaterScriptSwapsInPlace 验证 macOS 脚本原位替换:旧包改名备份,
 // 新包 ditto 到运行位置,启动失败自动还原;不再写死 /Applications。
 func TestBuildUpdaterScriptSwapsInPlace(t *testing.T) {
-	s := buildUpdaterScript("/tmp/stage", "/Applications/dataBasePro.app")
+	s := buildUpdaterScript("/tmp/stage", "/Applications/圣手运河.app")
 	for _, want := range []string{
-		`SRC="/tmp/stage/dataBasePro.app"`,
-		`TARGET="/Applications/dataBasePro.app"`,
+		`SRC="/tmp/stage/圣手运河.app"`,
+		`TARGET="/Applications/圣手运河.app"`,
 		`mv "$TARGET" "$BACKUP"`,
 		`ditto "$SRC" "$TARGET"`,
 		`open "$TARGET"`,
+		`pgrep -x 圣手运河`,
 		`mv "$BACKUP" "$TARGET"`,
 	} {
 		if !strings.Contains(s, want) {
@@ -333,18 +337,24 @@ func TestBuildUpdaterScriptSwapsInPlace(t *testing.T) {
 
 // TestBuildWindowsUpdaterScript 验证 Windows 脚本:等待退出 → 旧 exe 原地
 // 改名(运行中的 exe 允许改名)→ 复制新 exe → 启动 → 清理备份,复制失败还原。
+// 脚本含中文 exe 名,必须在 @echo off 后先切 UTF-8 代码页。
 func TestBuildWindowsUpdaterScript(t *testing.T) {
-	s := buildWindowsUpdaterScript(`C:\stage`, `C:\Apps\dataBasePro.exe`)
+	s := buildWindowsUpdaterScript(`C:\stage`, `C:\Apps\圣手运河.exe`)
 	for _, want := range []string{
-		`move /Y "C:\Apps\dataBasePro.exe" "C:\Apps\dataBasePro.exe.old"`,
-		`copy /Y "C:\stage\dataBasePro.exe" "C:\Apps\dataBasePro.exe"`,
-		`start "" "C:\Apps\dataBasePro.exe"`,
-		`del "C:\Apps\dataBasePro.exe.old"`,
-		`move /Y "C:\Apps\dataBasePro.exe.old" "C:\Apps\dataBasePro.exe"`,
+		`@echo off`,
+		`chcp 65001 >nul`,
+		`move /Y "C:\Apps\圣手运河.exe" "C:\Apps\圣手运河.exe.old"`,
+		`copy /Y "C:\stage\圣手运河.exe" "C:\Apps\圣手运河.exe"`,
+		`start "" "C:\Apps\圣手运河.exe"`,
+		`del "C:\Apps\圣手运河.exe.old"`,
+		`move /Y "C:\Apps\圣手运河.exe.old" "C:\Apps\圣手运河.exe"`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("script missing %q:\n%s", want, s)
 		}
+	}
+	if !strings.Contains(s, "@echo off\r\nchcp 65001 >nul") {
+		t.Fatalf("chcp 65001 must come right after @echo off:\n%s", s)
 	}
 }
 
@@ -352,14 +362,14 @@ func TestBuildWindowsUpdaterScript(t *testing.T) {
 // 并以分离进程启动。
 func TestApplyUpdateSpawnsScriptWhenStaged(t *testing.T) {
 	staging := t.TempDir()
-	appDir := filepath.Join(staging, "dataBasePro.app")
+	appDir := filepath.Join(staging, "圣手运河.app")
 	os.MkdirAll(filepath.Join(appDir, "Contents", "MacOS"), 0o755)
-	os.WriteFile(filepath.Join(appDir, "Contents", "MacOS", "dataBasePro"), []byte("x"), 0o755)
+	os.WriteFile(filepath.Join(appDir, "Contents", "MacOS", "圣手运河"), []byte("x"), 0o755)
 	os.WriteFile(filepath.Join(appDir, "Contents", "Info.plist"), []byte("<x/>"), 0o644)
 	setRuntime(t, "darwin", "arm64")
 	oldExePath := exePath
 	exePath = func() (string, error) {
-		return "/Applications/dataBasePro.app/Contents/MacOS/dataBasePro", nil
+		return "/Applications/圣手运河.app/Contents/MacOS/圣手运河", nil
 	}
 	t.Cleanup(func() { exePath = oldExePath })
 
@@ -380,7 +390,7 @@ func TestApplyUpdateSpawnsScriptWhenStaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("script not written: %v", err)
 	}
-	if !strings.Contains(string(data), `TARGET="/Applications/dataBasePro.app"`) {
+	if !strings.Contains(string(data), `TARGET="/Applications/圣手运河.app"`) {
 		t.Fatalf("script must target the running install location:\n%s", data)
 	}
 }
@@ -390,9 +400,9 @@ func TestApplyUpdateSpawnsScriptWhenStaged(t *testing.T) {
 func TestApplyUpdateWindowsRunsBat(t *testing.T) {
 	setRuntime(t, "windows", "amd64")
 	staging := t.TempDir()
-	os.WriteFile(filepath.Join(staging, "dataBasePro.exe"), []byte("MZ"), 0o755)
+	os.WriteFile(filepath.Join(staging, "圣手运河.exe"), []byte("MZ"), 0o755)
 	oldExePath := exePath
-	exePath = func() (string, error) { return `C:\Apps\dataBasePro.exe`, nil }
+	exePath = func() (string, error) { return `C:\Apps\圣手运河.exe`, nil }
 	t.Cleanup(func() { exePath = oldExePath })
 
 	var started []string

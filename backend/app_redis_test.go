@@ -5,7 +5,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // newRedisApp 起一个 miniredis 并在 store 里登记一个指向它的 redis 连接。

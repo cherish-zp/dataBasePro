@@ -15,7 +15,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // postgresDialTimeout bounds the default database ping in Connect.

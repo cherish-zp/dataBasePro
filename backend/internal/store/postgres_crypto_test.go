@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 func TestPostgresPasswordEncryptedAtRest(t *testing.T) {

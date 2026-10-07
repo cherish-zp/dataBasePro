@@ -2,7 +2,7 @@
 # 三份产物,发布到 GitHub Release,并同步附件到 Gitee Release。
 #
 # 前提(一次性配置):
-# 1. GitHub 建镜像仓库,本地 `git remote add github git@github.com:<user>/dataBasePro.git`
+# 1. GitHub 建镜像仓库,本地 `git remote add github git@github.com:cherish-zp/sheng-shou-yun-he.git`
 #    后 `git push github main --tags`(Gitee Go 无 macOS 构建机,故用 GitHub Actions)。
 # 2. GitHub 仓库 Settings → Secrets and variables → Actions 配置 GITEE_TOKEN
 #    (Gitee 私人令牌,具备 releases 权限),产物才会同步回 Gitee Release。
@@ -44,7 +44,7 @@ jobs:
       - name: Package arm64
         run: |
           cd build/bin
-          zip -qr "${{ github.workspace }}/dataBasePro-${{ github.ref_name }}-darwin-arm64.zip" dataBasePro.app
+          zip -qr "${{ github.workspace }}/圣手运河-${{ github.ref_name }}-darwin-arm64.zip" 圣手运河.app
 
       - name: Build amd64
         run: wails build --platform darwin/amd64
@@ -52,12 +52,12 @@ jobs:
       - name: Package amd64
         run: |
           cd build/bin
-          zip -qr "${{ github.workspace }}/dataBasePro-${{ github.ref_name }}-darwin-amd64.zip" dataBasePro.app
+          zip -qr "${{ github.workspace }}/圣手运河-${{ github.ref_name }}-darwin-amd64.zip" 圣手运河.app
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos-packages
-          path: dataBasePro-*.zip
+          path: 圣手运河-*.zip
           if-no-files-found: error
 
   build-windows:
@@ -86,7 +86,7 @@ jobs:
         run: wails build --platform windows/amd64
 
       - name: Package exe
-        run: Compress-Archive -Path build/bin/dataBasePro.exe -DestinationPath "dataBasePro-${{ github.ref_name }}-windows-amd64.zip"
+        run: Compress-Archive -Path build/bin/圣手运河.exe -DestinationPath "圣手运河-${{ github.ref_name }}-windows-amd64.zip"
 
       # build/windows/installer 已有 NSIS 工程;NSIS 未进 runner 时跳过,不影响 zip 产物。
       - name: Build NSIS installer (optional)
@@ -95,12 +95,12 @@ jobs:
 
       - name: Package installer (optional)
         if: hashFiles('build/bin/*-amd64-installer.exe') != ''
-        run: Copy-Item build/bin/*-amd64-installer.exe "dataBasePro-${{ github.ref_name }}-windows-amd64-installer.exe"
+        run: Copy-Item build/bin/*-amd64-installer.exe "圣手运河-${{ github.ref_name }}-windows-amd64-installer.exe"
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-packages
-          path: dataBasePro-*.zip
+          path: 圣手运河-*.zip
           if-no-files-found: error
 
   release:
@@ -126,7 +126,7 @@ jobs:
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITEE_REPO: princess-zp/dataBasePro
+          GITEE_REPO: princess-zp/sheng-shou-yun-he
           TAG: ${{ github.ref_name }}
         run: |
           G() { curl -sS --connect-timeout 20 --max-time 1800 "$@"; }

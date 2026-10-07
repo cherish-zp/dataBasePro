@@ -10,8 +10,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/store"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/store"
 )
 
 // --- 离线 fake:HiveConn/HiveRows 的最小实现(不触网) ---

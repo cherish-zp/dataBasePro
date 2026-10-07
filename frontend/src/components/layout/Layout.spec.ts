@@ -304,7 +304,8 @@ describe('Layout', () => {
   it('keeps the top bar general (brand + settings, no connection/kafka actions)', () => {
     const { wrapper } = mountLayout([conn('a')])
     const topbar = wrapper.find('[data-test="topbar"]')
-    expect(topbar.find('[data-test="brand"]').text()).toContain('dataBasePro')
+    expect(topbar.find('[data-test="brand"]').text()).toContain('圣手运河')
+    expect(topbar.find('[data-test="brand"]').text()).not.toContain('dataBasePro')
     expect(topbar.find('[data-test="btn-settings"]').exists()).toBe(true)
     expect(topbar.find('[data-test="btn-new"]').exists()).toBe(false)
     expect(topbar.find('[data-test="btn-sql"]').exists()).toBe(false)

@@ -13,7 +13,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // mysqlDialTimeout bounds the initial connect/ping of a new client.

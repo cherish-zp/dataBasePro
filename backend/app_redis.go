@@ -6,8 +6,8 @@ package backend
 import (
 	"fmt"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // RedisScanRequest carries the key-space page parameters.

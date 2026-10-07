@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // --- 纯函数:DELETE mutation 语句构造 ---

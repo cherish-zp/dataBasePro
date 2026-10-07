@@ -25,7 +25,7 @@ import (
 const (
 	defaultUpdateBaseURL = "https://gitee.com/api/v5"
 	updateOwner          = "princess-zp"
-	updateRepo           = "dataBasePro"
+	updateRepo           = "sheng-shou-yun-he"
 )
 
 // giteeRelease mirrors the subset of the Gitee Release payload we read.
@@ -88,7 +88,7 @@ func cmpInt(a, b int) int {
 }
 
 // pickAssetURL selects the release asset for the current OS+arch. 发布流水线
-// 的资产命名形如 dataBasePro-v1.6.0-darwin-arm64.zip:先精确匹配
+// 的资产命名形如 圣手运河-v1.6.0-darwin-arm64.zip:先精确匹配
 // "<goos>-<goarch>",上游只提供单一架构包时按 "<goos>" 兜底;源码包
 // (不含平台名)永不被选中。
 func pickAssetURL(rel giteeRelease, goos, goarch string) string {
@@ -215,7 +215,7 @@ type DownloadUpdateRequest struct {
 }
 
 // DownloadUpdate fetches the release asset into a private staging dir and
-// unpacks the payload: macOS zips carry a dataBasePro.app tree, Windows zips
+// unpacks the payload: macOS zips carry a 圣手运河.app tree, Windows zips
 // the payload exe. 安装位置由 ApplyUpdate 决定(原位替换),与下载无关。
 func (a *App) DownloadUpdate(req DownloadUpdateRequest) error {
 	dl := a.downloadState()
@@ -244,7 +244,7 @@ func (a *App) DownloadUpdate(req DownloadUpdateRequest) error {
 	}
 	contentLength := resp.ContentLength
 
-	staging := filepath.Join(os.TempDir(), fmt.Sprintf("dataBasePro-update-%d", time.Now().UnixNano()))
+	staging := filepath.Join(os.TempDir(), fmt.Sprintf("sheng-shou-yun-he-update-%d", time.Now().UnixNano()))
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		dl.phase.Store(3)
 		dl.err.Store(fmt.Sprintf("创建暂存目录失败: %v", err))
@@ -264,12 +264,12 @@ func (a *App) DownloadUpdate(req DownloadUpdateRequest) error {
 	if runtimeGOOS == "windows" {
 		if _, err := findStagedExe(staging); err != nil {
 			dl.phase.Store(3)
-			dl.err.Store("更新包缺少 dataBasePro.exe")
+			dl.err.Store("更新包缺少 圣手运河.exe")
 			return err
 		}
-	} else if _, err := os.Stat(filepath.Join(staging, "dataBasePro.app")); err != nil {
+	} else if _, err := os.Stat(filepath.Join(staging, "圣手运河.app")); err != nil {
 		dl.phase.Store(3)
-		dl.err.Store("更新包缺少 dataBasePro.app")
+		dl.err.Store("更新包缺少 圣手运河.app")
 		return err
 	}
 	a.stagingDir.Store(staging)
@@ -279,9 +279,9 @@ func (a *App) DownloadUpdate(req DownloadUpdateRequest) error {
 }
 
 // findStagedExe locates the payload exe in the staging dir: root
-// dataBasePro.exe first, then the first *.exe found by depth-first walk.
+// 圣手运河.exe first, then the first *.exe found by depth-first walk.
 func findStagedExe(staging string) (string, error) {
-	root := filepath.Join(staging, "dataBasePro.exe")
+	root := filepath.Join(staging, "圣手运河.exe")
 	if _, err := os.Stat(root); err == nil {
 		return root, nil
 	}
@@ -414,7 +414,7 @@ var exePath = os.Executable
 // 起来后清理备份,任一步失败自动还原旧包——不允许出现「旧版已删、新版
 // 没装上」的中间态。脚本在应用退出后由系统继续执行,故先等待退出。
 func buildUpdaterScript(stagingDir, target string) string {
-	src := filepath.Join(stagingDir, "dataBasePro.app")
+	src := filepath.Join(stagingDir, "圣手运河.app")
 	return fmt.Sprintf(`#!/bin/bash
 SRC="%s"
 TARGET="%s"
@@ -424,7 +424,7 @@ if mv "$TARGET" "$BACKUP"; then
   if ditto "$SRC" "$TARGET"; then
     open "$TARGET"
     sleep 3
-    if pgrep -x dataBasePro >/dev/null 2>&1; then
+    if pgrep -x 圣手运河 >/dev/null 2>&1; then
       rm -rf "$BACKUP"
     else
       rm -rf "$TARGET"
@@ -445,10 +445,13 @@ fi
 // 环境下 timeout 不可用)。
 func buildWindowsUpdaterScript(stagingDir, target string) string {
 	// Windows 路径强制反斜杠拼接:跨平台构建时 filepath.Join 会产出
-	// "C:\stage/dataBasePro.exe" 这类混合分隔符,cmd 会把 / 当参数开关。
-	src := strings.TrimRight(stagingDir, `/\`) + `\dataBasePro.exe`
+	// "C:\stage/圣手运河.exe" 这类混合分隔符,cmd 会把 / 当参数开关。
+	src := strings.TrimRight(stagingDir, `/\`) + `\圣手运河.exe`
 	return strings.Join([]string{
 		`@echo off`,
+		// cmd 默认按系统码页解析批处理内容,脚本里出现中文 exe 名(圣手运河.exe),
+		// 必须先切 UTF-8 代码页,否则 move/copy/start 的中文路径会乱码。
+		`chcp 65001 >nul`,
 		`ping -n 3 127.0.0.1 >nul`,
 		fmt.Sprintf(`move /Y "%s" "%s.old"`, target, target),
 		`if errorlevel 1 exit /b 1`,
@@ -480,7 +483,7 @@ func (a *App) ApplyUpdate(_ ApplyUpdateRequest) error {
 	var cmd *exec.Cmd
 	if runtimeGOOS == "windows" {
 		if _, err := findStagedExe(staging); err != nil {
-			return fmt.Errorf("更新包缺少 dataBasePro.exe: %w", err)
+			return fmt.Errorf("更新包缺少 圣手运河.exe: %w", err)
 		}
 		script = filepath.Join(staging, "apply-update.bat")
 		if err := os.WriteFile(script, []byte(buildWindowsUpdaterScript(staging, filepath.Clean(self))), 0o755); err != nil {
@@ -488,9 +491,9 @@ func (a *App) ApplyUpdate(_ ApplyUpdateRequest) error {
 		}
 		cmd = exec.Command("cmd", "/c", script)
 	} else {
-		appSrc := filepath.Join(staging, "dataBasePro.app")
+		appSrc := filepath.Join(staging, "圣手运河.app")
 		if _, err := os.Stat(appSrc); err != nil {
-			return fmt.Errorf("更新包缺少 dataBasePro.app: %w", err)
+			return fmt.Errorf("更新包缺少 圣手运河.app: %w", err)
 		}
 		target, err := bundleFromExe(self)
 		if err != nil {

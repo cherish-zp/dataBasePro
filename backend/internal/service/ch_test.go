@@ -13,8 +13,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/store"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/store"
 )
 
 // --- 纯函数:SplitSQLStatements ---

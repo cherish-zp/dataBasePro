@@ -12,10 +12,10 @@ import (
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
 
-	"dataBasePro/backend/internal/kafka"
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
-	"dataBasePro/backend/internal/store"
+	"sheng-shou-yun-he/backend/internal/kafka"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/store"
 )
 
 func newTestApp(t *testing.T) *App {

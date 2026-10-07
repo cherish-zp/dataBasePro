@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // CH HTTP 自实现通道:clickhouse-go 的 HTTP 传输会在所有请求上固化

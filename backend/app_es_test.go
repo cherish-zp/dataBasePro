@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // fakeESApp implements service.EsDataSource for app-layer tests; the ES client

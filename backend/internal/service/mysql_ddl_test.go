@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // --- 纯函数:ALTER 语句拼装 ---

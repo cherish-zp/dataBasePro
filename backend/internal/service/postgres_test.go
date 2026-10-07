@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/store"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/store"
 )
 
 func TestBuildPostgresDSN(t *testing.T) {

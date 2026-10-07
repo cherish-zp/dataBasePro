@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // TestAlterTopicConfigRoundTrip alters a whitelisted config and re-describes

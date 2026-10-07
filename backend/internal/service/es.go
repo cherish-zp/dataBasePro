@@ -18,7 +18,7 @@ import (
 	"time"
 	"unicode"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // Elasticsearch 自实现 REST 客户端(零新依赖,net/http):索引浏览与文档

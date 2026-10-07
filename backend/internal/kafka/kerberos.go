@@ -26,7 +26,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/types"
 	"github.com/twmb/franz-go/pkg/sasl"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // kerberosHandshaker drives one GSSAPI context negotiation: Initial produces

@@ -5,7 +5,7 @@
 package backend
 
 import (
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // MysqlTablesRequest carries the table-listing parameters.

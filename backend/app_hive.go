@@ -8,8 +8,8 @@ package backend
 import (
 	"context"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // HiveTablesRequest addresses one database.

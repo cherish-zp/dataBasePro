@@ -6,7 +6,7 @@
 package backend
 
 import (
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // PostgresPreviewDeleteRow 预览按行删除:渲染参数化 DELETE 语句全文 + 同

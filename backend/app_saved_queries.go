@@ -1,7 +1,7 @@
 package backend
 
 import (
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // ListSavedQueriesRequest carries the optional saved-query listing filters.

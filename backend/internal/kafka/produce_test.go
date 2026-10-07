@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // TestProduceMessagesBatch publishes several records in one call and verifies

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // fakeMysqlApp implements service.MysqlDataSource for app-layer tests; the

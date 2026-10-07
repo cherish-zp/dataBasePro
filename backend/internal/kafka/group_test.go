@@ -7,7 +7,7 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kadm"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 func TestMapGroupDetailBuildsMemberTopology(t *testing.T) {

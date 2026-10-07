@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // pkThenCountRespond 路由 information_schema 主键查询与 COUNT(*) 预览查询。
