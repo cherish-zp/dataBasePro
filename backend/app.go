@@ -20,8 +20,8 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // methodTimeout bounds each individual frontend call.
@@ -37,13 +37,12 @@ type App struct {
 	dialog func(ctx context.Context, opts SaveDialogOptions) (string, error)
 	// --- 更新引擎依赖(测试可注入,见 update.go) ---
 	// baseURL 是 Gitee API 地址;httpClient 用于探测/下载;applyCmd 拦截
-	// 安装脚本的启动;downloadPath/stagingDir 记录产物位置。
-	baseURL      atomic.Value
-	httpClient   *http.Client
-	applyCmd     func(cmd *exec.Cmd) error
-	dl           *downloadState
-	downloadPath atomic.Value
-	stagingDir   atomic.Value
+	// 安装脚本的启动;stagingDir 记录下载解包后的暂存位置。
+	baseURL    atomic.Value
+	httpClient *http.Client
+	applyCmd   func(cmd *exec.Cmd) error
+	dl         *downloadState
+	stagingDir atomic.Value
 }
 
 // NewApp builds the application root around the service layer.
@@ -330,6 +329,14 @@ func (a *App) ListConnections() ([]*model.Connection, error) {
 	ctx, cancel := a.newContext()
 	defer cancel()
 	return a.svc.ListConnections(ctx)
+}
+
+// ReorderConnections 按前端提交的完整有序 id 列表持久化连接顺序;列表
+// 顺序保存到 SQLite,重启后保留。
+func (a *App) ReorderConnections(ids []string) error {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.ReorderConnections(ctx, ids)
 }
 
 // GetConnection returns a single saved connection.

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys' | 'ch-table' | 'ch-sql' | 'mysql-table' | 'mysql-sql' | 'es-index' | 'es-sql' | 'es-templates' | 'es-monitor'
+export type TabKind = 'topic' | 'group' | 'sql' | 'lag' | 'health' | 'redis-keys' | 'ch-table' | 'ch-sql' | 'mysql-table' | 'mysql-sql' | 'es-index' | 'es-sql' | 'es-templates' | 'es-monitor' | 'postgres-table' | 'postgres-sql' | 'hive-table' | 'hive-sql'
 
 export interface Tab {
   id: string
@@ -14,6 +14,10 @@ export interface Tab {
   // ClickHouse 表浏览器 / SQL 控制台携带的库与表名。
   database?: string
   table?: string
+  // PostgreSQL 表浏览器 / SQL 控制台携带的 schema 与 relation 类型
+  // (relation_type 仅 postgres-table 使用;postgres-sql 只带 database/schema)。
+  schema?: string
+  relationType?: 'table' | 'view' | 'materialized_view'
   // Elasticsearch 索引浏览器携带的索引名。
   index?: string
   // es-templates tab 携带的定位/新建标记:template 指向待选中的模板名(树模板
@@ -21,6 +25,10 @@ export interface Tab {
   template?: string
   newTemplate?: boolean
   partitions?: number[]
+  // SQL 控制台草稿(SQL 控制台类 tab 专用):控制台组件随 :key=active.id 在切
+  // tab 时销毁重建,把编辑器内容、关联查询文件与库/schema 选择状态持久化到
+  // 所属 tab 上,切回时恢复;关闭 tab 时随对象自然丢弃。
+  draft?: { sql: string; file: string | null; database?: string; schema?: string }
 }
 
 export const useTabsStore = defineStore('tabs', () => {
@@ -240,6 +248,61 @@ export const useTabsStore = defineStore('tabs', () => {
     return tab
   }
 
+  // openPostgresTable opens a PostgreSQL relation browser keyed by connection +
+  // database + schema + relation;去重 key 与树节点定位一一对应。同名 relation
+  // 跨 schema 不冲突;标题携带 schema 前缀消歧。
+  function openPostgresTable(
+    connectionId: string,
+    database: string,
+    schema: string,
+    relation: string,
+    relationType: 'table' | 'view' | 'materialized_view',
+  ): Tab {
+    const id = `postgres:${connectionId}:${database}:${schema}:${relation}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'postgres-table',
+      title: `表 · ${database}.${schema}.${relation}`,
+      connectionId,
+      database,
+      schema,
+      table: relation,
+      relationType,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  // openPostgresSql opens the PostgreSQL SQL console. One console per
+  // connection + database + schema:db/schema 为空表示「不限定」的通用控制台,
+  // id 对应段置空串(去重 key: postgres-sql:{conn}:{db}:{schema})。
+  function openPostgresSql(connectionId: string, database?: string, schema?: string): Tab {
+    const id = `postgres-sql:${connectionId}:${database ?? ''}:${schema ?? ''}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'postgres-sql',
+      // 携带库/schema 时标题区分上下文,便于区分同一连接的多个控制台。
+      title: database && schema ? `SQL · ${database}.${schema}` : database ? `SQL · ${database}` : 'SQL 控制台',
+      connectionId,
+      database,
+      schema,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
   // openEsIndex opens an Elasticsearch index browser keyed by connection +
   // index (dedupe rules copied from openMysqlTable); reopening an already
   // open index only focuses it.
@@ -334,6 +397,52 @@ export const useTabsStore = defineStore('tabs', () => {
     return tab
   }
 
+  // openHiveTable opens a Hive table browser keyed by connection + database +
+  // table (dedupe rules copied from openMysqlTable); reopening an already open
+  // table only focuses it. Title carries db.table to disambiguate same-named
+  // tables across databases.
+  function openHiveTable(connectionId: string, database: string, table: string): Tab {
+    const id = `hive:${connectionId}:${database}:${table}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'hive-table',
+      title: `表 · ${database}.${table}`,
+      connectionId,
+      database,
+      table,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
+  // openHiveSql opens the Hive SQL console. One console per connection +
+  // database (dedupe rules copied from openMysqlSql): database 为空表示「不限定
+  // 库」的通用控制台,id 省略库名段。
+  function openHiveSql(connectionId: string, database?: string): Tab {
+    const id = database ? `hive-sql:${connectionId}:${database}` : `hive-sql:${connectionId}`
+    const existing = openTabs.value.find((t) => t.id === id)
+    if (existing) {
+      activeTabId.value = existing.id
+      return existing
+    }
+    const tab: Tab = {
+      id,
+      kind: 'hive-sql',
+      title: 'SQL 控制台',
+      connectionId,
+      database,
+    }
+    openTabs.value.push(tab)
+    activeTabId.value = tab.id
+    return tab
+  }
+
   function closeTab(id: string): void {
     const idx = openTabs.value.findIndex((t) => t.id === id)
     if (idx < 0) return
@@ -382,6 +491,15 @@ export const useTabsStore = defineStore('tabs', () => {
     tab.title = title
   }
 
+  // setTabDraft persists a SQL console's editor draft onto its tab (see the
+  // Tab.draft field). Passing undefined clears the draft; both are silent
+  // no-ops when the id is not open.
+  function setTabDraft(id: string, draft: { sql: string; file: string | null; database?: string; schema?: string } | undefined): void {
+    const tab = openTabs.value.find((t) => t.id === id)
+    if (!tab) return
+    tab.draft = draft
+  }
+
   return {
     openTabs,
     activeTabId,
@@ -395,15 +513,20 @@ export const useTabsStore = defineStore('tabs', () => {
     openCHSql,
     openMysqlTable,
     openMysqlSql,
+    openPostgresTable,
+    openPostgresSql,
     openEsIndex,
     openEsSql,
     openEsTemplates,
     openEsMonitor,
+    openHiveTable,
+    openHiveSql,
     closeTab,
     closeOthers,
     closeAll,
     move,
     setActive,
     renameTab,
+    setTabDraft,
   }
 })

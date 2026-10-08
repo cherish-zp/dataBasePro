@@ -2,7 +2,7 @@
 import { reactive, ref, computed, watch } from 'vue'
 import { getApi } from '@/api/client'
 import { useConnectionsStore, type NewConnectionInput } from '@/store/connections'
-import type { Connection, CHConfigShape, EsConfigShape, KafkaConfig, MysqlConfigShape, RedisConfigShape, SASLConfig, TLSConfig } from '@/api/types'
+import type { Connection, CHConfigShape, EsConfigShape, HiveConfigShape, KafkaConfig, MysqlConfigShape, PostgresConfigShape, RedisConfigShape, SASLConfig, TLSConfig } from '@/api/types'
 
 const props = defineProps<{ show: boolean; connection?: Connection | null }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -12,7 +12,7 @@ const store = useConnectionsStore()
 const SECURITY_PROTOCOLS = ['PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'] as const
 
 // 两段式第一段:数据库类型卡片。数据来自本地常量数组,后续可换驱动管理页数据。
-type CardType = 'kafka' | 'redis' | 'clickhouse' | 'mysql' | 'tidb' | 'es'
+type CardType = 'kafka' | 'redis' | 'clickhouse' | 'mysql' | 'tidb' | 'es' | 'postgres' | 'hive'
 const TYPE_CARDS: { type: CardType; label: string; icon: string }[] = [
   { type: 'kafka', label: 'Kafka', icon: '⚡' },
   { type: 'redis', label: 'Redis', icon: '🧱' },
@@ -20,6 +20,8 @@ const TYPE_CARDS: { type: CardType; label: string; icon: string }[] = [
   { type: 'mysql', label: 'MySQL', icon: '🐬' },
   { type: 'tidb', label: 'TiDB', icon: '🌿' },
   { type: 'es', label: 'Elasticsearch', icon: '🔎' },
+  { type: 'postgres', label: 'PostgreSQL', icon: '🐘' },
+  { type: 'hive', label: 'Hive', icon: '🐝' },
 ]
 
 // createDefaultForm 表单初始值工厂:每次「新建连接」打开都从空白开始,
@@ -63,6 +65,25 @@ function createDefaultForm() {
     esApiKey: '',
     esAuthMode: 'none' as EsConfigShape['auth_mode'],
     esTlsMode: 'disabled' as EsConfigShape['tls_mode'],
+    // postgres:独立一套字段;search_path 可选,超时默认 5000ms。
+    pgHost: '',
+    pgPort: 5432,
+    pgUsername: 'postgres',
+    pgPassword: '',
+    pgDatabase: '',
+    pgTlsMode: 'disable' as PostgresConfigShape['tls_mode'],
+    pgSearchPath: '',
+    pgConnectTimeoutMs: 5000,
+    // hive:auth_mode 决定凭据字段显隐;默认库可选(留空 = default)。
+    hiveHost: '',
+    hivePort: 10000,
+    hiveAuthMode: 'nosasl' as HiveConfigShape['auth_mode'],
+    hiveUsername: '',
+    hivePassword: '',
+    hiveDatabase: '',
+    hivePrincipal: '',
+    hiveKeytab: '',
+    hiveKrb5Conf: '',
   }
 }
 
@@ -71,12 +92,18 @@ const testing = ref(false)
 const tested = ref(false)
 const testError = ref<string | null>(null)
 const saveError = ref<string | null>(null)
+// 删除确认层状态(声明需在下方 immediate watch 之前,回调会访问)。
+const deleteConfirmOpen = ref(false)
+const deleting = ref(false)
+const deleteError = ref<string | null>(null)
 // 密码可见性:各密码框(kafka/redis/clickhouse/mysql/es)独立切换,默认密文。
 const showKafkaPassword = ref(false)
 const showRedisPassword = ref(false)
 const showChPassword = ref(false)
 const showMysqlPassword = ref(false)
 const showEsPassword = ref(false)
+const showPgPassword = ref(false)
+const showHivePassword = ref(false)
 
 const editing = computed(() => !!props.connection)
 
@@ -103,6 +130,13 @@ function pickType(t: CardType): void {
   } else if (t === 'tidb') {
     form.mysqlPort = 4000
     form.mysqlTlsMode = 'disabled'
+  } else if (t === 'postgres') {
+    form.pgPort = 5432
+    form.pgTlsMode = 'disable'
+    form.pgConnectTimeoutMs = 5000
+  } else if (t === 'hive') {
+    form.hivePort = 10000
+    form.hiveAuthMode = 'nosasl'
   }
 }
 
@@ -144,6 +178,35 @@ function fillFrom(conn: Connection): void {
     form.mysqlTlsMode = cfg.tls_mode ?? 'disabled'
     return
   }
+  if (conn.type === 'postgres') {
+    const cfg = conn.config as PostgresConfigShape
+    form.connType = 'postgres'
+    form.pgHost = cfg.host
+    form.pgPort = cfg.port
+    form.pgUsername = cfg.username
+    form.pgPassword = cfg.password
+    form.pgDatabase = cfg.database
+    // 旧配置缺省 tls_mode/timeout 时按 disable/5000 回填。
+    form.pgTlsMode = cfg.tls_mode ?? 'disable'
+    form.pgSearchPath = cfg.search_path ?? ''
+    form.pgConnectTimeoutMs = cfg.connect_timeout_ms ?? 5000
+    return
+  }
+  if (conn.type === 'hive') {
+    const cfg = conn.config as HiveConfigShape
+    form.connType = 'hive'
+    form.hiveHost = cfg.host
+    form.hivePort = cfg.port
+    // 旧配置缺省 auth_mode 时按 nosasl 回填。
+    form.hiveAuthMode = cfg.auth_mode ?? 'nosasl'
+    form.hiveUsername = cfg.username ?? ''
+    form.hivePassword = cfg.password ?? ''
+    form.hiveDatabase = cfg.database ?? ''
+    form.hivePrincipal = cfg.kerberos?.principal ?? ''
+    form.hiveKeytab = cfg.kerberos?.keytab ?? ''
+    form.hiveKrb5Conf = cfg.kerberos?.krb5_conf ?? ''
+    return
+  }
   if (conn.type === 'es') {
     const cfg = conn.config as EsConfigShape
     form.connType = 'es'
@@ -178,7 +241,12 @@ function fillFrom(conn: Connection): void {
 watch(
   () => props.show,
   (show) => {
-    if (!show) return
+    if (!show) {
+      // 关闭时一并收起删除确认层,避免下次打开残留上一次的确认态。
+      deleteConfirmOpen.value = false
+      deleteError.value = null
+      return
+    }
     if (props.connection) {
       fillFrom(props.connection)
       return
@@ -220,7 +288,7 @@ const tls = computed<TLSConfig | undefined>(() => {
   if (!isTLS.value && !form.caCert && !form.insecureSkipVerify) return undefined
   return { enabled: isTLS.value, ca_cert: form.caCert, insecure_skip_verify: form.insecureSkipVerify }
 })
-const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape>(() => {
+const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape | PostgresConfigShape | HiveConfigShape>(() => {
   if (form.connType === 'redis') {
     return {
       addr: form.addr,
@@ -248,6 +316,38 @@ const config = computed<KafkaConfig | RedisConfigShape | CHConfigShape | MysqlCo
       password: form.mysqlPassword,
       database: form.mysqlDatabase,
       tls_mode: form.mysqlTlsMode,
+    }
+  }
+  if (form.connType === 'postgres') {
+    return {
+      host: form.pgHost,
+      port: Number(form.pgPort) || 0,
+      username: form.pgUsername,
+      password: form.pgPassword,
+      database: form.pgDatabase,
+      tls_mode: form.pgTlsMode,
+      ...(form.pgSearchPath.trim() !== '' ? { search_path: form.pgSearchPath.trim() } : {}),
+      connect_timeout_ms: Number(form.pgConnectTimeoutMs) || 5000,
+    }
+  }
+  if (form.connType === 'hive') {
+    // 凭据按认证方式裁剪:username/password 仅 LDAP 携带;kerberos 走子对象;
+    // 默认库可选,留空省略(后端语义 = default);krb5_conf 可选同理。
+    return {
+      host: form.hiveHost,
+      port: Number(form.hivePort) || 0,
+      auth_mode: form.hiveAuthMode,
+      ...(form.hiveAuthMode === 'ldap' ? { username: form.hiveUsername, password: form.hivePassword } : {}),
+      ...(form.hiveDatabase.trim() !== '' ? { database: form.hiveDatabase.trim() } : {}),
+      ...(form.hiveAuthMode === 'kerberos'
+        ? {
+            kerberos: {
+              principal: form.hivePrincipal,
+              keytab: form.hiveKeytab,
+              ...(form.hiveKrb5Conf.trim() !== '' ? { krb5_conf: form.hiveKrb5Conf.trim() } : {}),
+            },
+          }
+        : {}),
     }
   }
   if (form.connType === 'es') {
@@ -278,9 +378,19 @@ const mysqlHostInvalid = computed(() => isMysqlFamily.value && form.mysqlHost.tr
 const mysqlPortInvalid = computed(() => isMysqlFamily.value && (Number(form.mysqlPort) < 1 || Number(form.mysqlPort) > 65535))
 // ES 地址任一非空即可(逗号/空格不算有效地址)。
 const esHostsInvalid = computed(() => form.connType === 'es' && esHosts.value.length === 0)
-const saveInvalid = computed(() => nameInvalid.value || brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value || esHostsInvalid.value)
+const pgHostInvalid = computed(() => form.connType === 'postgres' && form.pgHost.trim() === '')
+const pgPortInvalid = computed(() => form.connType === 'postgres' && (Number(form.pgPort) < 1 || Number(form.pgPort) > 65535))
+// PG 数据库名必填(连接串必须携带 db,后端无法从空库推导默认库)。
+const pgDatabaseInvalid = computed(() => form.connType === 'postgres' && form.pgDatabase.trim() === '')
+// hive:主机/端口必填;LDAP 认证用户名必填;kerberos 认证 principal/keytab 必填。
+const hiveHostInvalid = computed(() => form.connType === 'hive' && form.hiveHost.trim() === '')
+const hivePortInvalid = computed(() => form.connType === 'hive' && (Number(form.hivePort) < 1 || Number(form.hivePort) > 65535))
+const hiveUsernameInvalid = computed(() => form.connType === 'hive' && form.hiveAuthMode === 'ldap' && form.hiveUsername.trim() === '')
+const hivePrincipalInvalid = computed(() => form.connType === 'hive' && form.hiveAuthMode === 'kerberos' && form.hivePrincipal.trim() === '')
+const hiveKeytabInvalid = computed(() => form.connType === 'hive' && form.hiveAuthMode === 'kerberos' && form.hiveKeytab.trim() === '')
+const saveInvalid = computed(() => nameInvalid.value || brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value || esHostsInvalid.value || pgHostInvalid.value || pgPortInvalid.value || pgDatabaseInvalid.value || hiveHostInvalid.value || hivePortInvalid.value || hiveUsernameInvalid.value || hivePrincipalInvalid.value || hiveKeytabInvalid.value)
 // 测试连接不需要名称,只校验目标地址。
-const targetInvalid = computed(() => brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value || esHostsInvalid.value)
+const targetInvalid = computed(() => brokersInvalid.value || addrInvalid.value || chHostsInvalid.value || mysqlHostInvalid.value || mysqlPortInvalid.value || esHostsInvalid.value || pgHostInvalid.value || pgPortInvalid.value || pgDatabaseInvalid.value || hiveHostInvalid.value || hivePortInvalid.value || hiveUsernameInvalid.value || hivePrincipalInvalid.value || hiveKeytabInvalid.value)
 
 async function runTest(): Promise<void> {
   if (targetInvalid.value) return
@@ -290,13 +400,17 @@ async function runTest(): Promise<void> {
   try {
     // 按类型分派:redis 走 TestRedisConnection,clickhouse 走 TestCHConnection,
     // mysql/tidb 共用 TestMysqlConnection(config 形状相同),es 走 TestESConnection,
-    // kafka 走原 TestConnection。
+    // hive 走 TestHiveConnection,kafka 走原 TestConnection。
     if (form.connType === 'redis') {
       await getApi().testRedisConnection(config.value as RedisConfigShape)
     } else if (form.connType === 'clickhouse') {
       await getApi().testCHConnection(config.value as CHConfigShape)
     } else if (form.connType === 'mysql' || form.connType === 'tidb') {
       await getApi().testMysqlConnection?.(config.value as MysqlConfigShape)
+    } else if (form.connType === 'postgres') {
+      await getApi().testPostgresConnection?.(config.value as PostgresConfigShape)
+    } else if (form.connType === 'hive') {
+      await getApi().testHiveConnection?.(config.value as HiveConfigShape)
     } else if (form.connType === 'es') {
       await getApi().testEsConnection?.(config.value as EsConfigShape)
     } else {
@@ -325,6 +439,35 @@ async function save(): Promise<void> {
     emit('close')
   } catch (e) {
     saveError.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+// 编辑模式的删除入口:点击后先弹应用内确认层(盖过本弹窗,z-index 与
+// PromptDialog/ResetOffsetDialog 的 1200 对齐;ConfirmDialog 组件自身只有
+// z-index 100,会被 900 的弹窗压住,故在弹窗内自建同构确认层)。确认后经
+// store.remove 删除(内部调 deleteConnection 并同步本地列表与状态,与
+// App.vue 的删除链路一致),成功后关闭弹窗;失败原因展示在确认层内。
+function askDeleteConnection(): void {
+  deleteError.value = null
+  deleteConfirmOpen.value = true
+}
+
+function cancelDeleteConnection(): void {
+  deleteConfirmOpen.value = false
+}
+
+async function confirmDeleteConnection(): Promise<void> {
+  if (!props.connection || deleting.value) return
+  deleting.value = true
+  deleteError.value = null
+  try {
+    await store.remove(props.connection.id)
+    deleteConfirmOpen.value = false
+    emit('close')
+  } catch (e) {
+    deleteError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    deleting.value = false
   }
 }
 
@@ -501,6 +644,141 @@ function close(): void {
             <p class="hint" data-test="mysql-tls-hint">自建 MySQL/TiDB 默认禁用即可;TiDB Cloud 等托管服务需选择启用</p>
           </div>
         </template>
+        <template v-else-if="form.connType === 'postgres'">
+          <div class="field">
+            <label class="label">主机 <span class="req">*</span></label>
+            <input v-model="form.pgHost" data-test="input-postgres-host" class="input" placeholder="127.0.0.1" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            <span v-if="pgHostInvalid" class="err">主机不能为空</span>
+          </div>
+          <div class="field">
+            <label class="label">端口</label>
+            <input v-model.number="form.pgPort" data-test="input-postgres-port" class="input" type="number" min="1" max="65535" />
+            <span v-if="pgPortInvalid" class="err">端口需为 1-65535</span>
+            <span class="hint" data-test="postgres-port-hint">PostgreSQL 默认 5432</span>
+          </div>
+          <div class="field">
+            <label class="label">用户名</label>
+            <input v-model="form.pgUsername" data-test="input-postgres-username" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label class="label">密码</label>
+            <div class="password-wrap">
+              <input v-model="form.pgPassword" :type="showPgPassword ? 'text' : 'password'" data-test="input-postgres-password" class="input password-input" />
+              <button
+                type="button"
+                class="eye-btn"
+                tabindex="-1"
+                data-test="toggle-password-postgres"
+                :aria-label="showPgPassword ? '隐藏密码' : '显示密码'"
+                @click="showPgPassword = !showPgPassword"
+              >
+                <svg v-if="showPgPassword" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label">数据库 <span class="req">*</span></label>
+            <input v-model="form.pgDatabase" data-test="input-postgres-database" class="input" placeholder="postgres" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            <span v-if="pgDatabaseInvalid" class="err" data-test="postgres-database-err">数据库不能为空</span>
+          </div>
+          <div class="field">
+            <label class="label">search_path(可选)</label>
+            <input v-model="form.pgSearchPath" data-test="input-postgres-search-path" class="input" placeholder="public" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            <span class="hint">留空时使用 PostgreSQL 默认搜索路径</span>
+          </div>
+          <div class="field">
+            <label class="label">连接超时(ms)</label>
+            <input v-model.number="form.pgConnectTimeoutMs" data-test="input-postgres-timeout" class="input" type="number" min="1000" />
+          </div>
+          <div class="field">
+            <label class="label">TLS</label>
+            <select v-model="form.pgTlsMode" class="input" data-test="input-postgres-tls-mode">
+              <option value="disable">禁用</option>
+              <option value="require">启用（不校验证书）</option>
+              <option value="verify-ca">启用（校验证书颁发方）</option>
+              <option value="verify-full">启用（校验证书与主机名）</option>
+            </select>
+            <p class="hint" data-test="postgres-tls-hint">自建 PostgreSQL 默认禁用即可;托管服务通常需选择启用</p>
+          </div>
+        </template>
+        <template v-else-if="form.connType === 'hive'">
+          <div class="field">
+            <label class="label">主机 <span class="req">*</span></label>
+            <input v-model="form.hiveHost" data-test="input-hive-host" class="input" placeholder="127.0.0.1" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            <span v-if="hiveHostInvalid" class="err">主机不能为空</span>
+          </div>
+          <div class="field">
+            <label class="label">端口</label>
+            <input v-model.number="form.hivePort" data-test="input-hive-port" class="input" type="number" min="1" max="65535" />
+            <span v-if="hivePortInvalid" class="err">端口需为 1-65535</span>
+            <span class="hint" data-test="hive-port-hint">HiveServer2 默认 10000</span>
+          </div>
+          <div class="field">
+            <label class="label">认证方式</label>
+            <select v-model="form.hiveAuthMode" class="input" data-test="hive-auth-mode">
+              <option value="nosasl">无认证</option>
+              <option value="ldap">LDAP</option>
+              <option value="kerberos">Kerberos</option>
+            </select>
+          </div>
+          <template v-if="form.hiveAuthMode === 'ldap'">
+            <div class="field">
+              <label class="label">用户名 <span class="req">*</span></label>
+              <input v-model="form.hiveUsername" data-test="hive-username" class="input" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+              <span v-if="hiveUsernameInvalid" class="err" data-test="hive-username-err">LDAP 认证需填写用户名</span>
+            </div>
+            <div class="field">
+              <label class="label">密码</label>
+              <div class="password-wrap">
+                <input v-model="form.hivePassword" :type="showHivePassword ? 'text' : 'password'" data-test="hive-password" class="input password-input" />
+                <button
+                  type="button"
+                  class="eye-btn"
+                  tabindex="-1"
+                  data-test="toggle-password-hive"
+                  :aria-label="showHivePassword ? '隐藏密码' : '显示密码'"
+                  @click="showHivePassword = !showHivePassword"
+                >
+                  <svg v-if="showHivePassword" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </template>
+          <template v-else-if="form.hiveAuthMode === 'kerberos'">
+            <div class="field">
+              <label class="label">Principal <span class="req">*</span></label>
+              <input v-model="form.hivePrincipal" data-test="hive-kerberos-principal" class="input" placeholder="hive/_HOST@EXAMPLE.COM" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+              <span v-if="hivePrincipalInvalid" class="err" data-test="hive-kerberos-principal-err">Kerberos 认证需填写 Principal</span>
+            </div>
+            <div class="field">
+              <label class="label">keytab 路径 <span class="req">*</span></label>
+              <input v-model="form.hiveKeytab" data-test="hive-kerberos-keytab" class="input" placeholder="/etc/security/keytabs/hive.keytab" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+              <span v-if="hiveKeytabInvalid" class="err" data-test="hive-kerberos-keytab-err">Kerberos 认证需填写 keytab 路径</span>
+            </div>
+            <div class="field">
+              <label class="label">krb5.conf 路径(可选)</label>
+              <input v-model="form.hiveKrb5Conf" data-test="hive-kerberos-krb5-conf" class="input" placeholder="/etc/krb5.conf" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+            </div>
+          </template>
+          <div class="field">
+            <label class="label">默认库(可选)</label>
+            <input v-model="form.hiveDatabase" data-test="hive-database" class="input" placeholder="留空 = default" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" />
+          </div>
+        </template>
         <template v-else-if="form.connType === 'es'">
           <div class="field">
             <label class="label">节点地址 <span class="req">*</span>(多节点逗号分隔)</label>
@@ -650,6 +928,9 @@ function close(): void {
         <div v-if="saveError" class="msg err" data-test="save-error">{{ saveError }}</div>
       </div>
       <div class="modal-footer">
+        <button v-if="editing" class="btn danger" type="button" data-test="btn-delete-connection" @click="askDeleteConnection">
+          删除连接
+        </button>
         <button class="btn ghost" type="button" data-test="btn-test" :disabled="testing || targetInvalid" @click="runTest">
           {{ testing ? '测试中…' : '测试连接' }}
         </button>
@@ -657,6 +938,20 @@ function close(): void {
         <button class="btn primary" type="button" data-test="btn-save" :disabled="nameInvalid || saveInvalid" @click="save">
           保存
         </button>
+      </div>
+      <!-- 删除确认层:结构与 ConfirmDialog 同构,自建以叠在弹窗之上(z-index 1200)。 -->
+      <div v-if="deleteConfirmOpen" class="delete-confirm-backdrop" data-test="delete-confirm-dialog" @click.self="cancelDeleteConnection">
+        <div class="delete-confirm">
+          <div class="delete-confirm-title">确认操作</div>
+          <p class="delete-confirm-message" data-test="delete-confirm-message">
+            确认删除连接「{{ props.connection?.name ?? '' }}」？连接配置将被移除，此操作不可恢复。
+          </p>
+          <div v-if="deleteError" class="msg err" data-test="delete-error">{{ deleteError }}</div>
+          <div class="delete-confirm-footer">
+            <button class="btn ghost" type="button" data-test="delete-confirm-cancel" @click="cancelDeleteConnection">取消</button>
+            <button class="btn danger-solid" type="button" data-test="delete-confirm-ok" :disabled="deleting" @click="confirmDeleteConnection">删除</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -726,6 +1021,26 @@ function close(): void {
 .msg.ok { background: var(--ok-soft); color: var(--ok); }
 .msg.err { background: var(--danger-soft); color: var(--danger); }
 .modal-footer { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--border); }
+/* 编辑模式的删除入口:推到 footer 最左,与右侧的测试/取消/保存保持距离。 */
+.btn.danger { margin-right: auto; background: transparent; color: var(--danger); border-color: var(--danger); }
+.btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
+/* 删除确认层:盖过 z-index 900 的弹窗本体,样式对齐 ConfirmDialog。 */
+.delete-confirm-backdrop {
+  position: fixed; inset: 0; z-index: 1200;
+  background: rgba(0, 0, 0, 0.32);
+  display: flex; align-items: center; justify-content: center;
+}
+.delete-confirm {
+  width: 380px; max-width: calc(100vw - 48px);
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+  padding: 18px;
+}
+.delete-confirm-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+.delete-confirm-message { font-size: 13px; color: var(--text); line-height: 1.6; margin: 0; }
+.delete-confirm-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.btn.danger-solid { background: var(--danger); color: #fff; }
+.btn.danger-solid:hover:not(:disabled) { background: var(--danger-hover, var(--danger)); }
 .btn { border-radius: 7px; padding: 7px 14px; font-size: 13px; cursor: pointer; border: 1px solid transparent; transition: background 0.15s ease, opacity 0.15s ease; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn.primary { background: var(--accent); color: #fff; }

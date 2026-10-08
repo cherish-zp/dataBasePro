@@ -134,12 +134,16 @@ type EsPageRowsResult struct {
 // EsStatementResult is the per-statement outcome of a multi-statement SQL
 // script: duration in ms, and either columns+rows (statements returning a
 // result set) or an error text (failed statement; execution stops there).
+// TotalRows 仅在请求启用服务端分页时出现:nil=未启用(不下发);≥0=精确
+// 总数(本地翻译 select 路径取 hits.total);-1=无法计数(SQL 端点路径、
+// count/show/describe 与截断回退)。
 type EsStatementResult struct {
 	SQL        string      `json:"sql"`
 	DurationMs int64       `json:"duration_ms"`
 	Error      string      `json:"error,omitempty"`
 	Columns    []EsColumn  `json:"columns,omitempty"`
 	Rows       [][]*string `json:"rows,omitempty"`
+	TotalRows  *int64      `json:"total_rows,omitempty"`
 }
 
 // EsDoc 是单个文档的读取结果:id 为文档 _id,source 为 _source 的 JSON 文本

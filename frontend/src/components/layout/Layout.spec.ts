@@ -12,6 +12,8 @@ import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
 import CHSqlConsole from '@/components/kafka/CHSqlConsole.vue'
 import MysqlTableBrowser from '@/components/kafka/MysqlTableBrowser.vue'
 import MysqlSqlConsole from '@/components/kafka/MysqlSqlConsole.vue'
+import HiveTableBrowser from '@/components/kafka/HiveTableBrowser.vue'
+import HiveSqlConsole from '@/components/kafka/HiveSqlConsole.vue'
 import EsTableBrowser from '@/components/kafka/EsTableBrowser.vue'
 import EsSqlConsole from '@/components/kafka/EsSqlConsole.vue'
 import EsTemplatesPanel from '@/components/kafka/EsTemplatesPanel.vue'
@@ -126,7 +128,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
 
 const conn = (id: string): Connection => ({
   id, name: `conn-${id}`, type: 'kafka',
-  config: { bootstrap_servers: ['h:1'] }, created_at: 1, updated_at: 1,
+  config: { bootstrap_servers: ['h:1'] }, sort_order: 0, created_at: 1, updated_at: 1,
 })
 const chConn = (id: string): Connection => ({
   ...conn(id), type: 'clickhouse', config: {} as Connection['config'],
@@ -136,6 +138,9 @@ const redisConn = (id: string): Connection => ({
 })
 const mysqlConn = (id: string): Connection => ({
   ...conn(id), type: 'mysql', config: {} as Connection['config'],
+})
+const hiveConn = (id: string): Connection => ({
+  ...conn(id), type: 'hive', config: {} as Connection['config'],
 })
 const tidbConn = (id: string): Connection => ({
   ...conn(id), type: 'tidb', config: {} as Connection['config'],
@@ -192,12 +197,25 @@ describe('Layout', () => {
     // 右栏展开态/宽度也会跨用例泄漏(挂载时提前刷新导致拿到空列表)。
     localStorage.removeItem('dbclient-files-open')
     localStorage.removeItem('dbclient-files-width')
+    // 文档弹窗的上次篇章记忆同样不跨用例泄漏。
+    localStorage.removeItem('dbclient-docs-last')
   })
 
   it('shows the welcome view when no tab is open', () => {
     const { wrapper } = mountLayout([conn('a')])
     expect(wrapper.find('[data-test="home-view"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="connection-tree"]').exists()).toBe(true)
+  })
+
+  it('forwards the tree reorder event to the connections store api', async () => {
+    const { wrapper, api } = mountLayout([], { reorderConnections: vi.fn(async () => {}) })
+    const store = useConnectionsStore()
+    store.connections.push(conn('a'), conn('b'))
+    emitTree(wrapper, 'reorder', ['b', 'a'])
+    await flushPromises()
+    expect(api.reorderConnections).toHaveBeenCalledWith(['b', 'a'])
+    // store 本地顺序同步重排(树随后随 store 重渲染)。
+    expect(store.connections.map((c) => c.id)).toEqual(['b', 'a'])
   })
 
   it('mounts the bottom status bar and live-updates from the connections store', async () => {
@@ -274,10 +292,31 @@ describe('Layout', () => {
     expect(document.body.querySelector('[data-test="update-dialog"]')).not.toBeNull()
   })
 
+  // --- 使用文档 ----------------------------------------------------------------
+
+  it('打开文档弹窗:顶栏按钮渲染弹窗与目录,✕ 关闭后消失', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    expect(document.body.querySelector('[data-test="docs-dialog"]')).toBeNull()
+    await wrapper.find('[data-test="btn-docs-open"]').trigger('click')
+    await nextTick()
+    // DocsDialog teleport 到 body,断言走 document。
+    const dialog = document.body.querySelector('[data-test="docs-dialog"]')
+    expect(dialog).not.toBeNull()
+    // 内置两篇篇章都在目录里,内容区渲染出第一篇。
+    expect(dialog!.querySelector('[data-test="docs-toc-item-shortcuts"]')).not.toBeNull()
+    expect(dialog!.querySelector('[data-test="docs-toc-item-quick-start"]')).not.toBeNull()
+    expect(dialog!.querySelector('[data-test="docs-content"]')).not.toBeNull()
+    ;(document.body.querySelector('[data-test="btn-docs-close"]') as HTMLElement).click()
+    await nextTick()
+    expect(document.body.querySelector('[data-test="docs-dialog"]')).toBeNull()
+    localStorage.removeItem('dbclient-docs-last')
+  })
+
   it('keeps the top bar general (brand + settings, no connection/kafka actions)', () => {
     const { wrapper } = mountLayout([conn('a')])
     const topbar = wrapper.find('[data-test="topbar"]')
-    expect(topbar.find('[data-test="brand"]').text()).toContain('dataBasePro')
+    expect(topbar.find('[data-test="brand"]').text()).toContain('圣手运河')
+    expect(topbar.find('[data-test="brand"]').text()).not.toContain('dataBasePro')
     expect(topbar.find('[data-test="btn-settings"]').exists()).toBe(true)
     expect(topbar.find('[data-test="btn-new"]').exists()).toBe(false)
     expect(topbar.find('[data-test="btn-sql"]').exists()).toBe(false)
@@ -734,6 +773,66 @@ describe('Layout', () => {
     })
   })
 
+  // --- 顶栏更新按钮红点 -------------------------------------------------------
+
+  it('renders the update dot and version title when a new version exists', async () => {
+    const { wrapper } = mountLayout([conn('a')], {
+      checkUpdate: vi.fn(async () => ({ has_update: true, latest_version: 'v9.9.9' })),
+    })
+    await flushPromises()
+    const btn = wrapper.find('[data-test="btn-update"]')
+    expect(btn.classes()).toContain('has-update')
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(true)
+    expect(btn.attributes('title')).toContain('发现新版本')
+    expect(btn.attributes('title')).toContain('v9.9.9')
+  })
+
+  it('renders no update dot when the probe reports no update', async () => {
+    const { wrapper } = mountLayout([conn('a')])
+    await flushPromises()
+    const btn = wrapper.find('[data-test="btn-update"]')
+    expect(btn.classes()).not.toContain('has-update')
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(false)
+    expect(btn.attributes('title')).toBe('检查更新')
+  })
+
+  it('silently ignores a missing checkUpdate binding', async () => {
+    setActivePinia(createPinia())
+    // fake 未提供 checkUpdate(旧 fake 场景):探测必须静默跳过,不得抛错。
+    const api = fakeApi() as unknown as Record<string, unknown>
+    delete api.checkUpdate
+    setApi(api as unknown as Api)
+    const wrapper = mount(Layout, { props: { connections: [conn('a')] } })
+    await flushPromises()
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-update"]').attributes('title')).toBe('检查更新')
+    wrapper.unmount()
+  })
+
+  it('silently ignores a failing checkUpdate probe', async () => {
+    const { wrapper } = mountLayout([conn('a')], {
+      checkUpdate: vi.fn(async () => {
+        throw new Error('network down')
+      }),
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-update"]').attributes('title')).toBe('检查更新')
+  })
+
+  it('clears the update dot after the user opens the update dialog', async () => {
+    const { wrapper } = mountLayout([conn('a')], {
+      checkUpdate: vi.fn(async () => ({ has_update: true, latest_version: 'v9.9.9' })),
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(true)
+    await wrapper.find('[data-test="btn-update"]').trigger('click')
+    expect(wrapper.find('[data-test="update-dot"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-update"]').classes()).not.toContain('has-update')
+    // 弹窗照常打开(teleport 到 body,断言走 document)。
+    expect(document.body.querySelector('[data-test="update-dialog"]')).not.toBeNull()
+  })
+
   // --- 新建查询(SQL文件全局化) ---------------------------------------------
 
   it('keeps 新建查询 disabled without an active tab or on a redis tab', async () => {
@@ -825,6 +924,76 @@ describe('Layout', () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="mysql-sql-console"]').exists()).toBe(true)
     })
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  // --- Hive 表浏览器 / SQL 控制台 ---------------------------------------------
+
+  it('opens a hive table browser tab from the tree and renders the table browser', async () => {
+    const { wrapper } = mountLayout([hiveConn('h1')])
+    emitTree(wrapper, 'open-hive-table', 'h1', 'ods', 'events')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-table-browser"]').exists()).toBe(true)
+    })
+    expect(wrapper.find('[data-test="home-view"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="tab"]').text()).toContain('events')
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['hive-table'])
+    expect(tabs.openTabs[0].title).toBe('表 · ods.events')
+    expect(wrapper.findComponent(HiveTableBrowser).props()).toEqual(
+      expect.objectContaining({ connectionId: 'h1', database: 'ods', table: 'events' }),
+    )
+    wrapper.unmount()
+  })
+
+  it('renders the hive sql console for an active hive-sql tab with refresh disabled', async () => {
+    const { wrapper } = mountLayout([hiveConn('h1')])
+    const tabs = useTabsStore()
+    tabs.openHiveSql('h1', 'ods')
+    await nextTick()
+    expect(wrapper.find('[data-test="hive-sql-console"]').exists()).toBe(true)
+    const console_ = wrapper.findComponent(HiveSqlConsole)
+    expect(console_.props('tabId')).toBe(tabs.openTabs[0].id)
+    expect(console_.props('connectionId')).toBe('h1')
+    expect(console_.props('database')).toBe('ods')
+    // SQL 控制台自持编辑器状态:刷新按钮禁用(与 MySQL/ES 控制台一致)。
+    expect(wrapper.find('[data-test="btn-refresh-active"]').attributes('disabled')).toBeDefined()
+    // 新建查询在 hive 系 tab 激活时可用。
+    expect(wrapper.find('[data-test="btn-new-query"]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('opens a hive sql console tab from 新建查询 on an active hive-table tab', async () => {
+    const { wrapper } = mountLayout([hiveConn('h1')])
+    emitTree(wrapper, 'open-hive-table', 'h1', 'ods', 'events')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-table-browser"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="btn-new-query"]').trigger('click')
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.some((t) => t.kind === 'hive-table')).toBe(true)
+    expect(tabs.openTabs.some((t) => t.kind === 'hive-sql' && t.database === 'ods')).toBe(true)
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-sql-console"]').exists()).toBe(true)
+    })
+    wrapper.unmount()
+    await drainPendingEdits()
+  })
+
+  it('点击 Hive 归属文件自动打开 Hive SQL 控制台并载入内容', async () => {
+    const { wrapper } = mountLayout([hiveConn('h1')])
+    fileAppMocks.ListQueryFiles.mockResolvedValue([queryFileRow('hv.sql', 'h1')])
+    fileAppMocks.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'h1' })
+
+    await openPanelAndClickFile(wrapper, 0)
+
+    const tabs = useTabsStore()
+    expect(tabs.openTabs.map((t) => t.kind)).toEqual(['hive-sql'])
+    expect(tabs.openTabs[0].connectionId).toBe('h1')
+    expect(fileAppMocks.ReadQueryFile).toHaveBeenCalledWith(expect.objectContaining({ name: 'hv.sql' }))
+    expect(wrapper.find('[data-test="hive-sql-console"]').exists()).toBe(true)
     wrapper.unmount()
     await drainPendingEdits()
   })

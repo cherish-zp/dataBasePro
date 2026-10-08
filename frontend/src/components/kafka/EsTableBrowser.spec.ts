@@ -275,6 +275,37 @@ describe('EsTableBrowser', () => {
     expect(wrapper.find('[data-test="es-grid-empty"]').text()).toContain('暂无文档')
   })
 
+  // 回归:长内容单元格展示为多行换行(420px 内 break-all),编辑框也必须
+  // 是同等高度的 textarea,不能退化成单行 input。
+  it('长内容单元格双击后编辑框为多行 textarea,尺寸匹配展示内容', async () => {
+    const longName = 'p'.repeat(300)
+    pageRows.mockResolvedValue(page({ rows: [['doc-1', longName, '30']] }))
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await cellAt(wrapper, 0, 1).trigger('dblclick')
+    const editor = wrapper.find('[data-test="es-cell-editor"]')
+    expect(editor.exists()).toBe(true)
+    // 编辑框必须是 textarea(可多行),且行数随内容增长(≥4 行)。
+    expect(editor.element.tagName).toBe('TEXTAREA')
+    expect((editor.element as HTMLTextAreaElement).rows).toBeGreaterThanOrEqual(4)
+    expect((editor.element as HTMLTextAreaElement).value).toBe(longName)
+    // 短内容仍是 1 行。
+    await editor.trigger('keydown.esc')
+    const editor2 = wrapper.find('[data-test="es-cell-editor"]')
+    expect(editor2.exists()).toBe(false)
+  })
+
+  it('短内容单元格编辑框为单行高度(rows=1)', async () => {
+    pageRows.mockResolvedValue(page())
+    const wrapper = mountBrowser()
+    await waitCols(wrapper)
+    await cellAt(wrapper, 0, 1).trigger('dblclick')
+    const editor = wrapper.find('[data-test="es-cell-editor"]')
+    expect(editor.element.tagName).toBe('TEXTAREA')
+    expect((editor.element as HTMLTextAreaElement).rows).toBe(1)
+    await editor.trigger('keydown.esc')
+  })
+
   it('字段编辑全链路:回车弹 _update 预览,确认后 ESUpdateCell 并刷新当前页', async () => {
     pageRows.mockResolvedValue(page())
     wailsMocks.ESUpdateCell.mockResolvedValue(undefined)

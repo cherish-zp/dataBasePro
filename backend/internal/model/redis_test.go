@@ -44,8 +44,8 @@ func TestRedisConfigValidate(t *testing.T) {
 // 连接校验按 Type 分派:redis 类型连接的 config 必须能按 RedisConfig 校验。
 func TestConnectionValidateRedisBranch(t *testing.T) {
 	valid := Connection{
-		Name: "redis-local",
-		Type: ConnectionTypeRedis,
+		Name:   "redis-local",
+		Type:   ConnectionTypeRedis,
 		Config: json.RawMessage(redisConfigJSON("127.0.0.1:6379", 0)),
 	}
 	if err := valid.Validate(); err != nil {
@@ -53,8 +53,8 @@ func TestConnectionValidateRedisBranch(t *testing.T) {
 	}
 
 	invalid := Connection{
-		Name: "redis-bad",
-		Type: ConnectionTypeRedis,
+		Name:   "redis-bad",
+		Type:   ConnectionTypeRedis,
 		Config: json.RawMessage(redisConfigJSON("127.0.0.1", 0)),
 	}
 	if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "host:port") {

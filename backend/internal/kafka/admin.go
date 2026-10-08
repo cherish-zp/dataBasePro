@@ -10,7 +10,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // describeTopicConfigKeys whitelists the topic configs surfaced in

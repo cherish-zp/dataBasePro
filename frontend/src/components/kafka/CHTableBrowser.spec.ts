@@ -93,6 +93,10 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
     deleteConsumerGroup: vi.fn(async () => {}),
     produceMessage: vi.fn(async () => {}),
     produceMessages: vi.fn(async () => []),
+    // 按行删除:预览 DELETE 语句全文与命中行数 / 执行删除(Api 接口可选成员,
+    // fake 注入同名 vi.fn 即生效)。
+    chPreviewDeleteRow: vi.fn(async () => ({ statement: '', matched_rows: 0 })),
+    chDeleteRow: vi.fn(async () => {}),
     ...overrides,
   }
 }
@@ -147,7 +151,7 @@ function raw(over: Record<string, unknown> = {}): CHPageRowsResult {
 }
 
 describe('CHTableBrowser', () => {
-  let api: Api
+  let api: ReturnType<typeof fakeApi>
   beforeEach(() => {
     setActivePinia(createPinia())
     api = fakeApi()
@@ -717,6 +721,165 @@ describe('CHTableBrowser', () => {
         expect(wrapper.find('[data-test="ch-error"]').text()).toContain('预览失败')
       })
       expect(wailsMocks.CHUpdateCell).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('按行删除', () => {
+    // 第 ri 行的行首删除按钮。
+    function deleteBtn(wrapper: VueWrapper, row: number): DOMWrapper<Element> {
+      return wrapper.findAll('[data-test="ch-row"]')[row].find('[data-test="btn-row-delete"]')
+    }
+
+    it('有主键时每行渲染行首删除按钮且可点', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      const btns = wrapper.findAll('[data-test="btn-row-delete"]')
+      expect(btns).toHaveLength(2)
+      expect((btns[0].element as HTMLButtonElement).disabled).toBe(false)
+    })
+
+    it('无主键时删除按钮禁用并以 title 说明原因', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page())
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      const btn = wrapper.find('[data-test="btn-row-delete"]')
+      expect(btn.exists()).toBe(true)
+      expect((btn.element as HTMLButtonElement).disabled).toBe(true)
+      expect(btn.attributes('title')).toContain('结果无主键,无法定位行')
+    })
+
+    it('点击删除:按主键原值携带列类型预览 DELETE,弹窗含语句全文、命中行数与不可恢复', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      ;(api.chPreviewDeleteRow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        statement: "DELETE FROM logs.events WHERE id = '1'",
+        matched_rows: 1,
+      })
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 0).trigger('click')
+      await vi.waitFor(() => {
+        expect(api.chPreviewDeleteRow).toHaveBeenCalledWith({
+          connection_id: 'ch1',
+          database: 'logs',
+          table: 'events',
+          // 定位列元数据与单元格编辑一致:类型来自 PageRows 列元数据。
+          where: [{ column: 'id', type: 'UInt32', value: '1' }],
+        })
+      })
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      const msg = document.body.querySelector('[data-test="confirm-dialog-message"]')?.textContent ?? ''
+      expect(msg).toContain("DELETE FROM logs.events WHERE id = '1'")
+      expect(msg).toContain('命中 1 行')
+      expect(msg).toContain('此操作不可恢复')
+      // 单行命中不出现禁止警示。
+      expect(msg).not.toContain('已禁止删除')
+    })
+
+    it('NULL 主键值以 null 进入删除 where', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      ;(api.chPreviewDeleteRow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        statement: 'DELETE FROM logs.events WHERE id IS NULL',
+        matched_rows: 1,
+      })
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 1).trigger('click')
+      await vi.waitFor(() => {
+        expect(api.chPreviewDeleteRow).toHaveBeenCalledWith(
+          expect.objectContaining({ where: [{ column: 'id', type: 'UInt32', value: null }] }),
+        )
+      })
+    })
+
+    it('命中多行:弹窗强警示,确认不执行、不刷新且弹窗保持', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      ;(api.chPreviewDeleteRow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        statement: "DELETE FROM logs.events WHERE id = '1'",
+        matched_rows: 3,
+      })
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 0).trigger('click')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      const msg = document.body.querySelector('[data-test="confirm-dialog-message"]')?.textContent ?? ''
+      expect(msg).toContain('命中 3 行')
+      expect(msg).toContain('已禁止删除')
+      clickConfirmDialog('confirm-dialog-ok')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      expect(api.chDeleteRow).not.toHaveBeenCalled()
+      // 不执行也就不刷新:仍只有初始 1 次分页请求。
+      expect((api.chPageRows as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)
+    })
+
+    it('确认后执行删除并刷新当前页', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      ;(api.chPreviewDeleteRow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        statement: "DELETE FROM logs.events WHERE id = '1'",
+        matched_rows: 1,
+      })
+      ;(api.chDeleteRow as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 0).trigger('click')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      const callsBefore = (api.chPageRows as ReturnType<typeof vi.fn>).mock.calls.length
+      clickConfirmDialog('confirm-dialog-ok')
+      await vi.waitFor(() => {
+        expect(api.chDeleteRow).toHaveBeenCalledWith({
+          connection_id: 'ch1',
+          database: 'logs',
+          table: 'events',
+          where: [{ column: 'id', type: 'UInt32', value: '1' }],
+        })
+      })
+      // 删除成功后重发当前页请求(offset 保持)。
+      await vi.waitFor(() => {
+        expect((api.chPageRows as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore + 1)
+      })
+      expect(api.chPageRows).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 }))
+    })
+
+    it('删除执行失败在错误区展示且不刷新', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      ;(api.chPreviewDeleteRow as ReturnType<typeof vi.fn>).mockResolvedValue({
+        statement: "DELETE FROM logs.events WHERE id = '1'",
+        matched_rows: 1,
+      })
+      ;(api.chDeleteRow as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('删除失败: mutations 同步超时'))
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 0).trigger('click')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      clickConfirmDialog('confirm-dialog-ok')
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="ch-error"]').text()).toContain('删除失败: mutations 同步超时')
+      })
+      expect(api.chDeleteRow).toHaveBeenCalledTimes(1)
+      expect((api.chPageRows as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1)
+    })
+
+    it('删除预览失败在错误区展示且不弹确认框', async () => {
+      ;(api.chPageRows as ReturnType<typeof vi.fn>).mockResolvedValue(page({ primary_key: ['id'] }))
+      ;(api.chPreviewDeleteRow as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('删除预览失败'))
+      const wrapper = mount(CHTableBrowser, { props: { connectionId: 'ch1', database: 'logs', table: 'events' } })
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 0).trigger('click')
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="ch-error"]').text()).toContain('删除预览失败')
+      })
+      expect(confirmDialog()).toBeNull()
+      expect(api.chDeleteRow).not.toHaveBeenCalled()
     })
   })
 })

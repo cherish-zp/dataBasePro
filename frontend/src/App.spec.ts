@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { setApi } from '@/api/client'
 import type { Api } from '@/api/client'
@@ -81,7 +81,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
 
 const conn = (id: string): Connection => ({
   id, name: `conn-${id}`, type: 'kafka',
-  config: { bootstrap_servers: ['h:1'] }, created_at: 1, updated_at: 1,
+  config: { bootstrap_servers: ['h:1'] }, sort_order: 0, created_at: 1, updated_at: 1,
 })
 
 function mountApp(overrides: Partial<Api> = {}) {
@@ -92,8 +92,34 @@ function mountApp(overrides: Partial<Api> = {}) {
   return { wrapper, api }
 }
 
+// The delete ConfirmDialog teleports to <body>, so it is queried on
+// document.body rather than inside the wrapper (same as ConnectionTree.spec).
+function confirmDialog(): HTMLElement | null {
+  return document.body.querySelector('[data-test="confirm-dialog"]')
+}
+function clickConfirmDialog(testId: string): void {
+  document.body.querySelector(`[data-test="${testId}"]`)?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+}
+
+// 连接行内联操作按钮已收敛进右键菜单:右键 conn-row 打开菜单(teleport 到
+// body),再从 document.body 点击菜单项(与 ConfirmDialog 同一查询惯例)。
+async function openConnMenu(wrapper: VueWrapper, name: string): Promise<void> {
+  const row = wrapper.findAll('[data-test="conn-row"]').find((n) => n.text().includes(name))
+  if (!row) throw new Error(`conn-row not found: ${name}`)
+  await row.trigger('contextmenu', { clientX: 10, clientY: 10 })
+  await vi.waitFor(() => {
+    expect(document.body.querySelector('[data-test="context-menu"]')).not.toBeNull()
+  })
+}
+function clickCtxItem(key: string): void {
+  (document.body.querySelector(`[data-test="context-item-${key}"]`) as HTMLElement).click()
+}
+
 describe('App', () => {
-  beforeEach(() => setActivePinia(createPinia()))
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    document.body.innerHTML = ''
+  })
 
   it('loads connections on mount and passes them to the layout', async () => {
     const { wrapper, api } = mountApp({ listConnections: vi.fn(async () => [conn('a')]) })
@@ -126,12 +152,36 @@ describe('App', () => {
     expect(wrapper.find('[data-test="conn-name"]').text()).toBe('本地')
   })
 
-  it('deletes a connection', async () => {
+  it('asks for confirmation with the connection name before deleting', async () => {
     const { wrapper, api } = mountApp({ listConnections: vi.fn(async () => [conn('a')]) })
     await vi.waitFor(() => {
       expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(1)
     })
-    await wrapper.find('[data-test="btn-delete"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-delete')
+    await flushPromises()
+    const dialog = confirmDialog()
+    expect(dialog).not.toBeNull()
+    expect(dialog?.textContent).toContain('conn-a')
+    expect(dialog?.textContent).toContain('此操作不可恢复')
+    // 取消:不删除,连接仍在,确认弹窗关闭。
+    clickConfirmDialog('confirm-dialog-cancel')
+    await flushPromises()
+    expect(api.deleteConnection).not.toHaveBeenCalled()
+    expect(confirmDialog()).toBeNull()
+    expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(1)
+  })
+
+  it('deletes a connection after confirming', async () => {
+    const { wrapper, api } = mountApp({ listConnections: vi.fn(async () => [conn('a')]) })
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(1)
+    })
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-delete')
+    await flushPromises()
+    expect(confirmDialog()).not.toBeNull()
+    clickConfirmDialog('confirm-dialog-ok')
     await flushPromises()
     expect(api.deleteConnection).toHaveBeenCalledWith('a')
     await vi.waitFor(() => {
@@ -148,7 +198,9 @@ describe('App', () => {
       expect(wrapper.findAll('[data-test="connection"]')).toHaveLength(1)
     })
 
-    await wrapper.find('[data-test="btn-edit-connection"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-edit')
+    await flushPromises()
     expect(wrapper.find('[data-test="new-connection-modal"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="modal-title"]').text()).toBe('编辑连接')
     expect((wrapper.find('[data-test="input-name"]').element as HTMLInputElement).value).toBe('conn-a')

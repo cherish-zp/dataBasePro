@@ -10,7 +10,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 func rackPtr(s string) *string { return &s }

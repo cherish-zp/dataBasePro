@@ -69,6 +69,8 @@ import type {
   CHTruncateTableRequest,
   CHExecuteRequest,
   CHStatementResult,
+  CHDeleteRowRequest,
+  CHDeleteRowPreview,
   DriverInfo,
   MysqlConfigShape,
   MysqlListTablesRequest,
@@ -80,6 +82,28 @@ import type {
   MysqlTruncateTableRequest,
   MysqlCellUpdateRequest,
   MysqlCellUpdatePreview,
+  MysqlDropTableRequest,
+  MysqlTableColumnsRequest,
+  MysqlTableColumnsResult,
+  MysqlColumnDef,
+  MysqlAlterTableRequest,
+  MysqlExportTableRequest,
+  MysqlExportTableResult,
+  MysqlDeleteRowRequest,
+  MysqlDeleteRowPreview,
+  PostgresConfigShape,
+  PostgresListSchemasRequest,
+  PostgresListTablesRequest,
+  PostgresRelationInfo,
+  PostgresPageRowsRequest,
+  PostgresPageRowsResult,
+  PostgresExecuteRequest,
+  PostgresStatementResult,
+  PostgresTruncateTableRequest,
+  PostgresCellUpdateRequest,
+  PostgresCellUpdatePreview,
+  PostgresDeleteRowRequest,
+  PostgresDeleteRowPreview,
   EsConfigShape,
   EsIndexInfo,
   EsColumn,
@@ -89,10 +113,31 @@ import type {
   EsExecuteRequest,
   EsStatementResult,
   EsCellUpdateRequest,
+  EsCreateDocRequest,
   EsGetDocRequest,
+  HiveConfigShape,
+  HiveAuthMode,
+  HiveListTablesRequest,
+  HiveTableInfo,
+  HivePageRowsRequest,
+  HivePageRowsResult,
+  HiveExecuteRequest,
+  HiveStatementResult,
+  HiveCellRef,
+  HiveCellUpdateRequest,
+  HiveCellUpdatePreview,
+  HiveDeleteRowRequest,
+  HiveDeleteRowPreview,
+  HiveTruncateTableRequest,
+  HiveDropTableRequest,
+  HiveTableColumnsRequest,
+  HiveTableColumnsResult,
+  HiveColumnDef,
+  HiveAlterTableRequest,
+  HiveExportTableRequest,
+  HiveExportTableResult,
   EsDoc,
   EsPutDocRequest,
-  EsCreateDocRequest,
   EsDeleteDocRequest,
   EsDeleteByQueryRequest,
   EsCreateIndexRequest,
@@ -113,6 +158,10 @@ export interface Api {
   listConnections(): Promise<Connection[]>
   getConnection(id: string): Promise<Connection>
   deleteConnection(id: string): Promise<void>
+  // 侧栏连接排序持久化(镜像后端 ReorderConnections):入参为重排后的完整
+  // id 顺序。绑定尚未由 wails generate 生成,声明为可选成员(既有 fake 零
+  // 改动);调用方用可选链(?.)访问。
+  reorderConnections?(ids: string[]): Promise<void>
   testConnection(cfg: KafkaConfig): Promise<void>
   connect(id: string): Promise<void>
   disconnect(id: string): Promise<void>
@@ -173,6 +222,9 @@ export interface Api {
   listCHTables(req: CHListTablesRequest): Promise<CHTableInfo[]>
   chPageRows(req: CHPageRowsRequest): Promise<CHPageRowsResult>
   chTruncateTable(req: CHTruncateTableRequest): Promise<void>
+  // 按行删除:可选成员(既有 fake 零改动);调用方用可选链(?.)访问。
+  chPreviewDeleteRow?(req: CHDeleteRowRequest): Promise<CHDeleteRowPreview>
+  chDeleteRow?(req: CHDeleteRowRequest): Promise<void>
   chExecute(req: CHExecuteRequest): Promise<CHStatementResult[]>
   listDrivers(): Promise<DriverInfo[]>
   // MySQL/TiDB 系列:后端绑定尚未由 wails generate 生成,先声明为可选成员,
@@ -185,6 +237,27 @@ export interface Api {
   mysqlPreviewCellUpdate?(req: MysqlCellUpdateRequest): Promise<MysqlCellUpdatePreview>
   mysqlUpdateCell?(req: MysqlCellUpdateRequest): Promise<void>
   mysqlTruncateTable?(req: MysqlTruncateTableRequest): Promise<void>
+  // 按行删除(控制台结果与表浏览器共用):绑定尚未由 wails generate 生成,
+  // 可选成员(既有 fake 零改动);调用方用可选链(?.)访问。
+  mysqlPreviewDeleteRow?(req: MysqlDeleteRowRequest): Promise<MysqlDeleteRowPreview>
+  mysqlDeleteRow?(req: MysqlDeleteRowRequest): Promise<void>
+  // 表级 DDL/元数据(连接树右键菜单):接口侧声明为可选成员(既有 fake 零
+  // 改动),Wails 绑定已由 wails generate 生成;调用方用可选链(?.)访问。
+  mysqlDropTable?(req: MysqlDropTableRequest): Promise<void>
+  mysqlTableColumns?(req: MysqlTableColumnsRequest): Promise<MysqlTableColumnsResult>
+  mysqlAlterTable?(req: MysqlAlterTableRequest): Promise<void>
+  mysqlExportTable?(req: MysqlExportTableRequest): Promise<MysqlExportTableResult>
+  testPostgresConnection?(cfg: PostgresConfigShape): Promise<void>
+  listPostgresDatabases?(id: string): Promise<string[]>
+  listPostgresSchemas?(req: PostgresListSchemasRequest): Promise<string[]>
+  listPostgresTables?(req: PostgresListTablesRequest): Promise<PostgresRelationInfo[]>
+  postgresPageRows?(req: PostgresPageRowsRequest): Promise<PostgresPageRowsResult>
+  postgresExecute?(req: PostgresExecuteRequest): Promise<PostgresStatementResult[]>
+  postgresTruncateTable?(req: PostgresTruncateTableRequest): Promise<void>
+  postgresPreviewDeleteRow?(req: PostgresDeleteRowRequest): Promise<PostgresDeleteRowPreview>
+  postgresDeleteRow?(req: PostgresDeleteRowRequest): Promise<void>
+  postgresPreviewCellUpdate?(req: PostgresCellUpdateRequest): Promise<PostgresCellUpdatePreview>
+  postgresUpdateCell?(req: PostgresCellUpdateRequest): Promise<void>
   // Elasticsearch 系列:后端绑定尚未由 wails generate 生成,同样声明为可选
   // 成员(全仓既有 fakeApi 零改动);调用方用可选链(?.)访问。
   testEsConnection?(cfg: EsConfigShape): Promise<void>
@@ -194,11 +267,12 @@ export interface Api {
   esExecute?(req: EsExecuteRequest): Promise<EsStatementResult[]>
   esGetDoc?(req: EsGetDocRequest): Promise<EsDoc>
   esPutDoc?(req: EsPutDocRequest): Promise<void>
-  // 新增文档(ESCreateDoc):id 留空由服务端自动生成 _id;可选成员,fake 无需实现。
-  esCreateDoc?(req: EsCreateDocRequest): Promise<EsDoc>
   esUpdateCell?(req: EsCellUpdateRequest): Promise<void>
   esDeleteDoc?(req: EsDeleteDocRequest): Promise<void>
   esDeleteByQuery?(req: EsDeleteByQueryRequest): Promise<number>
+  // 新增文档(ESCreateDoc):绑定尚未由 wails generate 生成(主控稍后重生
+  // 成),声明为可选成员;调用方用可选链(?.)访问。
+  esCreateDoc?(req: EsCreateDocRequest): Promise<EsDoc>
   // ES 集合编辑系列(索引/模板的新建、删除与设置修改):后端绑定尚未由
   // wails generate 生成,同样声明为可选成员;调用方用可选链(?.)访问。
   esCreateIndex?(req: EsCreateIndexRequest): Promise<void>
@@ -212,6 +286,22 @@ export interface Api {
   getEsTemplate?(req: EsGetTemplateRequest): Promise<EsTemplateContent>
   putEsTemplate?(req: EsPutTemplateRequest): Promise<void>
   esClusterStats?(req: EsClusterStatsRequest): Promise<EsClusterStats>
+  // Hive 系列:后端绑定尚未由 wails generate 生成,可选成员(既有 fake 零
+  // 改动);调用方用可选链(?.)访问。
+  testHiveConnection?(cfg: HiveConfigShape): Promise<void>
+  listHiveDatabases?(id: string): Promise<string[]>
+  listHiveTables?(req: HiveListTablesRequest): Promise<HiveTableInfo[]>
+  hivePageRows?(req: HivePageRowsRequest): Promise<HivePageRowsResult>
+  hiveExecute?(req: HiveExecuteRequest): Promise<HiveStatementResult[]>
+  hivePreviewCellUpdate?(req: HiveCellUpdateRequest): Promise<HiveCellUpdatePreview>
+  hiveUpdateCell?(req: HiveCellUpdateRequest): Promise<void>
+  hivePreviewDeleteRow?(req: HiveDeleteRowRequest): Promise<HiveDeleteRowPreview>
+  hiveDeleteRow?(req: HiveDeleteRowRequest): Promise<void>
+  hiveTruncateTable?(req: HiveTruncateTableRequest): Promise<void>
+  hiveDropTable?(req: HiveDropTableRequest): Promise<void>
+  hiveTableColumns?(req: HiveTableColumnsRequest): Promise<HiveTableColumnsResult>
+  hiveAlterTable?(req: HiveAlterTableRequest): Promise<void>
+  hiveExportTable?(req: HiveExportTableRequest): Promise<HiveExportTableResult>
 }
 
 // The Wails binding generator models Go `[]byte` fields as `number[]`, but
@@ -236,6 +326,11 @@ export class WailsApi implements Api {
   }
   deleteConnection(id: string): Promise<void> {
     return App.DeleteConnection(id)
+  }
+  // 侧栏连接排序持久化:Wails 绑定 ReorderConnections 由主会话稍后重生成,
+  // 先对模块形状断言,生成后签名一致无需改动。
+  reorderConnections(ids: string[]): Promise<void> {
+    return (App as unknown as { ReorderConnections: (ids: string[]) => Promise<void> }).ReorderConnections(ids)
   }
   testConnection(cfg: KafkaConfig): Promise<void> {
     return App.TestConnection(cfg as unknown as never) as unknown as Promise<void>
@@ -421,6 +516,13 @@ export class WailsApi implements Api {
   chTruncateTable(req: CHTruncateTableRequest): Promise<void> {
     return (App as unknown as { CHTruncateTable: (req: never) => Promise<void> }).CHTruncateTable(req as unknown as never)
   }
+  // 按行删除:Wails 绑定由主会话稍后重生成,先对模块形状断言。
+  chPreviewDeleteRow(req: CHDeleteRowRequest): Promise<CHDeleteRowPreview> {
+    return (App as unknown as { CHPreviewDeleteRow: (req: never) => Promise<CHDeleteRowPreview> }).CHPreviewDeleteRow(req as unknown as never)
+  }
+  chDeleteRow(req: CHDeleteRowRequest): Promise<void> {
+    return (App as unknown as { CHDeleteRow: (req: never) => Promise<void> }).CHDeleteRow(req as unknown as never)
+  }
   chExecute(req: CHExecuteRequest): Promise<CHStatementResult[]> {
     return (App as unknown as { CHExecute: (req: never) => Promise<CHStatementResult[]> }).CHExecute(req as unknown as never)
   }
@@ -453,6 +555,64 @@ export class WailsApi implements Api {
   mysqlTruncateTable(req: MysqlTruncateTableRequest): Promise<void> {
     return (App as unknown as { MysqlTruncateTable: (req: never) => Promise<void> }).MysqlTruncateTable(req as unknown as never)
   }
+  // 按行删除:Wails 绑定由主会话稍后重生成,先对模块形状断言。
+  mysqlPreviewDeleteRow(req: MysqlDeleteRowRequest): Promise<MysqlDeleteRowPreview> {
+    return (App as unknown as { MysqlPreviewDeleteRow: (req: never) => Promise<MysqlDeleteRowPreview> }).MysqlPreviewDeleteRow(req as unknown as never)
+  }
+  mysqlDeleteRow(req: MysqlDeleteRowRequest): Promise<void> {
+    return (App as unknown as { MysqlDeleteRow: (req: never) => Promise<void> }).MysqlDeleteRow(req as unknown as never)
+  }
+  // 以下表级 DDL API 的 Wails 绑定已由 wails generate 生成;接口侧保留可选
+  // 成员(既有 fake 无需实现),运行期直接按生成签名调用。
+  mysqlDropTable(req: MysqlDropTableRequest): Promise<void> {
+    return (App as unknown as { MysqlDropTable: (req: never) => Promise<void> }).MysqlDropTable(req as unknown as never)
+  }
+  mysqlTableColumns(req: MysqlTableColumnsRequest): Promise<MysqlTableColumnsResult> {
+    return (App as unknown as { MysqlTableColumns: (req: never) => Promise<MysqlTableColumnsResult> }).MysqlTableColumns(req as unknown as never)
+  }
+  mysqlAlterTable(req: MysqlAlterTableRequest): Promise<void> {
+    return (App as unknown as { MysqlAlterTable: (req: never) => Promise<void> }).MysqlAlterTable(req as unknown as never)
+  }
+  mysqlExportTable(req: MysqlExportTableRequest): Promise<MysqlExportTableResult> {
+    return (App as unknown as { MysqlExportTable: (req: never) => Promise<MysqlExportTableResult> }).MysqlExportTable(req as unknown as never)
+  }
+  // 以下 PostgreSQL API 的后端绑定尚未由 wails generate 生成,先对模块形状
+  // 断言,待主会话生成绑定后即可直接调用(接口侧为可选成员,fake 无需实现)。
+  testPostgresConnection(cfg: PostgresConfigShape): Promise<void> {
+    return (App as unknown as { TestPostgresConnection: (cfg: never) => Promise<void> }).TestPostgresConnection(cfg as unknown as never)
+  }
+  listPostgresDatabases(id: string): Promise<string[]> {
+    return (App as unknown as { ListPostgresDatabases: (id: string) => Promise<string[]> }).ListPostgresDatabases(id) as unknown as Promise<string[]>
+  }
+  listPostgresSchemas(req: PostgresListSchemasRequest): Promise<string[]> {
+    return (App as unknown as { ListPostgresSchemas: (req: never) => Promise<string[]> }).ListPostgresSchemas(req as unknown as never) as unknown as Promise<string[]>
+  }
+  listPostgresTables(req: PostgresListTablesRequest): Promise<PostgresRelationInfo[]> {
+    return (App as unknown as { ListPostgresTables: (req: never) => Promise<PostgresRelationInfo[]> }).ListPostgresTables(req as unknown as never)
+  }
+  postgresPageRows(req: PostgresPageRowsRequest): Promise<PostgresPageRowsResult> {
+    return (App as unknown as { PostgresPageRows: (req: never) => Promise<PostgresPageRowsResult> }).PostgresPageRows(req as unknown as never)
+  }
+  postgresExecute(req: PostgresExecuteRequest): Promise<PostgresStatementResult[]> {
+    return (App as unknown as { PostgresExecute: (req: never) => Promise<PostgresStatementResult[]> }).PostgresExecute(req as unknown as never)
+  }
+  postgresTruncateTable(req: PostgresTruncateTableRequest): Promise<void> {
+    return (App as unknown as { PostgresTruncateTable: (req: never) => Promise<void> }).PostgresTruncateTable(req as unknown as never)
+  }
+  // 按行删除:Wails 绑定由主会话稍后重生成,先对模块形状断言。
+  postgresPreviewDeleteRow(req: PostgresDeleteRowRequest): Promise<PostgresDeleteRowPreview> {
+    return (App as unknown as { PostgresPreviewDeleteRow: (req: never) => Promise<PostgresDeleteRowPreview> }).PostgresPreviewDeleteRow(req as unknown as never)
+  }
+  postgresDeleteRow(req: PostgresDeleteRowRequest): Promise<void> {
+    return (App as unknown as { PostgresDeleteRow: (req: never) => Promise<void> }).PostgresDeleteRow(req as unknown as never)
+  }
+  postgresPreviewCellUpdate(req: PostgresCellUpdateRequest): Promise<PostgresCellUpdatePreview> {
+    return (App as unknown as { PostgresPreviewCellUpdate: (req: never) => Promise<PostgresCellUpdatePreview> }).PostgresPreviewCellUpdate(req as unknown as never)
+  }
+  postgresUpdateCell(req: PostgresCellUpdateRequest): Promise<void> {
+    return (App as unknown as { PostgresUpdateCell: (req: never) => Promise<void> }).PostgresUpdateCell(req as unknown as never)
+  }
+
   // 以下 Elasticsearch API 的后端绑定尚未由 wails generate 生成,先对模块形状
   // 断言,待主会话生成绑定后即可直接调用(接口侧为可选成员,fake 无需实现)。
   testEsConnection(cfg: EsConfigShape): Promise<void> {
@@ -476,8 +636,11 @@ export class WailsApi implements Api {
   esPutDoc(req: EsPutDocRequest): Promise<void> {
     return (App as unknown as { ESPutDoc: (req: never) => Promise<void> }).ESPutDoc(req as unknown as never)
   }
+
   esCreateDoc(req: EsCreateDocRequest): Promise<EsDoc> {
-    return (App as unknown as { EsCreateDoc: (req: never) => Promise<EsDoc> }).EsCreateDoc(req as unknown as never)
+    // ESCreateDoc 绑定尚未由 wailsjs 生成,先按模块形状断言直连(主控稍后
+    // 重生成,生成后签名一致无需改动)。
+    return (App as unknown as { ESCreateDoc: (req: never) => Promise<EsDoc> }).ESCreateDoc(req as unknown as never)
   }
   esUpdateCell(req: EsCellUpdateRequest): Promise<void> {
     return (App as unknown as { ESUpdateCell: (req: never) => Promise<void> }).ESUpdateCell(req as unknown as never)
@@ -517,6 +680,49 @@ export class WailsApi implements Api {
   }
   esClusterStats(req: EsClusterStatsRequest): Promise<EsClusterStats> {
     return (App as unknown as { EsClusterStats: (req: never) => Promise<EsClusterStats> }).EsClusterStats(req as unknown as never)
+  }
+  // Hive 系列:后端绑定由主会话稍后 wails generate 重生成,先按模块形状断言。
+  testHiveConnection(cfg: HiveConfigShape): Promise<void> {
+    return (App as unknown as { TestHiveConnection: (cfg: never) => Promise<void> }).TestHiveConnection(cfg as unknown as never)
+  }
+  listHiveDatabases(id: string): Promise<string[]> {
+    return (App as unknown as { ListHiveDatabases: (id: string) => Promise<string[]> }).ListHiveDatabases(id)
+  }
+  listHiveTables(req: HiveListTablesRequest): Promise<HiveTableInfo[]> {
+    return (App as unknown as { ListHiveTables: (req: never) => Promise<HiveTableInfo[]> }).ListHiveTables(req as unknown as never)
+  }
+  hivePageRows(req: HivePageRowsRequest): Promise<HivePageRowsResult> {
+    return (App as unknown as { HivePageRows: (req: never) => Promise<HivePageRowsResult> }).HivePageRows(req as unknown as never)
+  }
+  hiveExecute(req: HiveExecuteRequest): Promise<HiveStatementResult[]> {
+    return (App as unknown as { HiveExecute: (req: never) => Promise<HiveStatementResult[]> }).HiveExecute(req as unknown as never)
+  }
+  hivePreviewCellUpdate(req: HiveCellUpdateRequest): Promise<HiveCellUpdatePreview> {
+    return (App as unknown as { HivePreviewCellUpdate: (req: never) => Promise<HiveCellUpdatePreview> }).HivePreviewCellUpdate(req as unknown as never)
+  }
+  hiveUpdateCell(req: HiveCellUpdateRequest): Promise<void> {
+    return (App as unknown as { HiveUpdateCell: (req: never) => Promise<void> }).HiveUpdateCell(req as unknown as never)
+  }
+  hivePreviewDeleteRow(req: HiveDeleteRowRequest): Promise<HiveDeleteRowPreview> {
+    return (App as unknown as { HivePreviewDeleteRow: (req: never) => Promise<HiveDeleteRowPreview> }).HivePreviewDeleteRow(req as unknown as never)
+  }
+  hiveDeleteRow(req: HiveDeleteRowRequest): Promise<void> {
+    return (App as unknown as { HiveDeleteRow: (req: never) => Promise<void> }).HiveDeleteRow(req as unknown as never)
+  }
+  hiveTruncateTable(req: HiveTruncateTableRequest): Promise<void> {
+    return (App as unknown as { HiveTruncateTable: (req: never) => Promise<void> }).HiveTruncateTable(req as unknown as never)
+  }
+  hiveDropTable(req: HiveDropTableRequest): Promise<void> {
+    return (App as unknown as { HiveDropTable: (req: never) => Promise<void> }).HiveDropTable(req as unknown as never)
+  }
+  hiveTableColumns(req: HiveTableColumnsRequest): Promise<HiveTableColumnsResult> {
+    return (App as unknown as { HiveTableColumns: (req: never) => Promise<HiveTableColumnsResult> }).HiveTableColumns(req as unknown as never)
+  }
+  hiveAlterTable(req: HiveAlterTableRequest): Promise<void> {
+    return (App as unknown as { HiveAlterTable: (req: never) => Promise<void> }).HiveAlterTable(req as unknown as never)
+  }
+  hiveExportTable(req: HiveExportTableRequest): Promise<HiveExportTableResult> {
+    return (App as unknown as { HiveExportTable: (req: never) => Promise<HiveExportTableResult> }).HiveExportTable(req as unknown as never)
   }
 }
 

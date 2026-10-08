@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/store"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/store"
 )
 
 // --- 测试基建:httptest fake ES server ---
@@ -249,7 +249,7 @@ func TestEsSQLProbeEndpoints(t *testing.T) {
 			}
 			http.Error(w, "unexpected "+r.URL.Path, http.StatusInternalServerError)
 		})
-		res, err := cl.Execute(context.Background(), "SELECT a FROM t")
+		res, err := cl.Execute(context.Background(), "SELECT a FROM t", 0, 0)
 		if err != nil || len(res) != 1 || res[0].Error != "" {
 			t.Fatalf("Execute: %v %+v", err, res)
 		}
@@ -273,7 +273,7 @@ func TestEsSQLProbeEndpoints(t *testing.T) {
 			}
 			http.Error(w, "unexpected "+r.URL.Path, http.StatusInternalServerError)
 		})
-		if _, err := cl.Execute(context.Background(), "SELECT 1"); err != nil {
+		if _, err := cl.Execute(context.Background(), "SELECT 1", 0, 0); err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
 		if got := rec.paths(); !strings.Contains(got, "POST /_xpack/sql?format=json") {
@@ -295,7 +295,7 @@ func TestEsSQLProbeEndpoints(t *testing.T) {
 			}
 			http.Error(w, "unexpected "+r.URL.Path, http.StatusInternalServerError)
 		})
-		res, err := cl.Execute(context.Background(), "SELECT a FROM t")
+		res, err := cl.Execute(context.Background(), "SELECT a FROM t", 0, 0)
 		if err != nil || len(res) != 1 {
 			t.Fatalf("Execute: %v %+v", err, res)
 		}
@@ -334,7 +334,7 @@ func TestEsSQLProbeEndpoints(t *testing.T) {
 				http.Error(w, "unexpected "+r.URL.Path, http.StatusInternalServerError)
 			}
 		})
-		res, err := cl.Execute(context.Background(), "SELECT a FROM t")
+		res, err := cl.Execute(context.Background(), "SELECT a FROM t", 0, 0)
 		if err != nil || len(res) != 1 || res[0].Error != "" {
 			t.Fatalf("Execute: %v %+v", err, res)
 		}
@@ -383,7 +383,7 @@ func runEsLocalTranslateCase(t *testing.T, version string) {
 			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
 		}
 	})
-	res, err := cl.Execute(context.Background(), "SELECT * FROM logs WHERE level = 'ERROR'")
+	res, err := cl.Execute(context.Background(), "SELECT * FROM logs WHERE level = 'ERROR'", 0, 0)
 	if err != nil || len(res) != 1 || res[0].Error != "" {
 		t.Fatalf("translation fallback must answer the select, got err=%v res=%+v", err, res)
 	}
@@ -416,7 +416,7 @@ func TestEsExecuteLocalTranslationUntranslatable(t *testing.T) {
 		}
 		http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
 	})
-	res, err := cl.Execute(context.Background(), "SELECT 1")
+	res, err := cl.Execute(context.Background(), "SELECT 1", 0, 0)
 	if err != nil || len(res) != 1 || res[0].Error == "" {
 		t.Fatalf("untranslatable statement must record an error, got err=%v res=%+v", err, res)
 	}
@@ -453,7 +453,7 @@ func TestEsExecuteLocalTranslationOtherKinds(t *testing.T) {
 		}
 	})
 	res, err := cl.Execute(context.Background(),
-		"SELECT COUNT(*) FROM logs WHERE level = 'ERROR'; SHOW TABLES LIKE 'log%'; DESCRIBE logs")
+		"SELECT COUNT(*) FROM logs WHERE level = 'ERROR'; SHOW TABLES LIKE 'log%'; DESCRIBE logs", 0, 0)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -490,10 +490,10 @@ func TestEsSQLFallbackOnNoHandler(t *testing.T) {
 		}
 		http.Error(w, "unexpected "+r.URL.Path, http.StatusInternalServerError)
 	})
-	if _, err := cl.Execute(context.Background(), "SELECT 1"); err != nil {
+	if _, err := cl.Execute(context.Background(), "SELECT 1", 0, 0); err != nil {
 		t.Fatalf("first execute must fall back successfully: %v", err)
 	}
-	if _, err := cl.Execute(context.Background(), "SELECT 2"); err != nil {
+	if _, err := cl.Execute(context.Background(), "SELECT 2", 0, 0); err != nil {
 		t.Fatalf("second execute: %v", err)
 	}
 	// /_sql 只允许被尝试一次(记住回退结果),之后直接走 /_xpack/sql。
@@ -529,7 +529,7 @@ func TestEsSQLLicenseBlocked(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 		writeJSON(w, `{"error":{"root_cause":[{"type":"illegal_argument_exception","reason":"current license is non-compliant for [sql]"}]}}`)
 	})
-	res, err := cl.Execute(context.Background(), "SELECT 1")
+	res, err := cl.Execute(context.Background(), "SELECT 1", 0, 0)
 	if err != nil || len(res) != 1 || !strings.Contains(res[0].Error, "该服务端未开放 SQL") {
 		t.Fatalf("license failure must surface the not-open prefix, got err=%v res=%+v", err, res)
 	}
@@ -554,7 +554,7 @@ func TestEsExecuteMultiStatement(t *testing.T) {
 		}
 		writeJSON(w, sqlResp(`{"name":"2","type":"integer"}`, `[[2]]`))
 	})
-	res, err := cl.Execute(context.Background(), "SELECT 1; SELECT 2")
+	res, err := cl.Execute(context.Background(), "SELECT 1; SELECT 2", 0, 0)
 	if err != nil || len(res) != 2 || res[0].Rows[0][0] == nil || *res[0].Rows[0][0] != "1" || *res[1].Rows[0][0] != "2" {
 		t.Fatalf("Execute: %v %+v", err, res)
 	}
@@ -562,7 +562,7 @@ func TestEsExecuteMultiStatement(t *testing.T) {
 		t.Fatal("duration must be recorded")
 	}
 
-	res, err = cl.Execute(context.Background(), "SELECT 1; SELECT boom")
+	res, err = cl.Execute(context.Background(), "SELECT 1; SELECT boom", 0, 0)
 	if err != nil {
 		t.Fatalf("per-statement error must not fail the call: %v", err)
 	}
@@ -1316,6 +1316,8 @@ type fakeES struct {
 	deleted         int64
 	deletedQuery    string
 	execSQL         string
+	execLimit       int
+	execOffset      int
 	execResult      []model.EsStatementResult
 	dslMethod       string
 	dslPath         string
@@ -1384,8 +1386,9 @@ func (f *fakeES) DeleteByQuery(_ context.Context, index, query string) (int64, e
 	f.deletedQuery = index + "\x00" + query
 	return f.deleted, nil
 }
-func (f *fakeES) Execute(_ context.Context, sqlText string) ([]model.EsStatementResult, error) {
+func (f *fakeES) Execute(_ context.Context, sqlText string, limit, offset int) ([]model.EsStatementResult, error) {
 	f.execSQL = sqlText
+	f.execLimit, f.execOffset = limit, offset
 	return f.execResult, nil
 }
 func (f *fakeES) DSL(_ context.Context, method, path, body string) (model.EsDslResult, error) {
@@ -1520,7 +1523,7 @@ func TestServiceESDelegates(t *testing.T) {
 		t.Fatalf("EsDeleteByQuery: %v n=%d query=%q", err, n, fake.deletedQuery)
 	}
 
-	if _, err := svc.EsExecute(ctx, id, "SELECT 1"); err != nil || len(fake.execResult) != 1 {
+	if _, err := svc.EsExecute(ctx, id, "SELECT 1", 0, 0); err != nil || len(fake.execResult) != 1 {
 		t.Fatalf("EsExecute: %v", err)
 	}
 	if fake.execSQL != "SELECT 1" {
@@ -2219,5 +2222,207 @@ func TestServiceEsClusterStatsDelegates(t *testing.T) {
 	}
 	if fake.clusterStatsCalls != 1 {
 		t.Fatalf("must delegate to the pooled client once, got %d calls", fake.clusterStatsCalls)
+	}
+}
+
+// --- Execute:服务端分页(SQL 端点客户端截断 / 本地翻译 from/size) ---
+
+// SQL 端点路径无法表达 from/size(fetch_size+cursor 留待后续版本):结果在
+// 客户端截断,取满 limit 行 total_rows=-1,耗尽时 offset+本页行数。
+func TestEsExecutePagedSQLTruncatesRows(t *testing.T) {
+	rows := `[["x"],["y"],["z"]]`
+	cl, rec := newEsTestClient(t, esRootInfo("8.11.0", ""), func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/_sql" {
+			writeJSON(w, sqlResp(`{"name":"a","type":"keyword"}`, rows))
+			return
+		}
+		http.Error(w, "unexpected "+r.URL.Path, http.StatusInternalServerError)
+	})
+
+	// 取满 limit=2(offset=1,本页 y/z)→ -1。
+	res, err := cl.Execute(context.Background(), "SELECT a FROM t", 2, 1)
+	if err != nil || len(res) != 1 || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if len(res[0].Rows) != 2 || *res[0].Rows[0][0] != "y" || *res[0].Rows[1][0] != "z" {
+		t.Fatalf("page must start at offset 1 with 2 rows, got %+v", res[0].Rows)
+	}
+	if res[0].TotalRows == nil || *res[0].TotalRows != -1 {
+		t.Fatalf("a full page must report total_rows -1, got %+v", res[0].TotalRows)
+	}
+
+	// 耗尽(limit=2, offset=2,仅剩 z)→ offset+pageLen=3。
+	res, err = cl.Execute(context.Background(), "SELECT a FROM t", 2, 2)
+	if err != nil || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if res[0].TotalRows == nil || *res[0].TotalRows != 3 {
+		t.Fatalf("exhausted result must report offset+pageLen=3, got %+v", res[0].TotalRows)
+	}
+	if got := rec.paths(); !strings.Contains(got, "POST /_sql?format=json") {
+		t.Fatalf("must use the SQL endpoint, got %v", got)
+	}
+}
+
+// 本地翻译 select 路径:请求分页覆盖语句默认页,映射为 _search 的 from/size,
+// total_rows 取 hits.total.value(7.x 对象形态)。
+func TestEsExecutePagedLocalSelectMapsFromSize(t *testing.T) {
+	var searchBody string
+	cl, rec := newEsTestClient(t, esRootInfo("6.1.0", ""), func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case esSQLAllMissing(w, r):
+			return
+		case r.Method == http.MethodGet && r.URL.Path == "/logs/_mapping":
+			writeJSON(w, `{"logs":{"mappings":{"properties":{"level":{"type":"keyword"}}}}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/logs/_search":
+			searchBody = readAllString(r)
+			writeJSON(w, `{"hits":{"total":{"value":42,"relation":"eq"},"hits":[
+				{"_index":"logs","_id":"4","_source":{"level":"INFO"}}
+			]}}`)
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
+		}
+	})
+	res, err := cl.Execute(context.Background(), "SELECT * FROM logs", 5, 3)
+	if err != nil || len(res) != 1 || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if !strings.Contains(searchBody, `"from":3`) || !strings.Contains(searchBody, `"size":5`) {
+		t.Fatalf("page must map to from=3/size=5, got %s", searchBody)
+	}
+	if res[0].TotalRows == nil || *res[0].TotalRows != 42 {
+		t.Fatalf("total_rows must come from hits.total.value, got %+v", res[0].TotalRows)
+	}
+	if got := rec.paths(); !strings.Contains(got, "POST /logs/_search") {
+		t.Fatalf("must execute via POST /logs/_search, got %v", got)
+	}
+}
+
+// 本地翻译 show/describe(count 同理)不能表达 from/size:客户端截断回退。
+func TestEsExecutePagedLocalShowTruncates(t *testing.T) {
+	cl, _ := newEsTestClient(t, esRootInfo("6.1.0", ""), func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case esSQLAllMissing(w, r):
+			return
+		case r.Method == http.MethodGet && r.URL.Path == "/_cat/indices":
+			writeJSON(w, `[
+				{"index":"logs","docs.count":"3","store.size":"100"},
+				{"index":"users","docs.count":"9","store.size":"200"}
+			]`)
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
+		}
+	})
+	res, err := cl.Execute(context.Background(), "SHOW TABLES", 1, 1)
+	if err != nil || len(res) != 1 || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if len(res[0].Rows) != 1 || res[0].Rows[0][0] == nil || *res[0].Rows[0][0] != "users" {
+		t.Fatalf("page must start at offset 1 with 1 row, got %+v", res[0].Rows)
+	}
+	if res[0].TotalRows == nil || *res[0].TotalRows != -1 {
+		t.Fatalf("a full page must report total_rows -1, got %+v", res[0].TotalRows)
+	}
+}
+
+// limit=0 保持旧行为:本地翻译 select 走默认页(from=0/size=100)且不下发
+// total_rows;SQL 端点路径同样不下发 total_rows。
+func TestEsExecuteWithoutLimitKeepsLegacyBehavior(t *testing.T) {
+	var searchBody string
+	cl, _ := newEsTestClient(t, esRootInfo("6.1.0", ""), func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case esSQLAllMissing(w, r):
+			return
+		case r.Method == http.MethodGet && r.URL.Path == "/logs/_mapping":
+			writeJSON(w, `{"logs":{"mappings":{"properties":{"level":{"type":"keyword"}}}}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/logs/_search":
+			searchBody = readAllString(r)
+			writeJSON(w, `{"hits":{"total":{"value":42},"hits":[]}}`)
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
+		}
+	})
+	res, err := cl.Execute(context.Background(), "SELECT * FROM logs", 0, 0)
+	if err != nil || len(res) != 1 || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if !strings.Contains(searchBody, `"from":0`) || !strings.Contains(searchBody, `"size":100`) {
+		t.Fatalf("legacy default page must stay from=0/size=100, got %s", searchBody)
+	}
+	if res[0].TotalRows != nil {
+		t.Fatalf("total_rows must stay unset without paging, got %+v", res[0].TotalRows)
+	}
+}
+
+// --- P2-1:ES 总数精度(track_total_hits) ---
+
+// 本地翻译 select 路径的 _search 请求体必须携带 track_total_hits=true:
+// ES 默认只精确统计前 10000 条命中,控制台分页的 total_rows 依赖精确值。
+func TestEsExecuteLocalSelectSendsTrackTotalHits(t *testing.T) {
+	var searchBody string
+	cl, _ := newEsTestClient(t, esRootInfo("6.1.0", ""), func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case esSQLAllMissing(w, r):
+			return
+		case r.Method == http.MethodGet && r.URL.Path == "/logs/_mapping":
+			writeJSON(w, `{"logs":{"mappings":{"properties":{"level":{"type":"keyword"}}}}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/logs/_search":
+			searchBody = readAllString(r)
+			writeJSON(w, `{"hits":{"total":{"value":42,"relation":"eq"},"hits":[]}}`)
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
+		}
+	})
+	if _, err := cl.Execute(context.Background(), "SELECT * FROM logs", 5, 0); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(searchBody, `"track_total_hits":true`) {
+		t.Fatalf("search body must carry track_total_hits, got %s", searchBody)
+	}
+}
+
+// 索引浏览 PageRows 的 _search 请求体同样携带 track_total_hits=true。
+func TestEsPageRowsSendsTrackTotalHits(t *testing.T) {
+	var body string
+	cl, _ := newEsTestClient(t, esRootInfo("8.11.0", ""), func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/logs/_mapping":
+			writeJSON(w, esPageMappingJSON)
+		case r.Method == http.MethodPost && r.URL.Path == "/logs/_search":
+			body = readAllString(r)
+			writeJSON(w, `{"hits":{"total":{"value":1,"relation":"eq"},"hits":[]}}`)
+		default:
+			http.Error(w, "unexpected "+r.URL.Path, http.StatusInternalServerError)
+		}
+	})
+	if _, err := cl.PageRows(context.Background(), "logs", "", "", true, 10, 0); err != nil {
+		t.Fatalf("PageRows: %v", err)
+	}
+	if !strings.Contains(body, `"track_total_hits":true`) {
+		t.Fatalf("search body must carry track_total_hits, got %s", body)
+	}
+}
+
+// --- P2-2:负数分页参数钳制 ---
+
+// limit<0 视为禁用分页(旧行为):SQL 端点路径不截断、返回全量行且不下发
+// total_rows;offset<0 视为 0。
+func TestEsExecuteClampsNegativePaging(t *testing.T) {
+	cl, _ := newEsTestClient(t, esRootInfo("8.11.0", ""), func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/_sql" {
+			writeJSON(w, sqlResp(`{"name":"a","type":"keyword"}`, `[["x"],["y"],["z"]]`))
+			return
+		}
+		http.Error(w, "unexpected "+r.URL.Path, http.StatusInternalServerError)
+	})
+	res, err := cl.Execute(context.Background(), "SELECT a FROM t", -1, -5)
+	if err != nil || len(res) != 1 || res[0].Error != "" {
+		t.Fatalf("Execute: %v %+v", err, res)
+	}
+	if len(res[0].Rows) != 3 {
+		t.Fatalf("negative limit must disable paging and return all rows, got %+v", res[0].Rows)
+	}
+	if res[0].TotalRows != nil {
+		t.Fatalf("total_rows must stay unset without paging, got %+v", res[0].TotalRows)
 	}
 }

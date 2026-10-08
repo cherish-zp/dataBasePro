@@ -300,6 +300,7 @@ describe('NewConnectionModal', () => {
       name: 'redis-old',
       type: 'redis',
       config: { addr: 'r.internal:6380', password: 'pw', db: 3 },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -355,6 +356,7 @@ describe('NewConnectionModal', () => {
     id: 'c-1',
     name: 'kerb-old',
     type: 'kafka',
+    sort_order: 0,
     created_at: 1,
     updated_at: 2,
     config: {
@@ -423,7 +425,7 @@ describe('NewConnectionModal', () => {
       props: {
         show: true,
         connection: {
-          id: 'c-2', name: 'plain-old', type: 'kafka', created_at: 1, updated_at: 1,
+          id: 'c-2', name: 'plain-old', type: 'kafka', sort_order: 0, created_at: 1, updated_at: 1,
           config: {
             bootstrap_servers: ['h:9092'],
             security_protocol: 'SASL_SSL',
@@ -442,7 +444,7 @@ describe('NewConnectionModal', () => {
   })
 
   it('derives the security protocol from legacy sasl/tls booleans when the field is missing', () => {
-    const base = { id: 'c-3', name: 'legacy', type: 'kafka' as const, created_at: 1, updated_at: 1 }
+    const base = { id: 'c-3', name: 'legacy', type: 'kafka' as const, sort_order: 0, created_at: 1, updated_at: 1 }
     const mountWith = async (cfg: Connection['config']) => {
       const w = mount(NewConnectionModal, {
         props: { show: true, connection: { ...base, config: cfg } },
@@ -455,9 +457,9 @@ describe('NewConnectionModal', () => {
     expect(mountWith({ bootstrap_servers: ['h:1'] })).resolves.toBe('PLAINTEXT')
   })
 
-  it('renders the two-stage type grid with five selectable cards', async () => {
+  it('renders the two-stage type grid with selectable cards', async () => {
     const wrapper = mountModal()
-    for (const t of ['kafka', 'redis', 'clickhouse', 'mysql', 'tidb']) {
+    for (const t of ['kafka', 'redis', 'clickhouse', 'mysql', 'tidb', 'postgres']) {
       expect(wrapper.find(`[data-test="type-card-${t}"]`).exists()).toBe(true)
     }
     // 默认选中 kafka,下方渲染 kafka 表单。
@@ -586,6 +588,7 @@ describe('NewConnectionModal', () => {
       name: 'my-old',
       type: 'mysql',
       config: { host: 'h.internal', port: 3307, username: 'app', password: 'pw', database: 'orders', tls_mode: 'verify-full' },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -618,6 +621,7 @@ describe('NewConnectionModal', () => {
       name: 'ti-old',
       type: 'tidb',
       config: { host: 'ti.internal', port: 4000, username: 'root', password: '', database: 'sales', tls_mode: 'skip-verify' },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -733,6 +737,7 @@ describe('NewConnectionModal', () => {
       name: 'ch-old',
       type: 'clickhouse',
       config: { hosts: ['a:9000', 'b:9000'], username: 'default', password: 'pw', database: 'default', tls: true },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -818,6 +823,7 @@ describe('NewConnectionModal', () => {
       name: 'ch-old',
       type: 'clickhouse',
       config: { hosts: ['h:9000'], username: 'default', database: 'default' },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -957,6 +963,7 @@ describe('NewConnectionModal', () => {
         auth_mode: 'apikey',
         tls_mode: 'skip-verify',
       },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -983,5 +990,327 @@ describe('NewConnectionModal', () => {
         }),
       )
     })
+  })
+
+  it('shows the delete button in edit mode only', () => {
+    expect(mountModal().find('[data-test="btn-delete-connection"]').exists()).toBe(false)
+    const editWrapper = mount(NewConnectionModal, { props: { show: true, connection: gssapiConn } })
+    expect(editWrapper.find('[data-test="btn-delete-connection"]').exists()).toBe(true)
+  })
+
+  it('deletes through a confirmation layer: cancel keeps everything, confirm calls deleteConnection and closes', async () => {
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: gssapiConn } })
+    await wrapper.find('[data-test="btn-delete-connection"]').trigger('click')
+    expect(wrapper.find('[data-test="delete-confirm-dialog"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="delete-confirm-message"]').text()).toContain('kerb-old')
+    // 取消:不删除、确认层关闭、弹窗保持打开。
+    await wrapper.find('[data-test="delete-confirm-cancel"]').trigger('click')
+    expect(wrapper.find('[data-test="delete-confirm-dialog"]').exists()).toBe(false)
+    expect(api.deleteConnection).not.toHaveBeenCalled()
+    expect(wrapper.emitted('close')).toBeFalsy()
+    // 再次打开确认层并确认:调用删除并关闭弹窗。
+    await wrapper.find('[data-test="btn-delete-connection"]').trigger('click')
+    await wrapper.find('[data-test="delete-confirm-ok"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api.deleteConnection).toHaveBeenCalledWith('c-1')
+    })
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('shows a delete error inside the confirmation layer and keeps the modal open', async () => {
+    const api2 = fakeApi({
+      deleteConnection: vi.fn(async () => {
+        throw new Error('删除失败:连接仍在使用')
+      }),
+    })
+    setApi(api2)
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: gssapiConn } })
+    await wrapper.find('[data-test="btn-delete-connection"]').trigger('click')
+    await wrapper.find('[data-test="delete-confirm-ok"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="delete-error"]').text()).toBe('删除失败:连接仍在使用')
+    })
+    expect(wrapper.emitted('close')).toBeFalsy()
+  })
+})
+
+describe('PostgreSQL 连接卡片', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+  afterEach(() => document.body.innerHTML = '')
+
+  function mountModal() {
+    return mount(NewConnectionModal, { props: { show: true }, attachTo: document.body })
+  }
+
+  it('渲染 PostgreSQL 类型卡片,选中后显示 PG 字段与默认值(5432 / disable / 超时 5000)', async () => {
+    const wrapper = mountModal()
+    expect(wrapper.find('[data-test="type-card-postgres"]').exists()).toBe(true)
+    await wrapper.find('[data-test="type-card-postgres"]').trigger('click')
+    for (const f of ['input-postgres-host', 'input-postgres-port', 'input-postgres-username', 'input-postgres-password', 'input-postgres-database', 'input-postgres-tls-mode']) {
+      expect(wrapper.find(`[data-test="${f}"]`).exists()).toBe(true)
+    }
+    expect((wrapper.find('[data-test="input-postgres-port"]').element as HTMLInputElement).value).toBe('5432')
+    expect((wrapper.find('[data-test="input-postgres-tls-mode"]').element as HTMLSelectElement).value).toBe('disable')
+  })
+
+  it('测试连接走 testPostgresConnection 并携带完整配置(含 connect_timeout_ms)', async () => {
+    const api2 = fakeApi({ testPostgresConnection: vi.fn(async () => {}) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-postgres"]').trigger('click')
+    await wrapper.find('[data-test="input-postgres-host"]').setValue('127.0.0.1')
+    await wrapper.find('[data-test="input-postgres-username"]').setValue('postgres')
+    await wrapper.find('[data-test="input-postgres-password"]').setValue('pw')
+    await wrapper.find('[data-test="input-postgres-database"]').setValue('shop')
+    await wrapper.find('[data-test="btn-test"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.testPostgresConnection).toHaveBeenCalledWith({
+        host: '127.0.0.1',
+        port: 5432,
+        username: 'postgres',
+        password: 'pw',
+        database: 'shop',
+        tls_mode: 'disable',
+        connect_timeout_ms: 5000,
+      })
+    })
+  })
+
+  it('保存连接时 type 为 postgres 且配置含 search_path 可选项', async () => {
+    const api2 = fakeApi({ createConnection: vi.fn(async (c: never) => c) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-postgres"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('pg-local')
+    await wrapper.find('[data-test="input-postgres-host"]').setValue('127.0.0.1')
+    await wrapper.find('[data-test="input-postgres-username"]').setValue('postgres')
+    await wrapper.find('[data-test="input-postgres-database"]').setValue('shop')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'pg-local',
+          type: 'postgres',
+          config: expect.objectContaining({ host: '127.0.0.1', port: 5432, database: 'shop', tls_mode: 'disable', connect_timeout_ms: 5000 }),
+        }),
+      )
+    })
+  })
+})
+
+describe('PostgreSQL database 必填校验', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+  afterEach(() => document.body.innerHTML = '')
+
+  it('database 为空时保存与测试按钮禁用,填写后恢复', async () => {
+    const wrapper = mount(NewConnectionModal, { props: { show: true } })
+    await wrapper.find('[data-test="type-card-postgres"]').trigger('click')
+    await wrapper.find('[data-test="input-postgres-host"]').setValue('127.0.0.1')
+    await wrapper.find('[data-test="input-postgres-username"]').setValue('postgres')
+    await wrapper.find('[data-test="input-name"]').setValue('pg-local')
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(true)
+      expect((wrapper.find('[data-test="btn-test"]').element as HTMLButtonElement).disabled).toBe(true)
+    })
+    await wrapper.find('[data-test="input-postgres-database"]').setValue('shop')
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(false)
+      expect((wrapper.find('[data-test="btn-test"]').element as HTMLButtonElement).disabled).toBe(false)
+    })
+    // 模板展示必填标记与错误提示。
+    expect(wrapper.find('[data-test="postgres-database-err"]').exists()).toBe(false)
+    await wrapper.find('[data-test="input-postgres-database"]').setValue('')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="postgres-database-err"]').exists()).toBe(true)
+    })
+  })
+})
+
+describe('Hive 连接卡片', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+  afterEach(() => document.body.innerHTML = '')
+
+  function mountModal() {
+    return mount(NewConnectionModal, { props: { show: true }, attachTo: document.body })
+  }
+
+  it('渲染 Hive 类型卡片,选中后显示 hive 字段且默认 nosasl / 端口 10000', async () => {
+    const wrapper = mountModal()
+    expect(wrapper.find('[data-test="type-card-hive"]').exists()).toBe(true)
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    expect(wrapper.find('[data-test="type-card-hive"]').classes()).toContain('active')
+    for (const f of ['input-hive-host', 'input-hive-port', 'hive-auth-mode', 'hive-database']) {
+      expect(wrapper.find(`[data-test="${f}"]`).exists(), f).toBe(true)
+    }
+    expect((wrapper.find('[data-test="input-hive-port"]').element as HTMLInputElement).value).toBe('10000')
+    expect((wrapper.find('[data-test="hive-auth-mode"]').element as HTMLSelectElement).value).toBe('nosasl')
+    // nosasl:不渲染凭据与 kerberos 字段。
+    expect(wrapper.find('[data-test="hive-username"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hive-password"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hive-kerberos-principal"]').exists()).toBe(false)
+  })
+
+  it('切换 kerberos 显示三个 kerberos 字段且 principal/keytab 必填', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    await wrapper.find('[data-test="hive-auth-mode"]').setValue('kerberos')
+    expect(wrapper.find('[data-test="hive-username"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hive-password"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="hive-kerberos-principal"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="hive-kerberos-keytab"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="hive-kerberos-krb5-conf"]').exists()).toBe(true)
+    await wrapper.find('[data-test="input-hive-host"]').setValue('hive.internal')
+    await wrapper.find('[data-test="input-name"]').setValue('hive-kerb')
+    // principal/keytab 缺失:保存禁用并展示中文错误。
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(true)
+      expect(wrapper.find('[data-test="hive-kerberos-principal-err"]').exists()).toBe(true)
+      expect(wrapper.find('[data-test="hive-kerberos-keytab-err"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="hive-kerberos-principal"]').setValue('hive/_HOST@EXAMPLE.COM')
+    await wrapper.find('[data-test="hive-kerberos-keytab"]').setValue('/etc/security/keytabs/hive.keytab')
+    expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('LDAP 认证缺用户名时保存禁用并报错,填写后恢复', async () => {
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    await wrapper.find('[data-test="hive-auth-mode"]').setValue('ldap')
+    expect(wrapper.find('[data-test="hive-username"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="hive-password"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="hive-kerberos-principal"]').exists()).toBe(false)
+    await wrapper.find('[data-test="input-hive-host"]').setValue('hive.internal')
+    await wrapper.find('[data-test="input-name"]').setValue('hive-ldap')
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(true)
+      expect(wrapper.find('[data-test="hive-username-err"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="hive-username"]').setValue('hive')
+    expect((wrapper.find('[data-test="btn-save"]').element as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('保存 nosasl 连接:config 仅携带 host/port/auth_mode,database 填写则带上', async () => {
+    const api2 = fakeApi({ createConnection: vi.fn(async (c: never) => c) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('hive-local')
+    await wrapper.find('[data-test="input-hive-host"]').setValue('127.0.0.1')
+    await wrapper.find('[data-test="input-hive-port"]').setValue('10001')
+    await wrapper.find('[data-test="hive-database"]').setValue('warehouse')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'hive-local',
+          type: 'hive',
+          config: { host: '127.0.0.1', port: 10001, auth_mode: 'nosasl', database: 'warehouse' },
+        }),
+      )
+    })
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('保存 kerberos 连接:config 携带 kerberos 子对象,krb5_conf 留空省略', async () => {
+    const api2 = fakeApi({ createConnection: vi.fn(async (c: never) => c) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    await wrapper.find('[data-test="input-name"]').setValue('hive-kerb')
+    await wrapper.find('[data-test="input-hive-host"]').setValue('hs2.internal')
+    await wrapper.find('[data-test="hive-auth-mode"]').setValue('kerberos')
+    await wrapper.find('[data-test="hive-kerberos-principal"]').setValue('hive/_HOST@EXAMPLE.COM')
+    await wrapper.find('[data-test="hive-kerberos-keytab"]').setValue('/etc/security/keytabs/hive.keytab')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.createConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'hive-kerb',
+          type: 'hive',
+          config: {
+            host: 'hs2.internal',
+            port: 10000,
+            auth_mode: 'kerberos',
+            kerberos: { principal: 'hive/_HOST@EXAMPLE.COM', keytab: '/etc/security/keytabs/hive.keytab' },
+          },
+        }),
+      )
+    })
+    expect(wrapper.emitted('close')).toBeTruthy()
+  })
+
+  it('编辑模式预填 hive 配置(含 kerberos)并经 updateConnection 保存', async () => {
+    const api2 = fakeApi({ updateConnection: vi.fn(async (r: never) => r) })
+    setApi(api2)
+    const conn: Connection = {
+      id: 'hive1',
+      name: 'hive-old',
+      type: 'hive',
+      config: {
+        host: 'hs2.internal',
+        port: 10000,
+        auth_mode: 'kerberos',
+        database: 'warehouse',
+        kerberos: { principal: 'hive/_HOST@EXAMPLE.COM', keytab: '/kt/hive.keytab', krb5_conf: '/etc/krb5.conf' },
+      },
+      sort_order: 0,
+      created_at: 1,
+      updated_at: 1,
+    }
+    const wrapper = mount(NewConnectionModal, { props: { show: true, connection: conn }, attachTo: document.body })
+    await vi.waitFor(() => {
+      expect((wrapper.find('[data-test="input-hive-host"]').element as HTMLInputElement).value).toBe('hs2.internal')
+    })
+    expect((wrapper.find('[data-test="input-hive-port"]').element as HTMLInputElement).value).toBe('10000')
+    expect((wrapper.find('[data-test="hive-auth-mode"]').element as HTMLSelectElement).value).toBe('kerberos')
+    expect((wrapper.find('[data-test="hive-kerberos-principal"]').element as HTMLInputElement).value).toBe('hive/_HOST@EXAMPLE.COM')
+    expect((wrapper.find('[data-test="hive-kerberos-keytab"]').element as HTMLInputElement).value).toBe('/kt/hive.keytab')
+    expect((wrapper.find('[data-test="hive-kerberos-krb5-conf"]').element as HTMLInputElement).value).toBe('/etc/krb5.conf')
+    expect((wrapper.find('[data-test="hive-database"]').element as HTMLInputElement).value).toBe('warehouse')
+    expect(wrapper.find('[data-test="type-card-hive"]').classes()).toContain('active')
+    await wrapper.find('[data-test="input-name"]').setValue('hive-new')
+    await wrapper.find('[data-test="btn-save"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.updateConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'hive1',
+          name: 'hive-new',
+          type: 'hive',
+          config: expect.objectContaining({ host: 'hs2.internal', port: 10000, auth_mode: 'kerberos' }),
+        }),
+      )
+    })
+  })
+
+  it('测试连接走 testHiveConnection 并携带完整配置(LDAP 凭据)', async () => {
+    const api2 = fakeApi({ testHiveConnection: vi.fn(async () => {}) })
+    setApi(api2)
+    const wrapper = mountModal()
+    await wrapper.find('[data-test="type-card-hive"]').trigger('click')
+    await wrapper.find('[data-test="input-hive-host"]').setValue('hs2.internal')
+    await wrapper.find('[data-test="hive-auth-mode"]').setValue('ldap')
+    await wrapper.find('[data-test="hive-username"]').setValue('hive')
+    await wrapper.find('[data-test="hive-password"]').setValue('pw')
+    await wrapper.find('[data-test="btn-test"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(api2.testHiveConnection).toHaveBeenCalledWith({
+        host: 'hs2.internal',
+        port: 10000,
+        auth_mode: 'ldap',
+        username: 'hive',
+        password: 'pw',
+      })
+    })
+    expect(api2.testConnection).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="test-ok"]').exists()).toBe(true)
   })
 })

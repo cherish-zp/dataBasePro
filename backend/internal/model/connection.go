@@ -30,7 +30,7 @@ const ConnectionTypeTiDB ConnectionType = "tidb"
 // Valid reports whether the type is currently supported.
 func (t ConnectionType) Valid() bool {
 	switch t {
-	case ConnectionTypeKafka, ConnectionTypeMySQL, ConnectionTypeES, ConnectionTypeRedis, ConnectionTypeClickHouse, ConnectionTypeTiDB:
+	case ConnectionTypeKafka, ConnectionTypeMySQL, ConnectionTypeES, ConnectionTypeRedis, ConnectionTypeClickHouse, ConnectionTypeTiDB, ConnectionTypePostgres, ConnectionTypeHive:
 		return true
 	}
 	return false
@@ -50,10 +50,10 @@ const (
 type SecurityProtocol string
 
 const (
-	SecurityProtocolPlain      SecurityProtocol = "PLAINTEXT"
-	SecurityProtocolSSL        SecurityProtocol = "SSL"
-	SecurityProtocolSASLPlain  SecurityProtocol = "SASL_PLAINTEXT"
-	SecurityProtocolSASLSSL    SecurityProtocol = "SASL_SSL"
+	SecurityProtocolPlain     SecurityProtocol = "PLAINTEXT"
+	SecurityProtocolSSL       SecurityProtocol = "SSL"
+	SecurityProtocolSASLPlain SecurityProtocol = "SASL_PLAINTEXT"
+	SecurityProtocolSASLSSL   SecurityProtocol = "SASL_SSL"
 )
 
 // SASLConfig holds authentication settings for a Kafka cluster. GSSAPI
@@ -193,6 +193,9 @@ type Connection struct {
 	Config    json.RawMessage `json:"config"`
 	CreatedAt int64           `json:"created_at"`
 	UpdatedAt int64           `json:"updated_at"`
+	// SortOrder 是用户自定义的列表顺序(0..n-1),持久化于 connections 表;
+	// 新建连接追加到末尾,编辑连接不改变该值。
+	SortOrder int64 `json:"sort_order"`
 }
 
 // Validate checks the connection definition, dispatching config validation
@@ -247,6 +250,24 @@ func (c Connection) Validate() error {
 			return fmt.Errorf("invalid mysql config: %w", err)
 		}
 		return cfg.Validate()
+	case ConnectionTypePostgres:
+		if len(c.Config) == 0 {
+			return errors.New("postgres config must not be empty")
+		}
+		var cfg PostgresConfig
+		if err := json.Unmarshal(c.Config, &cfg); err != nil {
+			return fmt.Errorf("invalid postgres config: %w", err)
+		}
+		return cfg.Validate()
+	case ConnectionTypeHive:
+		if len(c.Config) == 0 {
+			return errors.New("hive config must not be empty")
+		}
+		var cfg HiveConfig
+		if err := json.Unmarshal(c.Config, &cfg); err != nil {
+			return fmt.Errorf("invalid hive config: %w", err)
+		}
+		return cfg.Validate()
 	}
 	return nil
 }
@@ -285,6 +306,26 @@ func (c Connection) ClickHouseConfig() (ClickHouseConfig, error) {
 // tidb connections — TiDB speaks the MySQL protocol).
 func (c Connection) MysqlConfig() (MysqlConfig, error) {
 	var cfg MysqlConfig
+	if err := json.Unmarshal(c.Config, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// PostgresConfig decodes the connection's config as a PostgresConfig
+// (postgres connections only).
+func (c Connection) PostgresConfig() (PostgresConfig, error) {
+	var cfg PostgresConfig
+	if err := json.Unmarshal(c.Config, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// HiveConfig decodes the connection's config as a HiveConfig (hive
+// connections only).
+func (c Connection) HiveConfig() (HiveConfig, error) {
+	var cfg HiveConfig
 	if err := json.Unmarshal(c.Config, &cfg); err != nil {
 		return cfg, err
 	}

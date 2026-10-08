@@ -13,7 +13,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // CHCellMaxBytes 是结果单元格格式化后的截断阈值;超出部分替换为截断标记。
@@ -159,7 +159,7 @@ func (c *CHClient) rowFormat() string {
 
 func (c *CHClient) Databases(ctx context.Context) ([]string, error) {
 	rows, err := c.db.QueryContext(ctx,
-		"SELECT name FROM system.databases WHERE name != 'system' AND name != 'INFORMATION_SCHEMA' ORDER BY name" + c.rowFormat())
+		"SELECT name FROM system.databases WHERE name != 'system' AND name != 'INFORMATION_SCHEMA' ORDER BY name"+c.rowFormat())
 	if err != nil {
 		return nil, fmt.Errorf("list databases: %w", err)
 	}
@@ -277,7 +277,7 @@ func (c *CHClient) PageRows(ctx context.Context, database, table, where, orderBy
 // Nullable so it maps to *int64 (nil = engine cannot report it).
 func (c *CHClient) tableMeta(ctx context.Context, database, table string) (string, *int64, error) {
 	rows, err := c.db.QueryContext(ctx,
-		"SELECT engine, total_rows FROM system.tables WHERE database = ? AND name = ?" + c.rowFormat() + "", database, table)
+		"SELECT engine, total_rows FROM system.tables WHERE database = ? AND name = ?"+c.rowFormat()+"", database, table)
 	if err != nil {
 		return "", nil, fmt.Errorf("table meta: %w", err)
 	}
@@ -392,7 +392,7 @@ func (c *CHClient) TruncateTable(ctx context.Context, database, table string, on
 // system.clusters as the ON CLUSTER target heuristic.
 func (c *CHClient) largestCluster(ctx context.Context) (string, error) {
 	rows, err := c.db.QueryContext(ctx,
-		"SELECT cluster FROM system.clusters GROUP BY cluster ORDER BY count() DESC LIMIT 1" + c.rowFormat())
+		"SELECT cluster FROM system.clusters GROUP BY cluster ORDER BY count() DESC LIMIT 1"+c.rowFormat())
 	if err != nil {
 		return "", err
 	}
@@ -625,8 +625,18 @@ func (s *Service) CHUpdateCell(ctx context.Context, id, database, table string, 
 // Execute runs the script statement by statement. Each result carries its
 // duration, and either columns+rows (statements that return a result set) or
 // an error text. A failing statement records its error and stops the run; the
-// results gathered so far are returned.
-func (c *CHClient) Execute(ctx context.Context, sqlText string) ([]model.CHStatementResult, error) {
+// results gathered so far are returned. limit>0 启用服务端分页:SELECT/WITH
+// 语句被子查询包装为仅返回 offset 起的 limit 行并附 count() 总数;SHOW/
+// DESC/EXPLAIN 等不能包装的返回行语句只消费 offset+limit 行(取满 limit 行
+// total_rows=-1,否则 offset+实际行数)。
+func (c *CHClient) Execute(ctx context.Context, sqlText string, limit, offset int) ([]model.CHStatementResult, error) {
+	// 分页参数钳制:limit<0 视为未启用(旧行为),offset<0 视为 0。
+	if limit < 0 {
+		limit = 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	statements := SplitSQLStatements(sqlText)
 	if len(statements) == 0 {
 		return nil, errors.New("没有可执行的 SQL 语句")
@@ -636,13 +646,23 @@ func (c *CHClient) Execute(ctx context.Context, sqlText string) ([]model.CHState
 		res := model.CHStatementResult{SQL: stmt}
 		start := time.Now()
 		if chStatementReturnsRows(stmt) {
-			rows, err := c.db.QueryContext(ctx, stmt)
+			// 分页决策与 MySQL 同构:可包装语句改写子查询,res.SQL 保持原文。
+			query, collectMax, wrapped := stmt, 0, false
+			if limit > 0 {
+				if sqlStatementWrappable(stmt) {
+					query = wrapCHPagedQuery(stmt, limit, offset)
+					wrapped = true
+				} else {
+					collectMax = offset + limit
+				}
+			}
+			rows, err := c.db.QueryContext(ctx, query)
 			if err != nil {
 				res.DurationMs = msSince(start)
 				res.Error = err.Error()
 				return append(out, res), nil
 			}
-			cols, dataRows, err := collectCHRows(rows)
+			cols, dataRows, err := collectCHRowsN(rows, collectMax)
 			closeErr := rows.Close()
 			if err != nil {
 				res.DurationMs = msSince(start)
@@ -653,6 +673,16 @@ func (c *CHClient) Execute(ctx context.Context, sqlText string) ([]model.CHState
 				res.DurationMs = msSince(start)
 				res.Error = closeErr.Error()
 				return append(out, res), nil
+			}
+			if limit > 0 {
+				if wrapped {
+					// 计数失败不影响语句结果:total_rows 保持不下发(nil)。
+					res.TotalRows = countCHWrapped(ctx, c.db, stmt)
+				} else {
+					page, full := slicePageRows(dataRows, limit, offset)
+					dataRows = page
+					res.TotalRows = fallbackTotalRows(full, offset, len(page))
+				}
 			}
 			res.Columns, res.Rows = cols, dataRows
 		} else {
@@ -668,9 +698,50 @@ func (c *CHClient) Execute(ctx context.Context, sqlText string) ([]model.CHState
 	return out, nil
 }
 
+// wrapCHPagedQuery renders the paged form of a wrappable statement: the
+// original text (trailing semicolon stripped) becomes a derived table, and the
+// page window is appended as literal LIMIT/OFFSET (integers, injection-free).
+// 语句顶层以 ORDER BY 结尾且其后无 LIMIT/FOR 等尾巴时,把 ORDER BY 原样外提
+// 到包装外层(派生表不保证保留子查询内的 ORDER BY,跨页顺序可能不稳)。
+func wrapCHPagedQuery(stmt string, limit, offset int) string {
+	body := stripTrailingSemicolon(stmt)
+	tail := ""
+	if head, order, ok := splitTrailingTopLevelOrderBy(body); ok {
+		body, tail = head, " "+order
+	}
+	return "SELECT * FROM (" + body + ") _dbp" + tail + " LIMIT " +
+		strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
+}
+
+// countCHWrapped runs `SELECT count() FROM (<stmt>) _dbp` and returns the
+// exact total; a failing count returns nil (total_rows is then omitted rather
+// than guessed).
+func countCHWrapped(ctx context.Context, db *sql.DB, stmt string) *int64 {
+	rows, err := db.QueryContext(ctx,
+		"SELECT count() FROM ("+stripTrailingSemicolon(stmt)+") _dbp")
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil
+	}
+	var total int64
+	if err := rows.Scan(&total); err != nil {
+		return nil
+	}
+	return &total
+}
+
 // collectCHRows drains a result set into wire-shaped columns and pre-formatted
 // string cells (nil = NULL).
 func collectCHRows(rows *sql.Rows) ([]model.CHColumn, [][]*string, error) {
+	return collectCHRowsN(rows, 0)
+}
+
+// collectCHRowsN 是 collectCHRows 的限量变体:至多消费 max 行(max<=0 表示
+// 不限制),供 SHOW/DESC/EXPLAIN 等不能包装的语句做 offset+limit 截断。
+func collectCHRowsN(rows *sql.Rows, max int) ([]model.CHColumn, [][]*string, error) {
 	types, err := rows.ColumnTypes()
 	if err != nil {
 		return nil, nil, fmt.Errorf("column types: %w", err)
@@ -685,6 +756,9 @@ func collectCHRows(rows *sql.Rows) ([]model.CHColumn, [][]*string, error) {
 	pointers := make([]any, width)
 	var out [][]*string
 	for rows.Next() {
+		if max > 0 && len(out) >= max {
+			break
+		}
 		for i := range values {
 			pointers[i] = &values[i]
 		}

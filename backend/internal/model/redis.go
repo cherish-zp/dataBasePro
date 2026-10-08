@@ -63,15 +63,15 @@ type ZSetMember struct {
 
 // RedisValue is the typed value of a key; exactly one payload field is set.
 type RedisValue struct {
-	Key        string      `json:"key"`
-	Type       string      `json:"type"`
-	TTLSeconds int64       `json:"ttl_seconds"`
-	String     *string     `json:"string,omitempty"`
-	Truncated  bool        `json:"truncated,omitempty"` // String 值超过截断阈值
-	SizeBytes  int64       `json:"size_bytes,omitempty"`
-	Hash       []HashField `json:"hash,omitempty"`
-	List       []string    `json:"list,omitempty"`
-	Set        []string    `json:"set,omitempty"`
+	Key        string       `json:"key"`
+	Type       string       `json:"type"`
+	TTLSeconds int64        `json:"ttl_seconds"`
+	String     *string      `json:"string,omitempty"`
+	Truncated  bool         `json:"truncated,omitempty"` // String 值超过截断阈值
+	SizeBytes  int64        `json:"size_bytes,omitempty"`
+	Hash       []HashField  `json:"hash,omitempty"`
+	List       []string     `json:"list,omitempty"`
+	Set        []string     `json:"set,omitempty"`
 	ZSet       []ZSetMember `json:"zset,omitempty"`
 }
 

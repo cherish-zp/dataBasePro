@@ -286,6 +286,31 @@ describe('tabs store', () => {
     expect(store.openTabs[0].title).toBe('SQL · orders')
   })
 
+  it('setTabDraft writes and updates the draft on the open tab', () => {
+    const store = useTabsStore()
+    const tab = store.openMysqlSql('conn-1', 'logs')
+    store.setTabDraft(tab.id, { sql: 'SELECT 1', file: 'a.sql' })
+    expect(store.openTabs[0].draft).toEqual({ sql: 'SELECT 1', file: 'a.sql' })
+    // 再次写入 = 更新(编辑器内容或文件关联变化时全量覆盖)。
+    store.setTabDraft(tab.id, { sql: 'SELECT 2', file: null })
+    expect(store.openTabs[0].draft).toEqual({ sql: 'SELECT 2', file: null })
+  })
+
+  it('setTabDraft clears the draft when called with undefined', () => {
+    const store = useTabsStore()
+    const tab = store.openCHSql('conn-1')
+    store.setTabDraft(tab.id, { sql: 'SELECT 1', file: 'a.sql' })
+    store.setTabDraft(tab.id, undefined)
+    expect(store.openTabs[0].draft).toBeUndefined()
+  })
+
+  it('setTabDraft is a silent no-op for an unknown tab id', () => {
+    const store = useTabsStore()
+    const tab = store.openEsSql('conn-1')
+    expect(() => store.setTabDraft('nope', { sql: 'SELECT 1', file: null })).not.toThrow()
+    expect(store.openTabs.find((t) => t.id === tab.id)?.draft).toBeUndefined()
+  })
+
   it('opens a clickhouse SQL console per connection and focuses it on reopen', () => {
     const store = useTabsStore()
     const tab = store.openCHSql('conn-1')
@@ -435,5 +460,121 @@ describe('tabs store', () => {
     expect(again.id).toBe(tab.id)
     expect(store.openTabs.filter((t) => t.kind === 'es-sql')).toHaveLength(2)
     expect(store.activeTabId).toBe(tab.id)
+  })
+})
+
+describe('postgres tabs', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('opens a postgres table tab keyed by conn/db/schema/relation', () => {
+    const store = useTabsStore()
+    const tab = store.openPostgresTable('pg1', 'shop', 'public', 'users', 'table')
+    expect(tab.kind).toBe('postgres-table')
+    expect(tab.id).toBe('postgres:pg1:shop:public:users')
+    expect(tab.database).toBe('shop')
+    expect(tab.schema).toBe('public')
+    expect(tab.table).toBe('users')
+    expect(tab.relationType).toBe('table')
+    expect(store.activeTabId).toBe(tab.id)
+  })
+
+  it('dedupes an already open postgres table tab and focuses it', () => {
+    const store = useTabsStore()
+    store.openPostgresTable('pg1', 'shop', 'public', 'users', 'table')
+    const again = store.openPostgresTable('pg1', 'shop', 'public', 'users', 'table')
+    expect(store.openTabs).toHaveLength(1)
+    expect(again.id).toBe(store.openTabs[0].id)
+  })
+
+  it('keeps same-named relations across schemas distinct', () => {
+    const store = useTabsStore()
+    store.openPostgresTable('pg1', 'shop', 'public', 'users', 'table')
+    store.openPostgresTable('pg1', 'shop', 'app', 'users', 'table')
+    expect(store.openTabs).toHaveLength(2)
+  })
+
+  it('opens a postgres sql console keyed by conn/db/schema', () => {
+    const store = useTabsStore()
+    const tab = store.openPostgresSql('pg1', 'shop', 'public')
+    expect(tab.kind).toBe('postgres-sql')
+    expect(tab.id).toBe('postgres-sql:pg1:shop:public')
+    expect(tab.database).toBe('shop')
+    expect(tab.schema).toBe('public')
+    const again = store.openPostgresSql('pg1', 'shop', 'public')
+    expect(again.id).toBe(tab.id)
+    expect(store.openTabs).toHaveLength(1)
+  })
+
+  it('omits the db/schema segment when opening a generic postgres sql console', () => {
+    const store = useTabsStore()
+    const tab = store.openPostgresSql('pg1')
+    expect(tab.id).toBe('postgres-sql:pg1::')
+    expect(tab.database).toBeUndefined()
+    expect(tab.schema).toBeUndefined()
+  })
+})
+
+describe('postgres-sql tab 标题', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('携带 database/schema 时标题区分上下文', () => {
+    const store = useTabsStore()
+    const tab = store.openPostgresSql('pg1', 'shop', 'public')
+    expect(tab.title).toBe('SQL · shop.public')
+    const tabDbOnly = store.openPostgresSql('pg1', 'analytics')
+    expect(tabDbOnly.title).toBe('SQL · analytics')
+    const tabGeneric = store.openPostgresSql('pg1')
+    expect(tabGeneric.title).toBe('SQL 控制台')
+  })
+})
+
+describe('hive tabs', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  it('opens a hive table tab keyed by connection, database and table', () => {
+    const store = useTabsStore()
+    const tab = store.openHiveTable('conn-1', 'ods', 'events')
+    expect(tab.kind).toBe('hive-table')
+    expect(tab.id).toBe('hive:conn-1:ods:events')
+    expect(tab.title).toBe('表 · ods.events')
+    expect(tab.connectionId).toBe('conn-1')
+    expect(tab.database).toBe('ods')
+    expect(tab.table).toBe('events')
+    expect(store.activeTabId).toBe(tab.id)
+    // 重复打开只聚焦,不新开。
+    const again = store.openHiveTable('conn-1', 'ods', 'events')
+    expect(again.id).toBe(tab.id)
+    expect(store.openTabs).toHaveLength(1)
+    expect(store.activeTabId).toBe(tab.id)
+    // 不同表/不同库是不同 tab。
+    const otherTable = store.openHiveTable('conn-1', 'ods', 'users')
+    expect(store.openTabs).toHaveLength(2)
+    expect(otherTable.id).toBe('hive:conn-1:ods:users')
+    const otherDb = store.openHiveTable('conn-1', 'dwd', 'users')
+    expect(store.openTabs).toHaveLength(3)
+    expect(otherDb.id).toBe('hive:conn-1:dwd:users')
+  })
+
+  it('opens a hive SQL console per connection+database and focuses it on reopen', () => {
+    const store = useTabsStore()
+    const tab = store.openHiveSql('conn-1')
+    expect(tab.kind).toBe('hive-sql')
+    expect(tab.id).toBe('hive-sql:conn-1')
+    expect(tab.title).toBe('SQL 控制台')
+    expect(tab.connectionId).toBe('conn-1')
+    expect(tab.database).toBeUndefined()
+    expect(store.activeTabId).toBe(tab.id)
+    // 带 database 打开:按 connectionId+database 去重,id 携带库名。
+    const dbTab = store.openHiveSql('conn-1', 'ods')
+    expect(dbTab.kind).toBe('hive-sql')
+    expect(dbTab.id).toBe('hive-sql:conn-1:ods')
+    expect(dbTab.database).toBe('ods')
+    expect(dbTab.title).toBe('SQL 控制台')
+    expect(store.openTabs.filter((t) => t.kind === 'hive-sql')).toHaveLength(2)
+    store.setActive(tab.id)
+    const again = store.openHiveSql('conn-1', 'ods')
+    expect(again.id).toBe(dbTab.id)
+    expect(store.openTabs.filter((t) => t.kind === 'hive-sql')).toHaveLength(2)
+    expect(store.activeTabId).toBe(dbTab.id)
   })
 })

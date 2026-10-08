@@ -14,6 +14,10 @@ export function ApplyUpdate(arg1) {
   return window['go']['backend']['App']['ApplyUpdate'](arg1);
 }
 
+export function CHDeleteRow(arg1) {
+  return window['go']['backend']['App']['CHDeleteRow'](arg1);
+}
+
 export function CHExecute(arg1) {
   return window['go']['backend']['App']['CHExecute'](arg1);
 }
@@ -24,6 +28,10 @@ export function CHPageRows(arg1) {
 
 export function CHPreviewCellUpdate(arg1) {
   return window['go']['backend']['App']['CHPreviewCellUpdate'](arg1);
+}
+
+export function CHPreviewDeleteRow(arg1) {
+  return window['go']['backend']['App']['CHPreviewDeleteRow'](arg1);
 }
 
 export function CHTruncateTable(arg1) {
@@ -182,6 +190,50 @@ export function GetTopicMessageCounts(arg1, arg2) {
   return window['go']['backend']['App']['GetTopicMessageCounts'](arg1, arg2);
 }
 
+export function HiveAlterTable(arg1) {
+  return window['go']['backend']['App']['HiveAlterTable'](arg1);
+}
+
+export function HiveDeleteRow(arg1) {
+  return window['go']['backend']['App']['HiveDeleteRow'](arg1);
+}
+
+export function HiveDropTable(arg1) {
+  return window['go']['backend']['App']['HiveDropTable'](arg1);
+}
+
+export function HiveExecute(arg1) {
+  return window['go']['backend']['App']['HiveExecute'](arg1);
+}
+
+export function HiveExportTable(arg1) {
+  return window['go']['backend']['App']['HiveExportTable'](arg1);
+}
+
+export function HivePageRows(arg1) {
+  return window['go']['backend']['App']['HivePageRows'](arg1);
+}
+
+export function HivePreviewCellUpdate(arg1) {
+  return window['go']['backend']['App']['HivePreviewCellUpdate'](arg1);
+}
+
+export function HivePreviewDeleteRow(arg1) {
+  return window['go']['backend']['App']['HivePreviewDeleteRow'](arg1);
+}
+
+export function HiveTableColumns(arg1) {
+  return window['go']['backend']['App']['HiveTableColumns'](arg1);
+}
+
+export function HiveTruncateTable(arg1) {
+  return window['go']['backend']['App']['HiveTruncateTable'](arg1);
+}
+
+export function HiveUpdateCell(arg1) {
+  return window['go']['backend']['App']['HiveUpdateCell'](arg1);
+}
+
 export function ListActiveConsumers(arg1) {
   return window['go']['backend']['App']['ListActiveConsumers'](arg1);
 }
@@ -222,12 +274,32 @@ export function ListEsTemplates(arg1) {
   return window['go']['backend']['App']['ListEsTemplates'](arg1);
 }
 
+export function ListHiveDatabases(arg1) {
+  return window['go']['backend']['App']['ListHiveDatabases'](arg1);
+}
+
+export function ListHiveTables(arg1) {
+  return window['go']['backend']['App']['ListHiveTables'](arg1);
+}
+
 export function ListMysqlDatabases(arg1) {
   return window['go']['backend']['App']['ListMysqlDatabases'](arg1);
 }
 
 export function ListMysqlTables(arg1) {
   return window['go']['backend']['App']['ListMysqlTables'](arg1);
+}
+
+export function ListPostgresDatabases(arg1) {
+  return window['go']['backend']['App']['ListPostgresDatabases'](arg1);
+}
+
+export function ListPostgresSchemas(arg1) {
+  return window['go']['backend']['App']['ListPostgresSchemas'](arg1);
+}
+
+export function ListPostgresTables(arg1) {
+  return window['go']['backend']['App']['ListPostgresTables'](arg1);
 }
 
 export function ListQueryFiles(arg1) {
@@ -246,8 +318,24 @@ export function ListTopics(arg1) {
   return window['go']['backend']['App']['ListTopics'](arg1);
 }
 
+export function MysqlAlterTable(arg1) {
+  return window['go']['backend']['App']['MysqlAlterTable'](arg1);
+}
+
+export function MysqlDeleteRow(arg1) {
+  return window['go']['backend']['App']['MysqlDeleteRow'](arg1);
+}
+
+export function MysqlDropTable(arg1) {
+  return window['go']['backend']['App']['MysqlDropTable'](arg1);
+}
+
 export function MysqlExecute(arg1) {
   return window['go']['backend']['App']['MysqlExecute'](arg1);
+}
+
+export function MysqlExportTable(arg1) {
+  return window['go']['backend']['App']['MysqlExportTable'](arg1);
 }
 
 export function MysqlPageRows(arg1) {
@@ -256,6 +344,14 @@ export function MysqlPageRows(arg1) {
 
 export function MysqlPreviewCellUpdate(arg1) {
   return window['go']['backend']['App']['MysqlPreviewCellUpdate'](arg1);
+}
+
+export function MysqlPreviewDeleteRow(arg1) {
+  return window['go']['backend']['App']['MysqlPreviewDeleteRow'](arg1);
+}
+
+export function MysqlTableColumns(arg1) {
+  return window['go']['backend']['App']['MysqlTableColumns'](arg1);
 }
 
 export function MysqlTruncateTable(arg1) {
@@ -268,6 +364,34 @@ export function MysqlUpdateCell(arg1) {
 
 export function OpenURL(arg1) {
   return window['go']['backend']['App']['OpenURL'](arg1);
+}
+
+export function PostgresDeleteRow(arg1) {
+  return window['go']['backend']['App']['PostgresDeleteRow'](arg1);
+}
+
+export function PostgresExecute(arg1) {
+  return window['go']['backend']['App']['PostgresExecute'](arg1);
+}
+
+export function PostgresPageRows(arg1) {
+  return window['go']['backend']['App']['PostgresPageRows'](arg1);
+}
+
+export function PostgresPreviewCellUpdate(arg1) {
+  return window['go']['backend']['App']['PostgresPreviewCellUpdate'](arg1);
+}
+
+export function PostgresPreviewDeleteRow(arg1) {
+  return window['go']['backend']['App']['PostgresPreviewDeleteRow'](arg1);
+}
+
+export function PostgresTruncateTable(arg1) {
+  return window['go']['backend']['App']['PostgresTruncateTable'](arg1);
+}
+
+export function PostgresUpdateCell(arg1) {
+  return window['go']['backend']['App']['PostgresUpdateCell'](arg1);
 }
 
 export function PreviewResetOffset(arg1) {
@@ -362,6 +486,10 @@ export function RedisZSetRemove(arg1) {
   return window['go']['backend']['App']['RedisZSetRemove'](arg1);
 }
 
+export function ReorderConnections(arg1) {
+  return window['go']['backend']['App']['ReorderConnections'](arg1);
+}
+
 export function ResetConsumerGroupOffset(arg1) {
   return window['go']['backend']['App']['ResetConsumerGroupOffset'](arg1);
 }
@@ -386,8 +514,16 @@ export function TestESConnection(arg1) {
   return window['go']['backend']['App']['TestESConnection'](arg1);
 }
 
+export function TestHiveConnection(arg1) {
+  return window['go']['backend']['App']['TestHiveConnection'](arg1);
+}
+
 export function TestMysqlConnection(arg1) {
   return window['go']['backend']['App']['TestMysqlConnection'](arg1);
+}
+
+export function TestPostgresConnection(arg1) {
+  return window['go']['backend']['App']['TestPostgresConnection'](arg1);
 }
 
 export function TestRedisConnection(arg1) {

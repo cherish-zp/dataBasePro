@@ -34,6 +34,18 @@
   --info: #0a84ff;
   --info-soft: rgba(10, 132, 255, 0.12);
 
+  /* 数据源品牌色(连接树):--type-x 为字母徽标实底主色,-contrast 为徽标
+     字色(白/深按对比度选),-soft 为类型文字徽标的柔和底色(写死的 rgba,
+     不用 color-mix)。dark 主题在下方对应覆盖。 */
+  --type-kafka: #e8710a;      --type-kafka-contrast: #ffffff;   --type-kafka-soft: rgba(232, 113, 10, 0.12);
+  --type-mysql: #0868a8;      --type-mysql-contrast: #ffffff;   --type-mysql-soft: rgba(8, 104, 168, 0.12);
+  --type-redis: #d82c20;      --type-redis-contrast: #ffffff;   --type-redis-soft: rgba(216, 44, 32, 0.12);
+  --type-es: #ddb100;         --type-es-contrast: #3d3000;      --type-es-soft: rgba(221, 177, 0, 0.16);
+  --type-tidb: #d4111e;       --type-tidb-contrast: #ffffff;    --type-tidb-soft: rgba(212, 17, 30, 0.12);
+  --type-clickhouse: #d9a400; --type-clickhouse-contrast: #3d3000; --type-clickhouse-soft: rgba(217, 164, 0, 0.16);
+  --type-postgres: #2c8c99;   --type-postgres-contrast: #ffffff; --type-postgres-soft: rgba(44, 140, 153, 0.13);
+  --type-hive: #d99a13;       --type-hive-contrast: #3a2a00;    --type-hive-soft: rgba(217, 154, 19, 0.16);
+
   /* JSON syntax highlighting (message detail drawer). */
   --json-key: #0550ae;
   --json-string: #116329;
@@ -73,6 +85,16 @@
   --ok-soft: rgba(63, 185, 80, 0.18);
   --info: #6ea8fe;
   --info-soft: rgba(110, 168, 254, 0.16);
+  /* 数据源品牌色(dark):主色整体提亮一档、字色换深色保持对比,
+     柔和底色的透明度略高于 light 以在深底上可辨。 */
+  --type-kafka: #f59e4c;      --type-kafka-contrast: #3a1c00;   --type-kafka-soft: rgba(245, 158, 76, 0.2);
+  --type-mysql: #58b6f0;      --type-mysql-contrast: #04263c;   --type-mysql-soft: rgba(88, 182, 240, 0.2);
+  --type-redis: #f16a5f;      --type-redis-contrast: #3a0603;   --type-redis-soft: rgba(241, 106, 95, 0.2);
+  --type-es: #f2d270;         --type-es-contrast: #4a3800;      --type-es-soft: rgba(242, 210, 112, 0.22);
+  --type-tidb: #f47c85;       --type-tidb-contrast: #3d0308;    --type-tidb-soft: rgba(244, 124, 133, 0.2);
+  --type-clickhouse: #f5cd47; --type-clickhouse-contrast: #3d3000; --type-clickhouse-soft: rgba(245, 205, 71, 0.22);
+  --type-postgres: #6cc7d2;   --type-postgres-contrast: #062e33; --type-postgres-soft: rgba(108, 199, 210, 0.2);
+  --type-hive: #edc25a;       --type-hive-contrast: #3a2a00;    --type-hive-soft: rgba(237, 194, 90, 0.22);
   --json-key: #79c0ff;
   --json-string: #7ee787;
   --json-number: #ffa657;
@@ -98,3 +120,18 @@ body {
 
 button { font-family: inherit; }
 input, select, textarea { font-family: inherit; }
+
+/* 侧栏(连接树/SQL文件栏)细滚动条:透明轨道 + 圆角细拇指,与整体克制的
+   Apple 观感一致;WKWebView 走 webkit 前缀,标准属性兜底新内核。 */
+.sidebar, .files-sidebar {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.sidebar::-webkit-scrollbar, .files-sidebar::-webkit-scrollbar { width: 9px; }
+.sidebar::-webkit-scrollbar-thumb, .files-sidebar::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.sidebar::-webkit-scrollbar-track, .files-sidebar::-webkit-scrollbar-track { background: transparent; }

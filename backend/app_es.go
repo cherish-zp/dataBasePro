@@ -6,7 +6,7 @@ package backend
 import (
 	"strings"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // EsMappingRequest carries the mapping-listing parameters.
@@ -80,10 +80,14 @@ type EsDeleteByQueryRequest struct {
 	Query        string `json:"query"`
 }
 
-// EsExecuteRequest carries the multi-statement SQL script.
+// EsExecuteRequest carries the multi-statement SQL script. Limit/Offset 启用
+// 服务端分页:Limit>0 时仅返回 Offset 起的 Limit 行,结果按语句类型附
+// total_rows(≥0 精确 / -1 无法计数)。
 type EsExecuteRequest struct {
 	ConnectionID string `json:"connection_id"`
 	SQL          string `json:"sql"`
+	Limit        int    `json:"limit,omitempty"`
+	Offset       int    `json:"offset,omitempty"`
 }
 
 // EsDslRequest carries one raw DSL console request (Kibana Dev Tools style):
@@ -256,7 +260,7 @@ func (a *App) ESDeleteByQuery(req EsDeleteByQueryRequest) (int64, error) {
 func (a *App) ESExecute(req EsExecuteRequest) ([]model.EsStatementResult, error) {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	results, err := a.svc.EsExecute(ctx, req.ConnectionID, req.SQL)
+	results, err := a.svc.EsExecute(ctx, req.ConnectionID, req.SQL, req.Limit, req.Offset)
 	a.audit(req.ConnectionID, "es_execute", auditSQLTarget(req.SQL), auditResult(err), auditDetail(err))
 	return results, err
 }

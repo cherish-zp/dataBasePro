@@ -5,8 +5,8 @@
 set -euo pipefail
 
 TAG="${1:?用法: GITEE_TOKEN=<私人令牌> bash scripts/sync-gitee-release.sh <tag>}"
-GITEE_REPO="${GITEE_REPO:-princess-zp/dataBasePro}"
-GH_REPO="${GH_REPO:-cherish-zp/dataBasePro}"
+GITEE_REPO="${GITEE_REPO:-princess-zp/sheng-shou-yun-he}"
+GH_REPO="${GH_REPO:-cherish-zp/sheng-shou-yun-he}"
 : "${GITEE_TOKEN:?请设置 GITEE_TOKEN 环境变量(私人令牌,projects 权限)}"
 
 TMP="$(mktemp -d)"

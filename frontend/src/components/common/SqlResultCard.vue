@@ -32,8 +32,14 @@ const props = withDefaults(
     selectable?: boolean
     /** 表的主键列名列表(空/缺省 = 未识别)。 */
     primaryKey?: string[]
+    /** 服务端分页的精确总行数(≥0 时头部展示「共 N 条」;null/-1/缺省不展示)。 */
+    totalRows?: number | null
+    /** 行首「删除该行」能力:hint 返回 null = 可删(title「删除该行」),非空 =
+     *  禁用且 title 展示原因;delete 在点击时回调(确认弹窗等逻辑在调用方)。
+     *  缺省不渲染删除按钮。 */
+    rowDelete?: { hint: (rowIndex: number) => string | null; delete: (rowIndex: number) => void }
   }>(),
-  { durationMs: null, insertTarget: null, error: null, editing: null, selectable: false, primaryKey: () => [] },
+  { durationMs: null, insertTarget: null, error: null, editing: null, selectable: false, primaryKey: () => [], totalRows: null, rowDelete: undefined },
 )
 
 const emit = defineEmits<{
@@ -51,6 +57,11 @@ const dotClass = computed(() => (props.error ? 'fail' : props.durationMs != null
 const metaText = computed(() => {
   const parts: string[] = []
   if (props.durationMs != null) parts.push(`${Math.round(props.durationMs)} ms`)
+  // 服务端分页的精确总数(total_rows ≥ 0):千分位展示;无法计数(-1)或
+  // 未启用分页(缺省)时只显示本页行数。
+  if (props.totalRows != null && props.totalRows >= 0) {
+    parts.push(`共 ${props.totalRows.toLocaleString('en-US')} 条`)
+  }
   parts.push(`${props.rows.length} 行`)
   return parts.join(' · ')
 })
@@ -215,13 +226,32 @@ function isEditing(row: number, col: number): boolean {
   return props.editing != null && props.editing.row === row && props.editing.col === col
 }
 
+// —— 编辑框尺寸锁定 ——
+// 列宽/行高由单元格内容撑出,换成输入框后不再参与布局计算,尺寸会变。双击
+// 瞬间记录 td 的实际像素宽高,textarea 以绝对定位浮层覆盖在原单元格上,
+// 尺寸与原数据区域完全一致(行高列宽纹丝不动),全部内容在框内滚动查看。
+const cellEditSize = ref<{ width: number; height: number } | null>(null)
+
+function onCellDblclick(row: number, col: number, event: MouseEvent): void {
+  const td = event.currentTarget as HTMLElement | null
+  cellEditSize.value = td ? { width: td.offsetWidth, height: td.offsetHeight } : null
+  emit('cell-dblclick', row, col)
+}
+
+const editorStyle = computed(() => {
+  const s = cellEditSize.value
+  return s && s.width > 0 && s.height > 0
+    ? { width: `${s.width}px`, height: `${s.height}px` }
+    : undefined
+})
+
 // 提交后元素随 editing 置空而卸载,部分浏览器会补发 blur → 用标记吞掉,
 // 避免提交后紧跟一次多余的 edit-cancel。
 let ignoreBlur = false
 
 function onEditCommit(event: Event): void {
   ignoreBlur = true
-  emit('edit-commit', (event.target as HTMLInputElement).value)
+  emit('edit-commit', (event.target as HTMLTextAreaElement).value)
 }
 
 function onEditBlur(): void {
@@ -236,11 +266,27 @@ watch(
   () => props.editing,
   () => {
     ignoreBlur = false
+    if (props.editing == null) cellEditSize.value = null
   },
 )
 
 function focusEditor(el: Element | ComponentPublicInstance | null): void {
-  if (el instanceof HTMLInputElement) el.focus()
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.focus()
+}
+
+// —— 行首删除(能力由调用方注入;确认弹窗等逻辑在控制台层)——
+
+// hint 非 null = 该行不可删,返回值即禁用原因(title)。
+function rowDeleteHint(rowIndex: number): string {
+  return props.rowDelete?.hint(rowIndex) ?? '删除该行'
+}
+
+function rowDeleteDisabled(rowIndex: number): boolean {
+  return (props.rowDelete?.hint(rowIndex) ?? null) !== null
+}
+
+function onRowDelete(rowIndex: number): void {
+  props.rowDelete?.delete(rowIndex)
 }
 </script>
 
@@ -328,6 +374,7 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
         <thead>
           <tr>
             <th class="rownum">#</th>
+            <th v-if="rowDelete" class="row-action" title="删除该行(按主键定位)"></th>
             <th v-if="selectable" class="checkcell">
               <input
                 type="checkbox"
@@ -338,13 +385,27 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
               />
             </th>
             <th v-for="(col, ci) in columns" :key="ci" :title="col.type ? `${col.name}(${col.type})` : col.name">
-              {{ col.name }}
+              <span class="col-name">{{ col.name }}</span>
+              <span v-if="col.type" class="col-type" data-test="col-type">{{ col.type }}</span>
             </th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="(row, ri) in rows" :key="ri" data-test="result-row">
             <td class="rownum">{{ ri + 1 }}</td>
+            <!-- 行首删除:危险色小按钮,悬停所在行时显现;禁用原因由调用方 hint 给出。 -->
+            <td v-if="rowDelete" class="row-action">
+              <button
+                type="button"
+                class="mini-btn danger row-del"
+                data-test="btn-row-delete"
+                :disabled="rowDeleteDisabled(ri)"
+                :title="rowDeleteHint(ri)"
+                @click="onRowDelete(ri)"
+              >
+                ✕
+              </button>
+            </td>
             <td v-if="selectable" class="checkcell">
               <input
                 type="checkbox"
@@ -357,14 +418,20 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
               v-for="(cell, ci) in row"
               :key="ci"
               class="cell"
+              :class="{ 'cell-editing': isEditing(ri, ci) }"
               :title="cell == null ? 'NULL' : cell"
-              @dblclick="emit('cell-dblclick', ri, ci)"
+              @dblclick="onCellDblclick(ri, ci, $event)"
             >
-              <input
+              <textarea
                 v-if="isEditing(ri, ci)"
                 :ref="focusEditor"
                 class="cell-editor"
                 data-test="result-cell-editor"
+                spellcheck="false"
+                autocapitalize="off"
+                autocorrect="off"
+                autocomplete="off"
+                :style="editorStyle"
                 :value="editing?.draft ?? ''"
                 @keydown.enter.prevent="onEditCommit"
                 @keydown.esc.prevent="emit('edit-cancel')"
@@ -374,7 +441,7 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
             </td>
           </tr>
           <tr v-if="rows.length === 0">
-            <td class="empty-cell" :colspan="columns.length + (selectable ? 2 : 1)" data-test="result-empty">0 行</td>
+            <td class="empty-cell" :colspan="columns.length + (rowDelete ? 1 : 0) + (selectable ? 2 : 1)" data-test="result-empty">0 行</td>
           </tr>
         </tbody>
       </table>
@@ -388,6 +455,10 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
   border-radius: 8px;
   background: var(--bg-elevated);
   overflow: hidden;
+  /* 在 flex 列结果区里禁止收缩:结果卡内含 overflow:auto 的表格,自动最小
+     高度为 0,被压缩时卡片保持原位而表格底部被 overflow:hidden 裁掉,滚动
+     到底也看不到最后一行;禁收缩后超出部分交给外层容器滚动。 */
+  flex: none;
 }
 
 .result-head {
@@ -581,6 +652,20 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
   color: var(--text-secondary);
   font-weight: 600;
 }
+/* 字段名一行,类型小字第二行,避免类型只在悬浮提示里不可见。 */
+.result-table thead th .col-name {
+  display: block;
+}
+.result-table thead th .col-type {
+  display: block;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 400;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-tertiary);
+}
 .result-table tbody tr:nth-child(even) {
   background: var(--bg-subtle);
 }
@@ -611,17 +696,60 @@ function focusEditor(el: Element | ComponentPublicInstance | null): void {
 }
 
 /* 单元格编辑输入框 */
+/* 单元格编辑输入框:绝对定位浮层,尺寸由双击时记录的 td 像素宽高内联锁定
+   (见 onCellDblclick)——与原数据区域完全一致,行高列宽纹丝不动,全部内容
+   在框内滚动查看。 */
+.cell-editing {
+  position: relative;
+}
 .cell-editor {
-  width: 100%;
-  min-width: 120px;
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin: 0;
+  box-sizing: border-box;
   border: 1px solid var(--accent);
-  border-radius: 4px;
   background: var(--bg-elevated);
   color: var(--text);
   font-family: var(--mono);
   font-size: 12px;
-  padding: 2px 6px;
+  line-height: 1.5;
+  padding: 4px 8px;
   outline: none;
-  box-shadow: 0 0 0 2px var(--accent-soft);
+  resize: none;
+  overflow: auto;
+  box-shadow: inset 0 0 0 2px var(--accent-soft);
+}
+
+/* 行首操作列:危险色删除小按钮,悬停所在行时显现(对齐表浏览器的 row-del)。 */
+.row-action {
+  width: 34px;
+  min-width: 34px;
+  padding: 4px 6px !important;
+  text-align: center;
+}
+.mini-btn {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+.mini-btn.danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+.mini-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.row-del {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.result-table tbody tr:hover .row-del {
+  opacity: 1;
 }
 </style>

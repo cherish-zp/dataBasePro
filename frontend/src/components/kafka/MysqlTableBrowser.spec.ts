@@ -16,6 +16,9 @@ const wailsMocks = vi.hoisted(() => ({
   MysqlPreviewCellUpdate: vi.fn(),
   // 执行:按已预览的 target 执行 UPDATE。
   MysqlUpdateCell: vi.fn(),
+  // 按行删除:预览 DELETE 语句全文与命中行数 / 执行删除。
+  MysqlPreviewDeleteRow: vi.fn(),
+  MysqlDeleteRow: vi.fn(),
 }))
 vi.mock('../../../wailsjs/go/backend/App', async () => {
   const actual = await vi.importActual<typeof import('../../../wailsjs/go/backend/App')>(
@@ -86,6 +89,8 @@ describe('MysqlTableBrowser', () => {
     wailsMocks.MysqlTruncateTable.mockReset()
     wailsMocks.MysqlPreviewCellUpdate.mockReset()
     wailsMocks.MysqlUpdateCell.mockReset()
+    wailsMocks.MysqlPreviewDeleteRow.mockReset()
+    wailsMocks.MysqlDeleteRow.mockReset()
   })
 
   it('首屏:拉取第一页并渲染列头三行、行数据、主键角标与汇总', async () => {
@@ -457,5 +462,171 @@ describe('MysqlTableBrowser', () => {
     expect(tableBlock).toContain('min-width: 100%')
     const headBlock = fileSrc.match(/\.col-head \{[\s\S]*?\n\}/)?.[0] ?? ''
     expect(headBlock).toContain('white-space: nowrap')
+  })
+
+  describe('按行删除', () => {
+    // 第 ri 行的行首删除按钮。
+    function deleteBtn(wrapper: VueWrapper, row: number): DOMWrapper<Element> {
+      return wrapper.findAll('[data-test="mysql-row"]')[row].find('[data-test="btn-row-delete"]')
+    }
+
+    it('有主键时每行渲染行首删除按钮且可点', async () => {
+      pageRows.mockResolvedValue(page())
+      const wrapper = mountBrowser()
+      await waitCols(wrapper)
+      const btns = wrapper.findAll('[data-test="btn-row-delete"]')
+      expect(btns).toHaveLength(2)
+      expect((btns[0].element as HTMLButtonElement).disabled).toBe(false)
+    })
+
+    it('无主键时删除按钮禁用并以 title 说明原因', async () => {
+      pageRows.mockResolvedValue(
+        page({
+          primary_key: [],
+          columns: [
+            { name: 'id', type: 'int unsigned', comment: '' },
+            { name: 'name', type: 'varchar(64)', comment: '' },
+          ],
+        }),
+      )
+      const wrapper = mountBrowser()
+      await waitCols(wrapper)
+      const btn = wrapper.find('[data-test="btn-row-delete"]')
+      expect(btn.exists()).toBe(true)
+      expect((btn.element as HTMLButtonElement).disabled).toBe(true)
+      expect(btn.attributes('title')).toContain('结果无主键,无法定位行')
+    })
+
+    it('点击删除:按主键原值预览 DELETE,弹窗含语句全文、命中行数与不可恢复', async () => {
+      pageRows.mockResolvedValue(page())
+      wailsMocks.MysqlPreviewDeleteRow.mockResolvedValue({
+        statement: "DELETE FROM shop.users WHERE id = '1'",
+        matched_rows: 1,
+      })
+      const wrapper = mountBrowser()
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 0).trigger('click')
+      await vi.waitFor(() => {
+        expect(wailsMocks.MysqlPreviewDeleteRow).toHaveBeenCalledWith({
+          connection_id: 'm1',
+          database: 'shop',
+          table: 'users',
+          where: [{ column: 'id', value: '1' }],
+        })
+      })
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      const msg = document.body.querySelector('[data-test="confirm-dialog-message"]')?.textContent ?? ''
+      expect(msg).toContain("DELETE FROM shop.users WHERE id = '1'")
+      expect(msg).toContain('命中 1 行')
+      expect(msg).toContain('此操作不可恢复')
+      // 单行命中不出现禁止警示。
+      expect(msg).not.toContain('已禁止删除')
+    })
+
+    it('NULL 主键值以 null 进入删除 where', async () => {
+      pageRows.mockResolvedValue(page())
+      wailsMocks.MysqlPreviewDeleteRow.mockResolvedValue({
+        statement: 'DELETE FROM shop.users WHERE id IS NULL',
+        matched_rows: 1,
+      })
+      const wrapper = mountBrowser()
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 1).trigger('click')
+      await vi.waitFor(() => {
+        expect(wailsMocks.MysqlPreviewDeleteRow).toHaveBeenCalledWith(
+          expect.objectContaining({ where: [{ column: 'id', value: null }] }),
+        )
+      })
+    })
+
+    it('命中多行:弹窗强警示,确认不执行、不刷新且弹窗保持', async () => {
+      pageRows.mockResolvedValue(page())
+      wailsMocks.MysqlPreviewDeleteRow.mockResolvedValue({
+        statement: "DELETE FROM shop.users WHERE id = '1'",
+        matched_rows: 3,
+      })
+      const wrapper = mountBrowser()
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 0).trigger('click')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      const msg = document.body.querySelector('[data-test="confirm-dialog-message"]')?.textContent ?? ''
+      expect(msg).toContain('命中 3 行')
+      expect(msg).toContain('已禁止删除')
+      clickConfirmDialog('confirm-dialog-ok')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      expect(wailsMocks.MysqlDeleteRow).not.toHaveBeenCalled()
+      // 不执行也就不刷新:仍只有初始 1 次分页请求。
+      expect(pageRows.mock.calls.length).toBe(1)
+    })
+
+    it('确认后执行删除并刷新当前页', async () => {
+      pageRows.mockResolvedValue(page())
+      wailsMocks.MysqlPreviewDeleteRow.mockResolvedValue({
+        statement: "DELETE FROM shop.users WHERE id = '1'",
+        matched_rows: 1,
+      })
+      wailsMocks.MysqlDeleteRow.mockResolvedValue(undefined)
+      const wrapper = mountBrowser()
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 0).trigger('click')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      const callsBefore = pageRows.mock.calls.length
+      clickConfirmDialog('confirm-dialog-ok')
+      await vi.waitFor(() => {
+        expect(wailsMocks.MysqlDeleteRow).toHaveBeenCalledWith({
+          connection_id: 'm1',
+          database: 'shop',
+          table: 'users',
+          where: [{ column: 'id', value: '1' }],
+        })
+      })
+      // 删除成功后重发当前页请求(offset 保持)。
+      await vi.waitFor(() => {
+        expect(pageRows.mock.calls.length).toBe(callsBefore + 1)
+      })
+      expect(pageRows).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 }))
+    })
+
+    it('删除执行失败在错误区展示且不刷新', async () => {
+      pageRows.mockResolvedValue(page())
+      wailsMocks.MysqlPreviewDeleteRow.mockResolvedValue({
+        statement: "DELETE FROM shop.users WHERE id = '1'",
+        matched_rows: 1,
+      })
+      wailsMocks.MysqlDeleteRow.mockRejectedValue(new Error('删除失败:外键约束'))
+      const wrapper = mountBrowser()
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 0).trigger('click')
+      await vi.waitFor(() => {
+        expect(confirmDialog()).not.toBeNull()
+      })
+      clickConfirmDialog('confirm-dialog-ok')
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="mysql-error"]').text()).toContain('删除失败:外键约束')
+      })
+      expect(wailsMocks.MysqlDeleteRow).toHaveBeenCalledTimes(1)
+      expect(pageRows.mock.calls.length).toBe(1)
+    })
+
+    it('删除预览失败在错误区展示且不弹确认框', async () => {
+      pageRows.mockResolvedValue(page())
+      wailsMocks.MysqlPreviewDeleteRow.mockRejectedValue(new Error('删除预览失败'))
+      const wrapper = mountBrowser()
+      await waitCols(wrapper)
+      await deleteBtn(wrapper, 0).trigger('click')
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="mysql-error"]').text()).toContain('删除预览失败')
+      })
+      expect(confirmDialog()).toBeNull()
+      expect(wailsMocks.MysqlDeleteRow).not.toHaveBeenCalled()
+    })
   })
 })

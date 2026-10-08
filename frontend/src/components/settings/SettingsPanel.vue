@@ -37,9 +37,14 @@ const auditError = ref<string | null>(null)
 
 // 驱动管理:优先读后端 ListDrivers,后端绑定未生成/失败时回退本地常量。
 const FALLBACK_DRIVERS: DriverInfo[] = [
-  { name: 'Kafka', library: 'franz-go', version: 'v1.21.6', default_port: 9092, description: 'Kafka 原生客户端,支持 SASL/SSL 与 Kerberos' },
-  { name: 'Redis', library: 'go-redis', version: 'v9.22.0', default_port: 6379, description: 'Redis 原生客户端,支持单机与集群' },
-  { name: 'ClickHouse', library: 'clickhouse-go', version: 'v2.48.0', default_port: 9000, description: 'ClickHouse 原生客户端,支持多节点' },
+  { name: 'Kafka', library: 'franz-go', version: 'v1.21.6', default_port: 9092, description: 'Kafka 集群管理与消息收发(原生 TCP 协议)' },
+  { name: 'MySQL', library: 'go-sql-driver/mysql', version: 'v1.10.1', default_port: 3306, description: 'MySQL 库表浏览、分页查询与 SQL 控制台(原生 TCP 协议)' },
+  { name: 'TiDB', library: 'go-sql-driver/mysql', version: 'v1.10.1', default_port: 4000, description: 'TiDB 库表浏览、分页查询与 SQL 控制台(兼容 MySQL 协议)' },
+  { name: 'PostgreSQL', library: 'pgx', version: 'v5.11.0', default_port: 5432, description: 'PostgreSQL 库/模式浏览、分页查询与 SQL 控制台(原生 TCP 协议)' },
+  { name: 'Hive', library: 'gohive', version: 'v1.6.0', default_port: 10000, description: 'HiveServer2 原生 Thrift 客户端,支持 NOSASL/LDAP/Kerberos' },
+  { name: 'ClickHouse', library: 'clickhouse-go', version: 'v2.48.0', default_port: 9000, description: 'ClickHouse 库表浏览、分页查询与 SQL 控制台(原生 TCP 协议)' },
+  { name: 'Elasticsearch', library: 'net/http + encoding/json', version: 'v8.x', default_port: 9200, description: 'Elasticsearch/OpenSearch 索引浏览、文档编辑与 SQL 控制台(REST 协议)' },
+  { name: 'Redis', library: 'go-redis', version: 'v9.22.0', default_port: 6379, description: 'Redis 单机/集群键空间浏览与编辑' },
 ]
 const drivers = ref<DriverInfo[]>([])
 const driversError = ref(false)
@@ -231,6 +236,7 @@ function close(): void {
           </div>
 
           <div v-else class="tab-pane about-section">
+            <p class="about-intro" data-test="about-intro">多数据源数据库管理客户端 · 支持 Kafka / MySQL / TiDB / PostgreSQL / Hive / ClickHouse / Elasticsearch / Redis</p>
             <div class="about-row"><span class="about-label">版本</span><span class="about-value mono" data-test="about-version">{{ APP_VERSION }}</span></div>
             <div class="about-row"><span class="about-label">作者</span><span class="about-value" data-test="about-author">By Mr Zp</span></div>
             <div class="about-actions">
@@ -314,4 +320,11 @@ function close(): void {
 .btn-check { background: var(--accent); color: #fff; border: none; border-radius: 7px; padding: 7px 14px; font-size: 13px; font-family: var(--font); cursor: pointer; transition: background 0.15s ease; }
 .btn-check:hover { background: var(--accent-hover); }
 .about-hint { font-size: 12px; color: var(--text-tertiary); }
+
+.about-intro {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
 </style>

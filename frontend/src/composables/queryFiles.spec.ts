@@ -136,6 +136,34 @@ describe('saveToFile', () => {
     expect(showSpy).toHaveBeenCalledWith('已保存到 SQL文件:a.sql')
   })
 
+  // 回归:同名覆盖保存时 currentFile 值不变,组件层经 onSaved 对齐脏检查
+  // 快照——否则刚保存的内容会被下一次载入误判为「未保存」。
+  it('成功:触发 onSaved 回调并携带规范化文件名', async () => {
+    const onSaved = vi.fn()
+    const { qf } = setup({ onSaved })
+
+    await qf.saveToFile('a')
+
+    expect(onSaved).toHaveBeenCalledTimes(1)
+    expect(onSaved).toHaveBeenCalledWith('a.sql')
+  })
+
+  it('失败:不触发 onSaved', async () => {
+    const onSaved = vi.fn()
+    const { qf } = setup({ onSaved })
+    queryFileApp.WriteQueryFile.mockRejectedValue(new Error('磁盘已满'))
+
+    await qf.saveToFile('a.sql')
+
+    expect(onSaved).not.toHaveBeenCalled()
+  })
+
+  it('未提供 onSaved 时不报错', async () => {
+    const { qf } = setup()
+
+    await expect(qf.saveToFile('a.sql')).resolves.toBeUndefined()
+  })
+
   it('失败:写入 fileError,不更新当前文件、不弹 toast', async () => {
     const { qf } = setup()
     const toast = useToastStore()
@@ -405,6 +433,26 @@ describe('database 透传(保存/载入)', () => {
   })
 })
 
+describe('restoreFile', () => {
+  it('设置 currentFile 但不读盘、不回填内容(草稿恢复只重建文件关联)', async () => {
+    const { opts, qf } = setup()
+
+    qf.restoreFile('a.sql')
+
+    expect(qf.currentFile.value).toBe('a.sql')
+    expect(queryFileApp.ReadQueryFile).not.toHaveBeenCalled()
+    expect(opts.setContent).not.toHaveBeenCalled()
+    expect(opts.getContent).not.toHaveBeenCalled()
+  })
+
+  it('传 null 清除当前文件关联', () => {
+    const { qf } = setup()
+    qf.restoreFile('a.sql')
+    qf.restoreFile(null)
+    expect(qf.currentFile.value).toBeNull()
+  })
+})
+
 describe('多实例共享', () => {
   it('两个消费者共享同一 files 列表,实例状态彼此独立', async () => {
     const a = useQueryFiles({
@@ -431,5 +479,43 @@ describe('多实例共享', () => {
     expect(b.currentFile.value).toBeNull()
     b.fileError.value = '仅本实例可见'
     expect(a.fileError.value).toBeNull()
+  })
+})
+
+describe('schema 支持', () => {
+  it('保存时把 getSchema 的返回写入 payload 的 schema 字段', async () => {
+    const { opts, qf } = setup({
+      getDatabase: vi.fn(() => 'shop'),
+      getSchema: vi.fn(() => 'public'),
+    })
+    await qf.saveToFile('pg-query')
+    expect(queryFileApp.WriteQueryFile).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'pg-query.sql', connection_id: 'conn-1', database: 'shop', schema: 'public' }),
+    )
+    expect(opts.getSchema).toHaveBeenCalled()
+  })
+
+  it('未提供 getSchema 时 payload 不带 schema 字段', async () => {
+    const { qf } = setup({ getDatabase: vi.fn(() => 'shop') })
+    await qf.saveToFile('no-schema')
+    const payload = queryFileApp.WriteQueryFile.mock.calls[0][0] as Record<string, unknown>
+    expect('schema' in payload).toBe(false)
+  })
+
+  it('载入文件时把文件头记录的 schema 回传给 setSchema', async () => {
+    queryFileApp.ReadQueryFile.mockResolvedValue({ content: 'select 1', connection_id: 'conn-1', database: 'shop', schema: 'app' })
+    const setSchema = vi.fn()
+    const { qf } = setup({ setDatabase: vi.fn(), setSchema })
+    await qf.loadQueryFile('pg.sql')
+    expect(setSchema).toHaveBeenCalledWith('app')
+    expect(qf.currentFile.value).toBe('pg.sql')
+  })
+
+  it('文件头缺省 schema 时 setSchema 收到空串', async () => {
+    queryFileApp.ReadQueryFile.mockResolvedValue({ content: 'select 1', connection_id: 'conn-1', database: 'shop' })
+    const setSchema = vi.fn()
+    const { qf } = setup({ setDatabase: vi.fn(), setSchema })
+    await qf.loadQueryFile('old.sql')
+    expect(setSchema).toHaveBeenCalledWith('')
   })
 })

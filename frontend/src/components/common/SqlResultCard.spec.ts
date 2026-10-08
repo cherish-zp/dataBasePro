@@ -193,6 +193,15 @@ describe('SqlResultCard', () => {
     expect(wrapper.find('[data-test="result-meta"]').text()).toBe('12 ms · 0 行')
   })
 
+  it('表头:字段类型在字段名下方第二行展示,无类型的列不展示', () => {
+    const wrapper = mountCard()
+    const heads = wrapper.findAll('thead th')
+    expect(heads[1].text()).toContain('id')
+    expect(heads[1].find('[data-test="col-type"]').text()).toBe('Int32')
+    expect(heads[2].text()).toContain('name')
+    expect(heads[2].find('[data-test="col-type"]').exists()).toBe(false)
+  })
+
   it('单元格双击 emit cell-dblclick(row, col)', async () => {
     const wrapper = mountCard()
     const row1 = wrapper.findAll('[data-test="result-row"]')[1]
@@ -222,6 +231,22 @@ describe('SqlResultCard', () => {
     const wrapper = mountCard({ editing: { row: 0, col: 0, draft: 'x' } })
     expect(wrapper.findAll('[data-test="result-cell-editor"]')).toHaveLength(1)
     expect(wrapper.find('[data-test="result-row"] [data-test="result-cell-editor"]').exists()).toBe(true)
+  })
+
+  // 回归:编辑框是覆盖在原单元格上的 textarea 浮层——td 进入编辑态时转为
+  // relative,textarea 尺寸由双击瞬间记录的 td 像素宽高内联锁定(行高列宽
+  // 纹丝不动),jsdom 下测量值为 0 则不注入内联尺寸。
+  it('编辑态:渲染 textarea 浮层,td 转 relative 且双击走记录尺寸的路径', async () => {
+    const wrapper = mountCard({ editing: { row: 0, col: 1, draft: 'new value' } })
+    const editor = wrapper.find('[data-test="result-cell-editor"]')
+    expect(editor.element.tagName).toBe('TEXTAREA')
+    const row0 = wrapper.findAll('[data-test="result-row"]')[0]
+    const editingTd = row0.findAll('td').find((td) => td.classes().includes('cell-editing'))
+    expect(editingTd).toBeDefined()
+    expect(editingTd!.classes()).toContain('cell-editing')
+    // 双击路径(记录尺寸后 emit)。
+    await row0.findAll('td')[2].trigger('dblclick')
+    expect(wrapper.emitted('cell-dblclick')?.length).toBeGreaterThan(0)
   })
 })
 
@@ -400,5 +425,82 @@ describe('SqlResultCard — 行选择与 INSERT 选项', () => {
       '\uFEFFid,name,ts\n1,a,x\n2,b,y\n3,c,z',
       CSV_MIME,
     )
+  })
+})
+
+describe('SqlResultCard — 服务端分页总数', () => {
+  it('totalRows ≥ 0 时头部显示「共 N 条」(千分位)', () => {
+    const wrapper = mountCard({ totalRows: 12345, rows: [['1', 'a']] })
+    expect(wrapper.find('[data-test="result-meta"]').text()).toBe('12 ms · 共 12,345 条 · 1 行')
+    wrapper.unmount()
+  })
+
+  it('totalRows 为 -1(无法计数)或缺省(未启用分页)时展示不变', () => {
+    const neg = mountCard({ totalRows: -1 })
+    expect(neg.find('[data-test="result-meta"]').text()).toBe('12 ms · 2 行')
+    neg.unmount()
+    const none = mountCard()
+    expect(none.find('[data-test="result-meta"]').text()).toBe('12 ms · 2 行')
+    none.unmount()
+  })
+})
+
+describe('SqlResultCard — 行首删除按钮', () => {
+  const deleteBase = {
+    columns: [
+      { name: 'id', type: 'Int32' },
+      { name: 'name' },
+    ],
+    rows: [
+      ['1', 'a'],
+      ['2', 'b'],
+    ] as (string | null)[][],
+  }
+
+  it('不传 rowDelete:不渲染删除按钮', () => {
+    const wrapper = mountCard(deleteBase)
+    expect(wrapper.find('[data-test="btn-row-delete"]').exists()).toBe(false)
+    expect(wrapper.find('.row-action').exists()).toBe(false)
+  })
+
+  it('传 rowDelete 且 hint 为 null:每行渲染可删按钮,title 为「删除该行」,点击回调 delete(行下标)', async () => {
+    const del = vi.fn()
+    const wrapper = mountCard({ ...deleteBase, rowDelete: { hint: () => null, delete: del } })
+    const btns = wrapper.findAll('[data-test="btn-row-delete"]')
+    expect(btns).toHaveLength(2)
+    expect(btns[0].attributes('disabled')).toBeUndefined()
+    expect(btns[0].attributes('title')).toBe('删除该行')
+    await btns[1].trigger('click')
+    expect(del).toHaveBeenCalledTimes(1)
+    expect(del).toHaveBeenCalledWith(1)
+  })
+
+  it('hint 非空:按钮禁用且 title 展示原因,点击不回调', async () => {
+    const del = vi.fn()
+    const wrapper = mountCard({
+      ...deleteBase,
+      rowDelete: { hint: (i: number) => (i === 0 ? '该表无主键' : null), delete: del },
+    })
+    const btns = wrapper.findAll('[data-test="btn-row-delete"]')
+    expect(btns[0].attributes('disabled')).toBeDefined()
+    expect(btns[0].attributes('title')).toBe('该表无主键')
+    await btns[0].trigger('click')
+    expect(del).not.toHaveBeenCalled()
+    // 同一卡片内 hint 为 null 的行仍可删。
+    expect(btns[1].attributes('disabled')).toBeUndefined()
+    await btns[1].trigger('click')
+    expect(del).toHaveBeenCalledWith(1)
+  })
+
+  it('按钮列位于行号列之后,行内单元格下标不受影响', () => {
+    const wrapper = mountCard({ ...deleteBase, rowDelete: { hint: () => null, delete: vi.fn() } })
+    const headCells = wrapper.find('thead tr').findAll('th')
+    expect(headCells[0].text()).toBe('#')
+    expect(headCells[1].classes()).toContain('row-action')
+    expect(headCells[2].text()).toContain('id')
+    const firstRowCells = wrapper.findAll('[data-test="result-row"]')[0].findAll('td')
+    expect(firstRowCells[0].text()).toBe('1') // 行号
+    expect(firstRowCells[1].classes()).toContain('row-action')
+    expect(firstRowCells[2].text()).toBe('1') // id 数据列
   })
 })

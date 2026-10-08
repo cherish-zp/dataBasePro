@@ -250,7 +250,7 @@ describe('EsSqlConsole', () => {
     await wrapper.find('[data-test="btn-es-run"]').trigger('click')
     await waitForTabs(wrapper, 2)
     // toHaveBeenCalledWith 为整体深度相等:断言 payload 不携带 database 字段。
-    expect(app.ESExecute).toHaveBeenCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT bad' })
+    expect(app.ESExecute).toHaveBeenCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT bad' , limit: 500, offset: 0 })
     expect(resultCards(wrapper)).toHaveLength(1)
     // active(第 0 个)卡:语句原文、耗时、列与行(NULL 单元格)。
     const card = resultCards(wrapper)[0]
@@ -298,7 +298,7 @@ describe('EsSqlConsole', () => {
     cmInput(wrapper).dispatch({ selection: { anchor: 10, head: 18 } })
     await wrapper.find('[data-test="btn-es-run"]').trigger('click')
     await waitForTabs(wrapper, 2)
-    expect(app.ESExecute).toHaveBeenCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT 2' })
+    expect(app.ESExecute).toHaveBeenCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT 2' , limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -331,7 +331,7 @@ describe('EsSqlConsole', () => {
     await nextTick()
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(app.ESExecute).toHaveBeenCalledWith({ connection_id: 'e1', sql: 'SELECT 1;' })
+    expect(app.ESExecute).toHaveBeenCalledWith({ connection_id: 'e1', sql: 'SELECT 1;' , limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -344,12 +344,12 @@ describe('EsSqlConsole', () => {
     await nextTick()
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT bad' })
+    expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT bad' , limit: 500, offset: 0 })
     // 选中第一段 'SELECT 1'(0..8)→ ⌘Enter 执行选中文本。
     cmInput(wrapper).dispatch({ selection: { anchor: 0, head: 8 } })
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT 1' })
+    expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT 1' , limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -361,7 +361,7 @@ describe('EsSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     pressRunShortcut(wrapper, { metaKey: true, shiftKey: true })
     await waitForTabs(wrapper, 2)
-    expect(app.ESExecute).toHaveBeenCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT bad' })
+    expect(app.ESExecute).toHaveBeenCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT bad' , limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -517,6 +517,38 @@ describe('EsSqlConsole', () => {
     wrapper.unmount()
   })
 
+  // 回归:同名覆盖保存成功后,再点右栏同一文件不得误弹「当前 SQL 未保存,
+  // 载入将替换?」——保存成功必须把脏检查快照对齐到刚保存的内容。
+  it('同名覆盖保存后再次载入同一文件不弹未保存确认', async () => {
+    app.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'e1' })
+    const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+    // 打开已关联文件「166[总控].sql」:编辑器与快照都是 SELECT 1。
+    exposedApi(wrapper).loadQueryFile('166[总控]')
+    await vi.waitFor(() => {
+      expect(exposedApi(wrapper).currentFile()).toBe('166[总控].sql')
+    })
+    // 编辑后同名覆盖保存(requestSave 路径,currentFile 不变)。
+    await typeSql(wrapper, 'SELECT 42')
+    exposedApi(wrapper).requestSave()
+    await vi.waitFor(() => {
+      expect(app.WriteQueryFile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: '166[总控].sql', content: 'SELECT 42' }),
+      )
+    })
+    // 保存后刷新列表(refreshFiles)完成,再进行下一步载入。
+    await vi.waitFor(() => {
+      expect(app.ListQueryFiles).toHaveBeenCalled()
+    })
+    // 再次点击右栏同一文件:不弹确认,直接重新载入(ReadQueryFile 第二次调用)。
+    const readsBefore = app.ReadQueryFile.mock.calls.length
+    exposedApi(wrapper).loadQueryFile('166[总控]')
+    await vi.waitFor(() => {
+      expect(app.ReadQueryFile.mock.calls.length).toBeGreaterThan(readsBefore)
+    })
+    expect(bodyEl('confirm-dialog')).toBeNull()
+    wrapper.unmount()
+  })
+
   // --- tab 标题跟随当前打开的 SQL 文件 ----------------------------------------
 
   describe('tab 标题跟随当前 SQL 文件', () => {
@@ -563,6 +595,50 @@ describe('EsSqlConsole', () => {
       await confirmPrompt('新文件.sql')
       await vi.waitFor(() => {
         expect(tabsStore.openTabs[0].title).toBe('新文件.sql')
+      })
+      wrapper.unmount()
+    })
+  })
+
+  // --- 草稿恢复与持久化:切 tab 销毁重建后内容/文件关联不丢 --------------------
+
+  describe('草稿恢复与持久化(切 tab 不丢内容)', () => {
+    function mountWithDraftTab(draft?: { sql: string; file: string | null }) {
+      const tabsStore = useTabsStore()
+      tabsStore.openTabs.push({
+        id: 'e-tab1',
+        kind: 'es-sql',
+        title: 'SQL 控制台',
+        connectionId: 'e1',
+        draft,
+      } as Tab)
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      return { wrapper, tabsStore }
+    }
+
+    it('挂载时从 tab draft 恢复编辑器内容与文件关联,标题跟随文件名,不读盘', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab({ sql: 'SELECT draft', file: '草稿.sql' })
+      await vi.waitFor(() => {
+        expect(cmInput(wrapper).state.doc.toString()).toBe('SELECT draft')
+      })
+      expect(tabsStore.openTabs[0].title).toBe('草稿.sql')
+      // 恢复只重建文件关联,不走载入链路。
+      expect(app.ReadQueryFile).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it('无 draft 的 tab 挂载行为不变(空编辑器、默认标题)', () => {
+      const { wrapper, tabsStore } = mountWithDraftTab()
+      expect(cmInput(wrapper).state.doc.toString()).toBe('')
+      expect(tabsStore.openTabs[0].title).toBe('SQL 控制台')
+      wrapper.unmount()
+    })
+
+    it('编辑内容写回 tab draft,文件关联同步持久化', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab()
+      await typeSql(wrapper, 'SELECT 42')
+      await vi.waitFor(() => {
+        expect(tabsStore.openTabs[0].draft).toEqual({ sql: 'SELECT 42', file: null })
       })
       wrapper.unmount()
     })
@@ -897,6 +973,8 @@ describe('EsSqlConsole', () => {
 
     it('SQL/DSL 模式各自持有一组结果 tab', async () => {
       app.ESExecute.mockImplementation(echoResult)
+      // 既有用例可能遗留 DSL 模式记忆,分页只在 SQL 模式生效。
+      localStorage.setItem('es-console-mode:e1', 'sql')
       const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
       await typeSql(wrapper, 'SELECT 1')
       await wrapper.find('[data-test="btn-es-run"]').trigger('click')
@@ -985,7 +1063,7 @@ describe('EsSqlConsole', () => {
       expect(wrapper.find('[data-test="menu-run-selection"]').exists()).toBe(true)
       await wrapper.find('[data-test="menu-run-selection"]').trigger('click')
       await waitForTabs(wrapper, 1)
-      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT 1' })
+      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT 1' , limit: 500, offset: 0 })
       // 无选区右键 →「执行当前语句」:执行光标所在语句(第 2 段)。
       await typeSql(wrapper, 'SELECT 1; SELECT bad')
       wrapper.findComponent(SqlEditor).vm.$emit('cursor', { line: 1, col: 13 })
@@ -993,12 +1071,12 @@ describe('EsSqlConsole', () => {
       await openRunMenu(wrapper)
       await wrapper.find('[data-test="menu-run-current"]').trigger('click')
       await waitForTabs(wrapper, 1)
-      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT bad' })
+      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT bad' , limit: 500, offset: 0 })
       // 「运行全部」→ 整段脚本交给后端。
       await openRunMenu(wrapper)
       await wrapper.find('[data-test="menu-run-all"]').trigger('click')
       await waitForTabs(wrapper, 2)
-      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT bad' })
+      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT 1; SELECT bad' , limit: 500, offset: 0 })
       wrapper.unmount()
     })
 
@@ -1030,6 +1108,152 @@ describe('EsSqlConsole', () => {
       await wrapper.find('[data-test="menu-run-all"]').trigger('click')
       await waitForTabs(wrapper, 2)
       expect(app.ESDsl).toHaveBeenCalledTimes(4)
+      wrapper.unmount()
+    })
+  })
+
+  // --- 结果区分页(服务端分页,默认 500 条/页,仅 SQL 模式) --------------------
+
+  describe('结果区分页', () => {
+    const pagedRows = (n: number) => Array.from({ length: n }, (_, i) => [String(i)])
+
+    it('新查询请求带 limit=500&offset=0,精确总数显示「共 N 条 · 第 p/last 页」', async () => {
+      app.ESExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'keyword' }], rows: pagedRows(500), total_rows: 860 },
+      ])
+      // 既有用例可能遗留 DSL 模式记忆,分页只在 SQL 模式生效。
+      localStorage.setItem('es-console-mode:e1', 'sql')
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT 1', limit: 500, offset: 0 })
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 860 条 · 第 1/2 页')
+      wrapper.unmount()
+    })
+
+    it('下一页以 offset=500 重放上次脚本,上一页回到 offset=0', async () => {
+      app.ESExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'keyword' }], rows: pagedRows(500), total_rows: -1 },
+      ])
+      // 既有用例可能遗留 DSL 模式记忆,分页只在 SQL 模式生效。
+      localStorage.setItem('es-console-mode:e1', 'sql')
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('至少 500 条 · 第 1 页')
+      await wrapper.find('[data-test="pager-next"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT 1', limit: 500, offset: 500 })
+      await typeSql(wrapper, 'SELECT 2')
+      await wrapper.find('[data-test="pager-prev"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: 'SELECT 1', limit: 500, offset: 0 })
+      wrapper.unmount()
+    })
+
+    it('行数不足 500 时下一页禁用;无 total_rows 显示「第 x-y 条」不报错', async () => {
+      app.ESExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'keyword' }], rows: [['1'], ['2']] },
+      ])
+      // 既有用例可能遗留 DSL 模式记忆,分页只在 SQL 模式生效。
+      localStorage.setItem('es-console-mode:e1', 'sql')
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('第 1-2 条')
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      expect((wrapper.find('[data-test="pager-prev"]').element as HTMLButtonElement).disabled).toBe(true)
+      wrapper.unmount()
+    })
+
+    it('脚本含 DML(UPDATE …; SELECT …)时隐藏分页条,避免翻页重放重复写库', async () => {
+      app.ESExecute.mockResolvedValue([
+        { sql: 'UPDATE t SET x = x + 1 WHERE id = 1', duration_ms: 2 },
+        { sql: 'SELECT * FROM t', duration_ms: 1, columns: [{ name: 'x', type: 'keyword' }], rows: [['1'], ['2']], total_rows: 2 },
+      ])
+      localStorage.setItem('es-console-mode:e1', 'sql')
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, 'UPDATE t SET x = x + 1 WHERE id = 1; SELECT * FROM t')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('WITH 可能是数据修改 CTE,保守隐藏分页条', async () => {
+      app.ESExecute.mockResolvedValue([
+        {
+          sql: 'WITH c AS (SELECT 1 AS x) SELECT * FROM c',
+          duration_ms: 1,
+          columns: [{ name: 'x', type: 'keyword' }],
+          rows: [['1']],
+          total_rows: 1,
+        },
+      ])
+      localStorage.setItem('es-console-mode:e1', 'sql')
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, 'WITH c AS (SELECT 1 AS x) SELECT * FROM c')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('前导注释不影响只读判定:注释 + SELECT 仍显示分页条,翻页按原脚本重放', async () => {
+      app.ESExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'keyword' }], rows: pagedRows(500), total_rows: 1200 },
+      ])
+      localStorage.setItem('es-console-mode:e1', 'sql')
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, '-- 查询\nSELECT 1')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(true)
+      await wrapper.find('[data-test="pager-next"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.ESExecute).toHaveBeenLastCalledWith({ connection_id: 'e1', sql: '-- 查询\nSELECT 1', limit: 500, offset: 500 })
+      wrapper.unmount()
+    })
+
+    it('恰好整页(total_rows=500)时下一页禁用;total_rows=1200 时下一页可用', async () => {
+      app.ESExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'keyword' }], rows: pagedRows(500), total_rows: 500 },
+      ])
+      localStorage.setItem('es-console-mode:e1', 'sql')
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 500 条 · 第 1/1 页')
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      wrapper.unmount()
+      // total=1200 → 共 3 页,本页 500 行,下一页可用。
+      app.ESExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'keyword' }], rows: pagedRows(500), total_rows: 1200 },
+      ])
+      const wrapper2 = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper2, 'SELECT 1')
+      await wrapper2.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper2, 1)
+      expect((wrapper2.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(false)
+      wrapper2.unmount()
+    })
+
+    it('分页条容器带跨页顺序说明 tooltip', async () => {
+      app.ESExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x', type: 'keyword' }], rows: [['1']], total_rows: 1 },
+      ])
+      localStorage.setItem('es-console-mode:e1', 'sql')
+      const wrapper = mount(EsSqlConsole, { props: { tabId: 'e-tab1', connectionId: 'e1' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-es-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="result-pager"]').attributes('title')).toBe(
+        '跨页分页由数据库 ORDER BY 保证顺序;无排序查询顺序以数据库返回为准',
+      )
       wrapper.unmount()
     })
   })

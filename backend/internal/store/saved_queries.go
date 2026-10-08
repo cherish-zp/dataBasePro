@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // CreateSavedQuery inserts a new saved SQL console query. The id and both

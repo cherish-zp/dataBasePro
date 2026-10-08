@@ -4,6 +4,7 @@ import { useTabsStore, type Tab } from '@/store/tabs'
 import type { Connection } from '@/api/types'
 import ConnectionTree from '@/components/common/ConnectionTree.vue'
 import CommandPalette from '@/components/common/CommandPalette.vue'
+import BrandLogo from '@/components/common/BrandLogo.vue'
 import MessageBrowser from '@/components/kafka/MessageBrowser.vue'
 import ConsumerGroupView from '@/components/kafka/ConsumerGroupView.vue'
 import ProducerPanel from '@/components/kafka/ProducerPanel.vue'
@@ -15,16 +16,24 @@ import CHTableBrowser from '@/components/kafka/CHTableBrowser.vue'
 import CHSqlConsole from '@/components/kafka/CHSqlConsole.vue'
 import MysqlTableBrowser from '@/components/kafka/MysqlTableBrowser.vue'
 import MysqlSqlConsole from '@/components/kafka/MysqlSqlConsole.vue'
+import PostgresTableBrowser from '@/components/kafka/PostgresTableBrowser.vue'
+import PostgresSqlConsole from '@/components/kafka/PostgresSqlConsole.vue'
+import HiveTableBrowser from '@/components/kafka/HiveTableBrowser.vue'
+import HiveSqlConsole from '@/components/kafka/HiveSqlConsole.vue'
 import EsTableBrowser from '@/components/kafka/EsTableBrowser.vue'
 import EsSqlConsole from '@/components/kafka/EsSqlConsole.vue'
 import EsTemplatesPanel from '@/components/kafka/EsTemplatesPanel.vue'
 import EsClusterMonitor from '@/components/kafka/EsClusterMonitor.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import UpdateDialog from './UpdateDialog.vue'
+import DocsDialog from '@/components/docs/DocsDialog.vue'
 import StatusBar from '@/components/layout/StatusBar.vue'
 import QueryFilesPanel, { type SqlConsoleApi } from './QueryFilesPanel.vue'
 import { useToastStore } from '@/store/toast'
+import { useConnectionsStore } from '@/store/connections'
 import HomeView from '@/views/HomeView.vue'
+import { getApi } from '@/api/client'
+import { APP_VERSION } from '@/version'
 
 const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
@@ -34,6 +43,13 @@ const emit = defineEmits<{
 }>()
 
 const tabs = useTabsStore()
+const connectionsStore = useConnectionsStore()
+
+// reorderConnections 接住连接树的排序 emit,转调 connections store 持久化
+// (组件只 emit,store 调用收敛在 Layout,与 tabs 打开逻辑同层)。
+function reorderConnections(ids: string[]): void {
+  void connectionsStore.reorderConnections(ids)
+}
 
 // refreshRequest drives the unified refresh: the top bar 刷新 button (and the
 // tab context menu's 刷新 item) bump the counter, and each data panel watches
@@ -54,6 +70,33 @@ const dragFrom = ref<number | null>(null)
 const showProducer = ref(false)
 const showSettings = ref(false)
 const showUpdate = ref(false)
+const showDocs = ref(false)
+
+// --- 顶栏更新红点 --------------------------------------------------------------
+// 挂载时静默探测一次新版本,之后每 30 分钟重查;has_update 点亮红点,
+// 某次探测确认已无更新(如新版本被撤回/已更新)则同步熄灭。
+// 任何失败(网络错误/绑定缺失)都静默忽略,不打扰用户、不影响页面。
+const updateAvailable = ref(false)
+const latestVersion = ref('')
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000
+let updateTimer: number | undefined = undefined
+
+async function pollUpdate(): Promise<void> {
+  try {
+    const res = await getApi().checkUpdate?.({ current_version: APP_VERSION })
+    if (!res) return
+    updateAvailable.value = res.has_update
+    if (res.has_update) latestVersion.value = res.latest_version
+  } catch {
+    // 静默:探测失败保持现状,不弹错误。
+  }
+}
+
+// openUpdate 打开更新弹窗的同时清除红点:弹窗内会重新探测,用户已被告知。
+function openUpdate(): void {
+  showUpdate.value = true
+  updateAvailable.value = false
+}
 
 // toast:全局轻提示浮层,在 Layout 底部居中渲染;自动消失由 store 负责。
 const toast = useToastStore()
@@ -129,7 +172,7 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
     toast.show('未找到文件关联的数据源,无法打开 SQL 控制台')
     return
   }
-  const target: 'sql' | 'ch-sql' | 'mysql-sql' | 'es-sql' | null =
+  const target: 'sql' | 'ch-sql' | 'mysql-sql' | 'es-sql' | 'postgres-sql' | 'hive-sql' | null =
     conn.type === 'kafka'
       ? 'sql'
       : conn.type === 'clickhouse'
@@ -138,7 +181,11 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
           ? 'mysql-sql'
           : conn.type === 'es'
             ? 'es-sql'
-            : null
+            : conn.type === 'postgres'
+              ? 'postgres-sql'
+              : conn.type === 'hive'
+                ? 'hive-sql'
+                : null
   if (!target) {
     toast.show('该数据源类型暂不支持 SQL 控制台')
     return
@@ -152,8 +199,12 @@ async function openQueryFileFromPanel(name: string, connectionId: string): Promi
     tabs.openCHSql(connectionId)
   } else if (target === 'mysql-sql') {
     tabs.openMysqlSql(connectionId)
+  } else if (target === 'postgres-sql') {
+    tabs.openPostgresSql(connectionId)
   } else if (target === 'es-sql') {
     tabs.openEsSql(connectionId)
+  } else if (target === 'hive-sql') {
+    tabs.openHiveSql(connectionId)
   } else {
     // Kafka 不带 topic:通用「SQL 查询」tab,表名写在 SQL 的 FROM 子句里。
     tabs.openSql(connectionId, '', [])
@@ -191,7 +242,9 @@ const activeTopic = computed<Tab | null>(() => (active.value?.kind === 'topic' ?
 const sqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const chSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const mysqlSqlConsoleRef = ref<SqlConsoleApi | null>(null)
+const pgSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 const esSqlConsoleRef = ref<SqlConsoleApi | null>(null)
+const hiveSqlConsoleRef = ref<SqlConsoleApi | null>(null)
 
 const activeConsoleApi = computed<SqlConsoleApi | null>(() => {
   const a = active.value
@@ -199,7 +252,9 @@ const activeConsoleApi = computed<SqlConsoleApi | null>(() => {
   if (a.kind === 'sql') return sqlConsoleRef.value
   if (a.kind === 'ch-sql') return chSqlConsoleRef.value
   if (a.kind === 'mysql-sql') return mysqlSqlConsoleRef.value
+  if (a.kind === 'postgres-sql') return pgSqlConsoleRef.value
   if (a.kind === 'es-sql') return esSqlConsoleRef.value
+  if (a.kind === 'hive-sql') return hiveSqlConsoleRef.value
   return null
 })
 
@@ -220,9 +275,19 @@ function openNewQuery(): void {
     tabs.openMysqlSql(a.connectionId, a.database ?? '')
     return
   }
+  // PG 系 tab 打开 PG SQL 控制台,并带上当前库与 schema(缺省 = 通用控制台)。
+  if (kind === 'postgres-table' || kind === 'postgres-sql') {
+    tabs.openPostgresSql(a.connectionId, a.database ?? '', a.schema ?? '')
+    return
+  }
   // ES 系 tab 打开 ES SQL 控制台(ES 无库概念,不携带 database)。
   if (kind === 'es-index' || kind === 'es-sql') {
     tabs.openEsSql(a.connectionId)
+    return
+  }
+  // Hive 系 tab 打开 Hive SQL 控制台,并带上当前库(缺省 = 通用控制台)。
+  if (kind === 'hive-table' || kind === 'hive-sql') {
+    tabs.openHiveSql(a.connectionId, a.database ?? '')
     return
   }
   tabs.openSql(a.connectionId, a.topic ?? '', a.partitions ?? [])
@@ -255,6 +320,22 @@ function openCHTable(connectionId: string, database: string, table: string): voi
 // MySQL 表浏览器:双击树上的表节点打开/聚焦对应 tab。
 function openMysqlTable(connectionId: string, database: string, table: string): void {
   tabs.openMysqlTable(connectionId, database, table)
+}
+
+// Hive 表浏览器:双击树上的表节点打开/聚焦对应 tab。
+function openHiveTable(connectionId: string, database: string, table: string): void {
+  tabs.openHiveTable(connectionId, database, table)
+}
+
+// PostgreSQL relation 浏览器:双击树上的 relation 节点打开/聚焦对应 tab。
+function openPostgresTable(
+  connectionId: string,
+  database: string,
+  schema: string,
+  relation: string,
+  relationType: 'table' | 'view' | 'materialized_view',
+): void {
+  tabs.openPostgresTable(connectionId, database, schema, relation, relationType)
 }
 
 // ES 索引浏览器:双击树上的索引节点打开/聚焦对应 tab。
@@ -304,7 +385,9 @@ function refreshActive(): void {
     active.value.kind === 'sql' ||
     active.value.kind === 'ch-sql' ||
     active.value.kind === 'mysql-sql' ||
-    active.value.kind === 'es-sql'
+    active.value.kind === 'postgres-sql' ||
+    active.value.kind === 'es-sql' ||
+    active.value.kind === 'hive-sql'
   ) {
     return
   }
@@ -371,11 +454,18 @@ onMounted(() => {
   window.addEventListener('keydown', onGlobalKeydown)
   // 启动即展开时(上次会话遗留状态),让面板立即拉一次文件列表。
   if (filesOpen.value) filesPanelRef.value?.refresh()
+  // 首次静默探测新版本,之后定时重查;失败已在 pollUpdate 内静默。
+  void pollUpdate()
+  updateTimer = window.setInterval(() => void pollUpdate(), UPDATE_CHECK_INTERVAL_MS)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick)
   window.removeEventListener('keydown', onGlobalKeydown)
+  if (updateTimer !== undefined) {
+    window.clearInterval(updateTimer)
+    updateTimer = undefined
+  }
 })
 
 function contextClose(): void {
@@ -441,28 +531,33 @@ function onTabDragEnd(): void {
 <template>
   <div class="layout" :class="{ resizing, 'files-resizing': filesResizing }" data-test="layout">
     <header class="topbar" data-test="topbar">
-      <div class="brand" data-test="brand">🪐 dataBasePro</div>
+      <div class="brand" data-test="brand">
+        <BrandLogo class="brand-logo" />
+        <span>圣手运河</span>
+      </div>
       <div class="spacer"></div>
       <button
         class="btn ghost"
         type="button"
         data-test="btn-refresh-active"
-        :disabled="!active || active.kind === 'sql' || active.kind === 'ch-sql' || active.kind === 'mysql-sql' || active.kind === 'es-sql'"
+        :disabled="!active || active.kind === 'sql' || active.kind === 'ch-sql' || active.kind === 'mysql-sql' || active.kind === 'es-sql' || active.kind === 'hive-sql'"
         @click="refreshActive"
       >
         刷新
       </button>
       <button
         class="btn ghost icon-btn"
+        :class="{ 'has-update': updateAvailable }"
         type="button"
         data-test="btn-update"
-        title="检查更新"
-        @click="showUpdate = true"
+        :title="updateAvailable ? `发现新版本 ${latestVersion}，点击查看` : '检查更新'"
+        @click="openUpdate"
       >
         <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
           <path d="M8 2.5v7.2M8 2.5 5.4 5.1M8 2.5l2.6 2.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
           <path d="M3 10.5v1.8c0 .7.5 1.2 1.2 1.2h7.6c.7 0 1.2-.5 1.2-1.2v-1.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
         </svg>
+        <span v-if="updateAvailable" class="update-dot" data-test="update-dot"></span>
       </button>
       <button
         class="btn ghost"
@@ -475,6 +570,7 @@ function onTabDragEnd(): void {
         新建查询
       </button>
       <button class="btn ghost" type="button" data-test="btn-settings" @click="showSettings = true">设置</button>
+      <button class="btn ghost" type="button" data-test="btn-docs-open" @click="showDocs = true">文档</button>
       <button
         class="btn ghost icon-btn"
         type="button"
@@ -501,12 +597,15 @@ function onTabDragEnd(): void {
           @open-health="openHealth"
           @open-ch-table="openCHTable"
           @open-mysql-table="openMysqlTable"
+          @open-hive-table="openHiveTable"
+          @open-postgres-table="openPostgresTable"
           @open-es-index="openEsIndex"
           @open-es-template="openEsTemplate"
           @open-es-template-create="openEsTemplateCreate"
           @open-es-monitor="(id) => tabs.openEsMonitor(id)"
           @delete="removeConnection"
           @edit-connection="editConnection"
+          @reorder="reorderConnections"
           @new="emit('new')"
         />
       </aside>
@@ -618,6 +717,43 @@ function onTabDragEnd(): void {
               :database="active.database ?? ''"
             />
           </template>
+          <template v-else-if="active.kind === 'hive-table'">
+            <HiveTableBrowser
+              :key="active.id"
+              :connection-id="active.connectionId"
+              :database="active.database ?? ''"
+              :table="active.table ?? ''"
+            />
+          </template>
+          <template v-else-if="active.kind === 'hive-sql'">
+            <HiveSqlConsole
+              ref="hiveSqlConsoleRef"
+              :key="active.id"
+              :tab-id="active.id"
+              :connection-id="active.connectionId"
+              :database="active.database ?? ''"
+            />
+          </template>
+          <template v-else-if="active.kind === 'postgres-table'">
+            <PostgresTableBrowser
+              :key="active.id"
+              :connection-id="active.connectionId"
+              :database="active.database ?? ''"
+              :schema="active.schema ?? ''"
+              :relation="active.table ?? ''"
+              :relation-type="active.relationType ?? 'table'"
+            />
+          </template>
+          <template v-else-if="active.kind === 'postgres-sql'">
+            <PostgresSqlConsole
+              ref="pgSqlConsoleRef"
+              :key="active.id"
+              :tab-id="active.id"
+              :connection-id="active.connectionId"
+              :database="active.database ?? ''"
+              :schema="active.schema ?? ''"
+            />
+          </template>
           <template v-else-if="active.kind === 'es-index'">
             <EsTableBrowser
               :key="active.id"
@@ -683,6 +819,7 @@ function onTabDragEnd(): void {
     <!-- 设置面板「关于」页点检查更新:沿用已有 UpdateDialog,避免重复弹窗。 -->
     <SettingsPanel :show="showSettings" @close="showSettings = false" @check-update="showUpdate = true" />
     <UpdateDialog :show="showUpdate" @close="showUpdate = false" />
+    <DocsDialog :show="showDocs" @close="showDocs = false" />
     <CommandPalette ref="paletteRef" />
 
     <!-- Tab context menu. Teleported to <body> so a backdrop-filter ancestor
@@ -706,7 +843,7 @@ function onTabDragEnd(): void {
         </button>
         <button class="context-item" type="button" data-test="context-close-all" @click="contextCloseAll">关闭全部</button>
         <button
-          v-if="contextTab.kind !== 'sql' && contextTab.kind !== 'ch-sql' && contextTab.kind !== 'mysql-sql' && contextTab.kind !== 'es-sql'"
+          v-if="contextTab.kind !== 'sql' && contextTab.kind !== 'ch-sql' && contextTab.kind !== 'mysql-sql' && contextTab.kind !== 'postgres-sql' && contextTab.kind !== 'es-sql' && contextTab.kind !== 'hive-sql'"
           class="context-item"
           type="button"
           data-test="context-refresh"
@@ -739,7 +876,8 @@ function onTabDragEnd(): void {
   backdrop-filter: var(--glass-blur);
   z-index: 10;
 }
-.brand { font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+.brand { display: flex; align-items: center; gap: 6px; font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+.brand-logo { width: 18px; height: 18px; color: var(--accent); flex-shrink: 0; }
 .spacer { flex: 1; }
 .btn {
   border-radius: 7px;
@@ -750,7 +888,23 @@ function onTabDragEnd(): void {
   transition: background 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
 }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 6px 8px; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; padding: 6px 8px; position: relative; }
+/* 更新红点:8px 圆点叠在图标右上角,2px 描边与底色同色用于分隔,pulse 克制(缩放+微降透明度)。 */
+.icon-btn.has-update .update-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--bg);
+  animation: update-dot-pulse 2s ease-in-out infinite;
+}
+@keyframes update-dot-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.82); opacity: 0.55; }
+}
 .btn.primary {
   background: var(--accent);
   color: #fff;

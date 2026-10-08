@@ -21,6 +21,14 @@ export interface QueryFilesOptions {
   // 载入文件后回传文件头记录的库;空串也回调,表示文件未关联库(由
   // 消费者自行决定是否恢复,例如 MySQL 控制台空串保持当前库不动)。
   setDatabase?: (db: string) => void
+  // 保存写盘成功后回调(携带规范化文件名):同名覆盖保存时 currentFile 值
+  // 不变,消费者(各 SQL 控制台)靠它把脏检查快照对齐到刚保存的内容,
+  // 避免刚保存就被误判为「未保存」。失败不回调。
+  onSaved?: (name: string) => void
+  // PG 控制台:保存把当前 schema 写入文件头;载入按文件头回传(空串 =
+  // 文件未关联 schema,消费者保持当前 schema 不动)。
+  getSchema?: () => string
+  setSchema?: (schema: string) => void
 }
 
 // 模块级共享:所有 useQueryFiles 消费者共用同一份文件列表(新→旧)。
@@ -36,6 +44,10 @@ export function useQueryFiles(opts: QueryFilesOptions): {
   currentFile: Ref<string | null>
   refreshFiles(): Promise<void>
   loadQueryFile(name: string): Promise<void>
+  // 恢复文件关联(切 tab 草稿恢复用):仅设置 currentFile,不读盘、不回填
+  // 内容、不刷新列表——编辑器内容由调用方从 tab draft 恢复,这里只重建
+  // 关联,让后续 ⌘S 覆盖保存与脏检查落到正确文件上。
+  restoreFile(name: string | null): void
   saveToFile(name: string): Promise<void>
   requestSave(): void
   requestSaveAs(): void
@@ -70,9 +82,10 @@ export function useQueryFiles(opts: QueryFilesOptions): {
       const res = await App.ReadQueryFile({ dir: getQueryDir(), name: target })
       // 响应已扩展 database 字段(文件头记录的库);绑定模型待 wails generate
       // 对齐,这里按契约形状读取,旧后端缺省时视为未关联库。
-      const { content, database } = res as unknown as { content: string; database?: string }
+      const { content, database, schema } = res as unknown as { content: string; database?: string; schema?: string }
       opts.setContent?.(content)
       opts.setDatabase?.(database ?? '')
+      opts.setSchema?.(schema ?? '')
       currentFile.value = target
       fileError.value = null
     } catch (e) {
@@ -89,6 +102,7 @@ export function useQueryFiles(opts: QueryFilesOptions): {
         content: string
         connection_id?: string
         database?: string
+        schema?: string
       } = {
         dir: getQueryDir(),
         name: target,
@@ -96,10 +110,12 @@ export function useQueryFiles(opts: QueryFilesOptions): {
         connection_id: opts.connectionId(),
       }
       if (opts.getDatabase) payload.database = opts.getDatabase()
+      if (opts.getSchema) payload.schema = opts.getSchema()
       // QueryFileWriteRequest 绑定模型尚未含 database,待 wails generate 后对齐。
       await App.WriteQueryFile(payload as unknown as Parameters<typeof App.WriteQueryFile>[0])
       currentFile.value = target
       fileError.value = null
+      opts.onSaved?.(target)
       await refreshFiles()
       try {
         useToastStore().show(`已保存到 SQL文件:${target}`)
@@ -161,6 +177,12 @@ export function useQueryFiles(opts: QueryFilesOptions): {
     }
   }
 
+  // 仅恢复文件关联(见返回值类型注释):控制台挂载时从 tab draft 重建
+  // currentFile,不走载入链路。
+  function restoreFile(name: string | null): void {
+    currentFile.value = name
+  }
+
   const nameDialog = {
     open: nameOpen,
     mode: nameMode,
@@ -201,6 +223,7 @@ export function useQueryFiles(opts: QueryFilesOptions): {
     currentFile,
     refreshFiles,
     loadQueryFile,
+    restoreFile,
     saveToFile,
     requestSave,
     requestSaveAs,

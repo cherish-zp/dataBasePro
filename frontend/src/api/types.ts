@@ -1,6 +1,6 @@
 // Types mirroring the Go model package (snake_case JSON fields).
 
-export type ConnectionType = 'kafka' | 'mysql' | 'tidb' | 'es' | 'redis' | 'clickhouse'
+export type ConnectionType = 'kafka' | 'mysql' | 'tidb' | 'es' | 'redis' | 'clickhouse' | 'postgres' | 'hive'
 
 export interface SASLConfig {
   enabled: boolean
@@ -35,8 +35,12 @@ export interface Connection {
   name: string
   type: ConnectionType
   // 按类型多态:kafka → KafkaConfig,redis → RedisConfigShape,
-  // clickhouse → CHConfigShape,mysql/tidb → MysqlConfigShape,es → EsConfigShape
-  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape
+  // clickhouse → CHConfigShape,mysql/tidb → MysqlConfigShape,es → EsConfigShape,
+  // hive → HiveConfigShape
+  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape | PostgresConfigShape | HiveConfigShape
+  // 侧栏连接的排序序号(镜像 model.Connection.SortOrder):数值小者在前,
+  // 新建连接由后端追加末尾。树内拖拽/上移下移经 ReorderConnections 持久化。
+  sort_order: number
   created_at: number
   updated_at: number
 }
@@ -50,7 +54,7 @@ export interface UpdateConnectionRequest {
   id: string
   name: string
   type?: ConnectionType
-  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape
+  config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape | PostgresConfigShape | HiveConfigShape
 }
 
 export interface Partition {
@@ -586,18 +590,49 @@ export interface CHTruncateTableRequest {
   on_cluster?: boolean
 }
 
+// --- ClickHouse 按行删除(控制台结果与表浏览器共用) ---
+
+// 行定位列(与 chCellUpdate.ts 的 CHCellRef 同构:type 为列类型,值可空)。
+export interface CHDeleteRowRef {
+  column: string
+  type: string
+  value: string | null
+}
+
+// where 允许主键/排序键列(类型来自列元数据)。
+export interface CHDeleteRowRequest {
+  connection_id: string
+  database: string
+  table: string
+  where: CHDeleteRowRef[]
+}
+
+// 删除预览:statement 为将执行的 ALTER TABLE ... DELETE 语句全文,
+// matched_rows 为同条件 count() 命中行数(>1 前端警示)。
+export interface CHDeleteRowPreview {
+  statement: string
+  matched_rows: number
+}
+
 export interface CHExecuteRequest {
   connection_id: string
   sql: string
+  // >0 时启用服务端分页:仅返回 offset 起的 limit 行,total_rows 给出总数;
+  // 缺省 = 旧行为(全量返回)。
+  limit?: number
+  offset?: number
 }
 
 // 多语句逐条返回:每条一条结果,失败语句带 error 文本;成功语句带列与行。
+// total_rows 仅在请求带 limit 时返回:-1 表示无法计数(如 SHOW 类语句且
+// 本页已满),undefined 表示未启用分页。
 export interface CHStatementResult {
   sql: string
   duration_ms: number
   error?: string
   columns?: CHColumn[]
   rows?: (string | null)[][]
+  total_rows?: number
 }
 
 // --- MySQL / TiDB(镜像 backend/model/mysql.go) ---
@@ -665,21 +700,133 @@ export interface MysqlExecuteRequest {
   sql: string
   // 非空时后端在该库上执行(等效 USE);空串原样传,由后端按连接默认库处理。
   database?: string
+  // >0 时启用服务端分页:仅返回 offset 起的 limit 行,total_rows 给出总数;
+  // 缺省 = 旧行为(全量返回)。
+  limit?: number
+  offset?: number
 }
 
 // 多语句逐条返回:每条一条结果,失败语句带 error 文本;成功语句带列与行。
+// total_rows 仅在请求带 limit 时返回:-1 表示无法计数(如 SHOW 类语句且
+// 本页已满),undefined 表示未启用分页。source_database/source_table 为单表
+// SELECT 的来源定位(未限定表名按执行库解析),供「删除行」构造 DELETE;
+// 非单表或解析失败时缺省。
 export interface MysqlStatementResult {
   sql: string
   duration_ms: number
   error?: string
   columns?: MysqlColumn[]
   rows?: (string | null)[][]
+  total_rows?: number
+  source_database?: string
+  source_table?: string
 }
 
 export interface MysqlTruncateTableRequest {
   connection_id: string
   database: string
   table: string
+}
+
+// --- MySQL/TiDB 按行删除(控制台结果与表浏览器共用) ---
+
+// where 只允许主键列(后端强制);与单元格编辑的定位形状一致,value 为 null 表示 NULL。
+export interface MysqlDeleteRowRequest {
+  connection_id: string
+  database: string
+  table: string
+  where: MysqlCellValue[]
+}
+
+// 删除预览:statement 为将执行的 DELETE 语句全文,matched_rows 为同条件
+// SELECT COUNT(*) 的命中行数(>1 说明定位键不唯一,前端警示)。
+export interface MysqlDeleteRowPreview {
+  statement: string
+  matched_rows: number
+}
+
+// --- MySQL/TiDB 表级 DDL/元数据(连接树右键:删除表/编辑字段/导出) ---
+
+export interface MysqlDropTableRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+export interface MysqlTableColumnsRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+// 一列的完整定义(镜像 information_schema.columns):default_value 为 null
+// 表示「无默认值/DEFAULT NULL」;extra 承载 auto_increment / on update
+// CURRENT_TIMESTAMP 等原文。
+export interface MysqlTableColumn {
+  name: string
+  // column_type 为完整类型(如 varchar(64) / int unsigned);data_type 为基类型。
+  column_type: string
+  data_type: string
+  nullable: boolean
+  default_value: string | null
+  extra: string
+  comment: string
+  is_primary_key: boolean
+}
+
+export interface MysqlTableColumnsResult {
+  columns: MysqlTableColumn[]
+  // SHOW CREATE TABLE 原文。
+  ddl: string
+}
+
+// 新增/修改列的描述;后端据此拼 ALTER(前端禁止拼 SQL)。default_value 传
+// null 表示 DEFAULT NULL;auto_increment=true 时后端补 KEY 校验由 MySQL 报错。
+export interface MysqlColumnDef {
+  name: string
+  column_type: string
+  nullable: boolean
+  default_value: string | null
+  comment: string
+  auto_increment: boolean
+  // 仅新增列生效:null=追加表尾,非空=AFTER 指定列;修改列忽略。
+  after?: string | null
+}
+
+// add/modify/drop 三组按序执行:先 ADD,再 MODIFY,最后 DROP。
+export interface MysqlAlterTableRequest {
+  connection_id: string
+  database: string
+  table: string
+  add_columns: MysqlColumnDef[]
+  modify_columns: MysqlColumnDef[]
+  drop_columns: string[]
+}
+
+export interface MysqlExportTableRequest {
+  connection_id: string
+  database: string
+  table: string
+  // 是否导出表结构(SHOW CREATE TABLE);缺省 true。
+  include_ddl?: boolean
+  // 是否附带 INSERT 数据;缺省 true(旧调用恒传 true)。
+  include_data?: boolean
+  // INSERT 格式:true = 每行一条;缺省 false = 多行合并(每 100 行一条)。
+  insert_per_row?: boolean
+  // true = 导出内容前添加 DROP TABLE IF EXISTS;缺省 false。
+  drop_table_if_exists?: boolean
+  // true = 省略 AUTO_INCREMENT 计数;缺省 false。
+  strip_auto_increment?: boolean
+  // true = 附带 CREATE DATABASE / USE 建库语句;缺省 false。
+  include_create_db?: boolean
+  // 数据导出行数上限,0 或缺省 = 不限制。
+  data_limit?: number
+}
+
+export interface MysqlExportTableResult {
+  // 建议文件名,如 table_xxx.sql;前端可改后交 saveTextFile。
+  filename: string
+  content: string
 }
 
 // 单元格行内编辑的定位/目标描述(镜像 model.MysqlCellValue):value 为
@@ -769,15 +916,21 @@ export interface EsPageRowsResult {
 export interface EsExecuteRequest {
   connection_id: string
   sql: string
+  // >0 时启用服务端分页:仅返回 offset 起的 limit 行,total_rows 给出总数;
+  // 缺省 = 旧行为(全量返回)。
+  limit?: number
+  offset?: number
 }
 
 // 多语句逐条返回:每条一条结果,失败语句带 error 文本;成功语句带列与行。
+// total_rows 仅在请求带 limit 时返回:-1 表示无法计数,undefined 表示未启用分页。
 export interface EsStatementResult {
   sql: string
   duration_ms: number
   error?: string
   columns?: EsColumn[]
   rows?: (string | null)[][]
+  total_rows?: number
 }
 
 // 单元格行内编辑:按 _id 定位文档并更新单个字段;value 为 null 表示清空该
@@ -963,4 +1116,327 @@ export interface UpdateSavedQueryRequest {
 
 export interface DeleteSavedQueryRequest {
   id: string
+}
+
+// --- PostgreSQL(镜像 backend/model/postgres.go) ---
+
+// PG 连接配置:tls_mode 对应 libpq sslmode 的四档;search_path 为可选的
+// 默认 schema 搜索路径;connect_timeout_ms 为连接超时(毫秒),前端按 5000 预填。
+export interface PostgresConfigShape {
+  host: string
+  port: number
+  username: string
+  password: string
+  database: string
+  tls_mode: 'disable' | 'require' | 'verify-ca' | 'verify-full'
+  search_path?: string
+  connect_timeout_ms?: number
+}
+
+// 树节点与补全用的 relation 信息:与后端 model.PostgresTableInfo 对齐。
+// relation_type/relation_kind 为语义类型,raw_relation_type 保留 pg_class
+// relkind 原码;primary_key 供表浏览器行内编辑定位(视图无主键,缺省省略)。
+export interface PostgresRelationInfo {
+  schema: string
+  relation: string
+  relation_type: 'table' | 'view' | 'materialized_view'
+  relation_kind: 'table' | 'view' | 'materialized_view'
+  raw_relation_type?: string
+  primary_key?: string[]
+  comment?: string
+}
+
+export interface PostgresListSchemasRequest {
+  connection_id: string
+  database: string
+}
+
+export interface PostgresListTablesRequest {
+  connection_id: string
+  database: string
+  schema: string
+  // 是否包含系统 schema(默认 false,后端过滤 pg_catalog/information_schema)。
+  include_system?: boolean
+}
+
+export interface PostgresColumn {
+  name: string
+  type: string
+  // 该列是否属于主键(镜像 information_schema 约束信息),驱动表格编辑与角标。
+  is_in_primary_key: boolean
+}
+
+export interface PostgresPageRowsRequest {
+  connection_id: string
+  database: string
+  schema: string
+  relation: string
+  // 用户输入的原生 WHERE 片段(不带 WHERE 关键字),空省略。
+  where?: string
+  order_by?: string
+  asc?: boolean
+  limit: number
+  offset: number
+}
+
+// rows 单元格为 string 或 null(NULL);primary_key 按定义序(空数组=无主键)。
+export interface PostgresPageRowsResult {
+  columns: PostgresColumn[]
+  rows: (string | null)[][]
+  primary_key: string[]
+  total_rows: number
+}
+
+export interface PostgresExecuteRequest {
+  connection_id: string
+  sql: string
+  database?: string
+  schema?: string
+  // >0 时启用服务端分页:仅返回 offset 起的 limit 行,total_rows 给出总数;
+  // 缺省 = 旧行为(全量返回)。
+  limit?: number
+  offset?: number
+}
+
+// 多语句逐条返回:失败语句带 error;成功语句带列与行,单表 SELECT 附主键。
+// total_rows 仅在请求带 limit 时返回:-1 表示无法计数,undefined 表示未启用分页。
+// source_schema/source_relation/source_kind 为单表 SELECT 的来源定位(未限定
+// schema 按执行时 search_path 解析),供「删除行」构造 DELETE;非单表或解析
+// 失败时缺省。
+export interface PostgresStatementResult {
+  statement: string
+  duration_ms: number
+  error?: string
+  columns?: PostgresColumn[]
+  rows?: (string | null)[][]
+  affected_rows?: number
+  has_rows: boolean
+  primary_key?: string[]
+  total_rows?: number
+  source_schema?: string
+  source_relation?: string
+  source_kind?: 'table' | 'view' | 'materialized_view'
+}
+
+export interface PostgresTruncateTableRequest {
+  connection_id: string
+  database: string
+  schema: string
+  relation: string
+  // relation 类型:后端按类型生成 TRUNCATE/UPDATE 目标(视图不允许 TRUNCATE)。
+  relation_kind: 'table' | 'view' | 'materialized_view'
+}
+
+// --- PostgreSQL 按行删除(控制台结果与表浏览器共用) ---
+
+// where 只允许主键列(后端强制);视图/物化视图后端拒绝删除。
+export interface PostgresDeleteRowRequest {
+  connection_id: string
+  database: string
+  schema: string
+  relation: string
+  relation_kind: 'table' | 'view' | 'materialized_view'
+  where: PostgresCellValue[]
+}
+
+// 删除预览:statement 为将执行的 DELETE 语句全文,matched_rows 为同条件
+// COUNT(*) 命中行数(>1 说明定位键不唯一,前端警示)。
+export interface PostgresDeleteRowPreview {
+  statement: string
+  matched_rows: number
+}
+
+// 单元格行内编辑的定位/写入描述;where 只允许引用主键列(后端强制)。
+export interface PostgresCellValue {
+  column: string
+  value: string | null
+}
+
+export interface PostgresCellUpdateRequest {
+  connection_id: string
+  database: string
+  schema: string
+  relation: string
+  relation_kind: 'table' | 'view' | 'materialized_view'
+  set: PostgresCellValue
+  where: PostgresCellValue[]
+}
+
+export interface PostgresCellUpdatePreview {
+  statement: string
+  matched_rows: number
+}
+
+// --- Hive(HiveServer2;镜像 backend/model/hive.go) ---
+
+// 认证方式:nosasl=无认证;ldap=用户名/密码;kerberos=Kerberos(keytab+principal)。
+export type HiveAuthMode = 'nosasl' | 'ldap' | 'kerberos'
+
+// kerberos 仅 auth_mode='kerberos' 时使用:principal 为服务 principal 或用户
+// principal,keytab 为 keytab 文件路径,krb5_conf 为 krb5.conf 路径(可选)。
+export interface HiveKerberosConfig {
+  principal: string
+  keytab: string
+  krb5_conf?: string
+}
+
+export interface HiveConfigShape {
+  host: string
+  port: number // 默认 10000
+  auth_mode: HiveAuthMode
+  username?: string // nosasl 可省略
+  password?: string // ldap 使用
+  database?: string // 连接默认库(可选,空 = default)
+  kerberos?: HiveKerberosConfig
+}
+
+// 列头:列名 + 类型(如 string/int/bigint;分区列在 partition_columns 单列)。
+export interface HiveColumn {
+  name: string
+  type: string
+  comment?: string
+}
+
+export interface HiveListTablesRequest {
+  connection_id: string
+  database: string
+}
+
+// SHOW TABLES 的条目;表类型(内部/外部/视图)经 hiveTableColumns 探测。
+export interface HiveTableInfo {
+  name: string
+}
+
+export interface HivePageRowsRequest {
+  connection_id: string
+  database: string
+  table: string
+  limit: number
+  offset: number
+}
+
+// rows 单元格为 string 或 null(NULL);Hive 不支持 OFFSET,后端用
+// ROW_NUMBER() OVER() 窗口包装实现翻页;total_rows 为 COUNT(*)。
+export interface HivePageRowsResult {
+  columns: HiveColumn[]
+  rows: (string | null)[][]
+  total_rows: number
+}
+
+export interface HiveExecuteRequest {
+  connection_id: string
+  sql: string
+  // 非空时后端在该库上执行(等效 USE database);空串按连接默认库。
+  database?: string
+  // >0 时启用服务端分页(可包装 SELECT 用 ROW_NUMBER 窗口;SHOW/DESCRIBE 类
+  // 截断回退);缺省全量返回。
+  limit?: number
+  offset?: number
+}
+
+// 多语句逐条返回:失败语句带 error 文本;成功语句带列与行。
+export interface HiveStatementResult {
+  sql: string
+  duration_ms: number
+  error?: string
+  columns?: HiveColumn[]
+  rows?: (string | null)[][]
+  total_rows?: number
+}
+
+// 行定位/写入描述:type 为列类型(ACID 类型化字面量构造用),value null=IS NULL。
+export interface HiveCellRef {
+  column: string
+  type: string
+  value: string | null
+}
+
+// 单元格编辑:仅 transactional(ACID)表支持,后端强制校验。
+export interface HiveCellUpdateRequest {
+  connection_id: string
+  database: string
+  table: string
+  set: HiveCellRef
+  where: HiveCellRef[]
+}
+
+export interface HiveCellUpdatePreview {
+  statement: string
+  matched_rows: number
+}
+
+// 按行删除:仅 transactional 表,定位规则同单元格编辑。
+export interface HiveDeleteRowRequest {
+  connection_id: string
+  database: string
+  table: string
+  where: HiveCellRef[]
+}
+
+export interface HiveDeleteRowPreview {
+  statement: string
+  matched_rows: number
+}
+
+export interface HiveTruncateTableRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+export interface HiveDropTableRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+export interface HiveTableColumnsRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+// 表元数据:columns 为普通列,partition_columns 为分区列;transactional 标记
+// ACID 表(行级更新/删除的前提);primary_key 为主键约束列(Hive 3,可能为空);
+// ddl 为 SHOW CREATE TABLE 原文。
+export interface HiveTableColumnsResult {
+  columns: HiveColumn[]
+  partition_columns: HiveColumn[]
+  transactional: boolean
+  primary_key: string[]
+  ddl: string
+  // 表类型:MANAGED_TABLE/EXTERNAL_TABLE/VIRTUAL_VIEW 等(DESCRIBE FORMATTED)。
+  table_type: string
+}
+
+// 编辑表字段:Hive DDL 与 MySQL 差异大——add_columns 只能追加到表尾(无
+// AFTER);modify_columns 仅注释/类型(类型变更受 Hive 版本兼容性限制,失败
+// 原样透出);drop_columns Hive 3 直接 DROP COLUMN,低版本自动降级
+// REPLACE COLUMNS 重建。
+export interface HiveColumnDef {
+  name: string
+  type: string
+  comment: string
+}
+
+export interface HiveAlterTableRequest {
+  connection_id: string
+  database: string
+  table: string
+  add_columns: HiveColumnDef[]
+  modify_columns: HiveColumnDef[]
+  drop_columns: string[]
+}
+
+export interface HiveExportTableRequest {
+  connection_id: string
+  database: string
+  table: string
+}
+
+// 导出表结构(SHOW CREATE TABLE 原文;Hive 普通表不支持 INSERT VALUES,
+// 数据导出不提供)。
+export interface HiveExportTableResult {
+  filename: string
+  content: string
 }

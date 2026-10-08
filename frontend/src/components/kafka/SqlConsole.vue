@@ -225,6 +225,7 @@ async function run(script?: string): Promise<void> {
     let out = fetched.filter((m) => matchesWhere(m, parsed.where))
     if (parsed.limit != null) out = out.slice(0, parsed.limit)
     results.value = out
+    page.value = 1
     // A successful run validates the query: no longer a pending draft for the
     // current topic. Only the whole-query runs (executed == editor content)
     // clear the draft — a selection run leaves the rest of the editor pending.
@@ -293,6 +294,11 @@ const qf = useQueryFiles({
     sql.value = s
     savedSnapshot.value = s
   },
+  // 同名覆盖保存时 currentFile 不变、下方 watcher 不触发,靠 onSaved 在写盘
+  // 成功后对齐快照,避免刚保存的内容被下一次载入误判为「未保存」。
+  onSaved: () => {
+    savedSnapshot.value = sql.value
+  },
 })
 
 // composable 把 ref 嵌在普通对象里返回,模板不自动解包,这里取到顶层。
@@ -302,6 +308,17 @@ const nameDialogMode = qf.nameDialog.mode
 const overwriteConfirmOpen = qf.overwriteConfirm.open
 const deleteConfirmOpen = qf.deleteConfirm.open
 const deleteConfirmMessage = qf.deleteConfirm.message
+
+// 挂载恢复:本组件随 Layout 的 :key="active.id" 在切 tab 时销毁重建,编辑器
+// 内容与文件关联持久化在所属 tab 的 draft 上;有草稿则在首次渲染前同步恢复
+// (sql + 脏检查快照 + 文件关联,不读盘),优先级高于 topic 预填模板,
+// 标题由下方 renameTab watch 校准。
+const mountedDraft = useTabsStore().openTabs.find((t) => t.id === props.tabId)?.draft
+if (mountedDraft) {
+  sql.value = mountedDraft.sql
+  savedSnapshot.value = mountedDraft.sql
+  qf.restoreFile(mountedDraft.file)
+}
 
 // 保存成功(currentFile 变化,如另存/确认新名)也刷新快照,避免刚保存的
 // 内容被下一次载入误判为脏。
@@ -323,10 +340,15 @@ watch(
   { immediate: true },
 )
 
-// 保存:已关联文件 → 直接覆盖写,此时无弹窗、currentFile 不变,先对齐基线;
-// 未关联 → 由 composable 打开名称输入弹窗,确认后经 currentFile watcher 校准。
+// 编辑器内容或文件关联变化时写回 tab draft,供切 tab 销毁重建后恢复
+// (见上方挂载恢复);draft 随 tab 对象存在,关闭 tab 自然丢弃。
+watch([sql, currentFile], ([v, f]) => {
+  tabs.setTabDraft(props.tabId, { sql: v, file: f })
+})
+
+// 保存:全部路径(同名覆盖/首次关联/另存/覆盖确认)由 composable 在写盘成功
+// 后经 onSaved 校准基线;此处不再预先对齐——保存失败时基线不应变动。
 function saveCurrent(): void {
-  if (currentFile.value) savedSnapshot.value = sql.value
   qf.requestSave()
 }
 
@@ -456,6 +478,35 @@ const resultRows = computed<(string | null)[][]>(() =>
     displayValue(m.value),
   ]),
 )
+
+// --- 前端分页(纯前端控制台,默认 500 条/页) --------------------------------
+// 结果集一次性拉全(过滤后 N 行),翻页只做切片,不重新请求;每次新查询
+// (run 成功)回到第 1 页。原 LIMIT n 语法解析行为不变。
+const PAGE_SIZE = 500
+const page = ref(1)
+
+const lastPage = computed(() => Math.max(1, Math.ceil(resultRows.value.length / PAGE_SIZE)))
+
+// 本页行切片:行数变化(重新执行)后可能越界,钳制到有效范围。
+const pagedRows = computed<(string | null)[][]>(() => {
+  const safePage = Math.min(page.value, lastPage.value)
+  return resultRows.value.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+})
+
+const pagerInfo = computed(
+  () => `共 ${resultRows.value.length.toLocaleString('en-US')} 条 · 第 ${Math.min(page.value, lastPage.value)}/${lastPage.value} 页`,
+)
+
+const canPrev = computed(() => !running.value && page.value > 1)
+const canNext = computed(() => !running.value && page.value < lastPage.value)
+
+function prevPage(): void {
+  if (canPrev.value) page.value -= 1
+}
+
+function nextPage(): void {
+  if (canNext.value) page.value += 1
+}
 </script>
 
 <template>
@@ -585,11 +636,18 @@ const resultRows = computed<(string | null)[][]>(() =>
           :statement="lastStatement"
           :duration-ms="lastDurationMs"
           :columns="resultColumns"
-          :rows="resultRows"
+          :rows="pagedRows"
+          :total-rows="resultRows.length"
           :insert-target="null"
           export-name="query-results"
           :error="runError"
         />
+        <!-- 前端分页条:结果一次性拉全,翻页只切片(每页 500 条)。 -->
+        <div v-if="resultRows.length > 0" class="result-pager" data-test="result-pager">
+          <button type="button" class="pager-btn" data-test="pager-prev" :disabled="!canPrev" @click="prevPage">上一页</button>
+          <span class="pager-info" data-test="pager-info">{{ pagerInfo }}</span>
+          <button type="button" class="pager-btn" data-test="pager-next" :disabled="!canNext" @click="nextPage">下一页</button>
+        </div>
         <div v-else class="empty-card" data-test="results-empty">
           <div class="empty-title">暂无结果</div>
           <div class="empty-hint">⌘Enter 执行 · ⌘Shift+Enter 运行全部</div>
@@ -636,6 +694,17 @@ const resultRows = computed<(string | null)[][]>(() =>
 </template>
 
 <style scoped>
+/* 结果分页条(前端切片):上一页 / 页码信息 / 下一页。 */
+.result-pager { flex: none; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 6px 10px 0; }
+.pager-btn {
+  border: 1px solid var(--border); background: var(--bg-subtle); color: var(--text);
+  border-radius: 7px; padding: 3px 12px; font-size: 12px; cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.pager-btn:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--accent); }
+.pager-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.pager-info { font-size: 12px; color: var(--text-secondary); font-family: var(--mono); }
+
 .sql-console {
   height: 100%;
   display: flex;

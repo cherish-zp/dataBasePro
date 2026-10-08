@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  圣手运河（Canal）应用图标 — 三川汇流
+  系列配方与「圣手码头（Pier）」一致：深色 zinc 圆角底 + emerald 线性描边
+  线稿 + 近白辅助线 + emerald 信号灯圆点。
+  主题：三条源流汇成一股主河道（多数据源汇聚一处），汇流点即信号灯，
+  河道注入近白基线（入海口），下有两道灰色水波纹。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e1e23"/>
+      <stop offset="1" stop-color="#101013"/>
+    </linearGradient>
+    <linearGradient id="river" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6ee7b7"/>
+      <stop offset="1" stop-color="#10b981"/>
+    </linearGradient>
+    <linearGradient id="main" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#10b981"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#34d399" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#34d399" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="dotGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#34d399" stop-opacity="0.38"/>
+      <stop offset="0.55" stop-color="#34d399" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#34d399" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 深色圆角底（系列同款 zinc 渐变） -->
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <circle cx="512" cy="512" r="340" fill="url(#glow)"/>
+
+  <!-- 三条源流 -->
+  <g fill="none" stroke="url(#river)" stroke-width="54" stroke-linecap="round">
+    <path d="M204 172 C330 244 342 352 434 438"/>
+    <path d="M512 196 C505 268 519 340 512 408"/>
+    <path d="M820 172 C694 244 682 352 590 438"/>
+  </g>
+
+  <!-- 汇流后的主河道 -->
+  <path d="M512 590 C526 668 498 712 512 756" fill="none" stroke="url(#main)" stroke-width="62" stroke-linecap="round"/>
+
+  <!-- 汇流点：emerald 信号灯 + 光晕 -->
+  <circle cx="512" cy="512" r="120" fill="url(#dotGlow)"/>
+  <circle cx="512" cy="512" r="27" fill="#34d399"/>
+
+  <!-- 近白基线：入海口水面 -->
+  <line x1="268" y1="828" x2="756" y2="828" stroke="#fafafa" stroke-width="46" stroke-linecap="round"/>
+
+  <!-- 灰色水波纹（系列同款） -->
+  <g fill="none" stroke="#4a4f58" stroke-width="26" stroke-linecap="round">
+    <path d="M300 892 Q342 872 384 892 T468 892 T552 892 T636 892 T720 892"/>
+    <path d="M386 946 Q428 930 470 946 T554 946 T638 946"/>
+  </g>
+</svg>

@@ -117,6 +117,8 @@ export namespace backend {
 	export class CHExecuteRequest {
 	    connection_id: string;
 	    sql: string;
+	    limit?: number;
+	    offset?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new CHExecuteRequest(source);
@@ -126,6 +128,8 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.connection_id = source["connection_id"];
 	        this.sql = source["sql"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
 	    }
 	}
 	export class CHPageRowsRequest {
@@ -475,6 +479,8 @@ export namespace backend {
 	export class EsExecuteRequest {
 	    connection_id: string;
 	    sql: string;
+	    limit?: number;
+	    offset?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new EsExecuteRequest(source);
@@ -484,6 +490,8 @@ export namespace backend {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.connection_id = source["connection_id"];
 	        this.sql = source["sql"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
 	    }
 	}
 	export class EsGetDocRequest {
@@ -618,6 +626,116 @@ export namespace backend {
 	        this.settings_json = source["settings_json"];
 	    }
 	}
+	export class HiveAlterTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    add_columns: service.HiveColumnDef[];
+	    modify_columns: service.HiveColumnDef[];
+	    drop_columns: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveAlterTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.add_columns = this.convertValues(source["add_columns"], service.HiveColumnDef);
+	        this.modify_columns = this.convertValues(source["modify_columns"], service.HiveColumnDef);
+	        this.drop_columns = source["drop_columns"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveExecuteRequest {
+	    connection_id: string;
+	    sql: string;
+	    database?: string;
+	    limit?: number;
+	    offset?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveExecuteRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.sql = source["sql"];
+	        this.database = source["database"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class HivePageRowsRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    limit: number;
+	    offset: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HivePageRowsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class HiveTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	    }
+	}
+	export class HiveTablesRequest {
+	    connection_id: string;
+	    database: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveTablesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	    }
+	}
 	export class ListSavedQueriesRequest {
 	    console_type?: string;
 	    connection_id?: string;
@@ -632,10 +750,68 @@ export namespace backend {
 	        this.connection_id = source["connection_id"];
 	    }
 	}
+	export class MysqlAlterTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    add_columns: service.MysqlColumnDef[];
+	    modify_columns: service.MysqlColumnDef[];
+	    drop_columns: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlAlterTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.add_columns = this.convertValues(source["add_columns"], service.MysqlColumnDef);
+	        this.modify_columns = this.convertValues(source["modify_columns"], service.MysqlColumnDef);
+	        this.drop_columns = source["drop_columns"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MysqlDropTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlDropTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	    }
+	}
 	export class MysqlExecuteRequest {
 	    connection_id: string;
 	    database?: string;
 	    sql: string;
+	    limit?: number;
+	    offset?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new MysqlExecuteRequest(source);
@@ -646,6 +822,38 @@ export namespace backend {
 	        this.connection_id = source["connection_id"];
 	        this.database = source["database"];
 	        this.sql = source["sql"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class MysqlExportTableRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    include_data: boolean;
+	    data_limit?: number;
+	    include_ddl: boolean;
+	    insert_per_row: boolean;
+	    drop_table_if_exists: boolean;
+	    strip_auto_increment: boolean;
+	    include_create_db: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlExportTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.include_data = source["include_data"];
+	        this.data_limit = source["data_limit"];
+	        this.include_ddl = source["include_ddl"];
+	        this.insert_per_row = source["insert_per_row"];
+	        this.drop_table_if_exists = source["drop_table_if_exists"];
+	        this.strip_auto_increment = source["strip_auto_increment"];
+	        this.include_create_db = source["include_create_db"];
 	    }
 	}
 	export class MysqlPageRowsRequest {
@@ -672,6 +880,22 @@ export namespace backend {
 	        this.asc = source["asc"];
 	        this.limit = source["limit"];
 	        this.offset = source["offset"];
+	    }
+	}
+	export class MysqlTableColumnsRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlTableColumnsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
 	    }
 	}
 	export class MysqlTablesRequest {
@@ -704,6 +928,108 @@ export namespace backend {
 	        this.table = source["table"];
 	    }
 	}
+	export class PostgresExecuteRequest {
+	    connection_id: string;
+	    database?: string;
+	    schema?: string;
+	    sql: string;
+	    limit?: number;
+	    offset?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresExecuteRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.sql = source["sql"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class PostgresPageRowsRequest {
+	    connection_id: string;
+	    database: string;
+	    schema: string;
+	    relation: string;
+	    relation_kind?: string;
+	    where?: string;
+	    order_by?: string;
+	    asc: boolean;
+	    limit: number;
+	    offset: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresPageRowsRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.relation = source["relation"];
+	        this.relation_kind = source["relation_kind"];
+	        this.where = source["where"];
+	        this.order_by = source["order_by"];
+	        this.asc = source["asc"];
+	        this.limit = source["limit"];
+	        this.offset = source["offset"];
+	    }
+	}
+	export class PostgresSchemasRequest {
+	    connection_id: string;
+	    database: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresSchemasRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	    }
+	}
+	export class PostgresTablesRequest {
+	    connection_id: string;
+	    database: string;
+	    schema: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresTablesRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	    }
+	}
+	export class PostgresTruncateTableRequest {
+	    connection_id: string;
+	    database: string;
+	    schema: string;
+	    relation: string;
+	    relation_kind: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresTruncateTableRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.relation = source["relation"];
+	        this.relation_kind = source["relation_kind"];
+	    }
+	}
 	export class ProduceRequest {
 	    connection_id: string;
 	    topic: string;
@@ -728,6 +1054,7 @@ export namespace backend {
 	    content: string;
 	    connection_id: string;
 	    database: string;
+	    schema: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new QueryFileContent(source);
@@ -738,6 +1065,7 @@ export namespace backend {
 	        this.content = source["content"];
 	        this.connection_id = source["connection_id"];
 	        this.database = source["database"];
+	        this.schema = source["schema"];
 	    }
 	}
 	export class QueryFileDeleteRequest {
@@ -785,6 +1113,7 @@ export namespace backend {
 	    name: string;
 	    content: string;
 	    connection_id?: string;
+	    schema?: string;
 	    database?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -797,6 +1126,7 @@ export namespace backend {
 	        this.name = source["name"];
 	        this.content = source["content"];
 	        this.connection_id = source["connection_id"];
+	        this.schema = source["schema"];
 	        this.database = source["database"];
 	    }
 	}
@@ -1380,6 +1710,7 @@ export namespace model {
 	    error?: string;
 	    columns?: CHColumn[];
 	    rows?: string[][];
+	    total_rows?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new CHStatementResult(source);
@@ -1392,6 +1723,7 @@ export namespace model {
 	        this.error = source["error"];
 	        this.columns = this.convertValues(source["columns"], CHColumn);
 	        this.rows = source["rows"];
+	        this.total_rows = source["total_rows"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1495,6 +1827,7 @@ export namespace model {
 	    config: number[];
 	    created_at: number;
 	    updated_at: number;
+	    sort_order: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Connection(source);
@@ -1508,6 +1841,7 @@ export namespace model {
 	        this.config = source["config"];
 	        this.created_at = source["created_at"];
 	        this.updated_at = source["updated_at"];
+	        this.sort_order = source["sort_order"];
 	    }
 	}
 	export class ConsumerGroup {
@@ -1745,6 +2079,7 @@ export namespace model {
 	    error?: string;
 	    columns?: EsColumn[];
 	    rows?: string[][];
+	    total_rows?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new EsStatementResult(source);
@@ -1757,6 +2092,7 @@ export namespace model {
 	        this.error = source["error"];
 	        this.columns = this.convertValues(source["columns"], EsColumn);
 	        this.rows = source["rows"];
+	        this.total_rows = source["total_rows"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1884,6 +2220,325 @@ export namespace model {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.key = source["key"];
 	        this.value = source["value"];
+	    }
+	}
+	export class HiveCellRef {
+	    column: string;
+	    type: string;
+	    value?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveCellRef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.column = source["column"];
+	        this.type = source["type"];
+	        this.value = source["value"];
+	    }
+	}
+	export class HiveCellUpdatePreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveCellUpdatePreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class HiveCellUpdateRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    set: HiveCellRef;
+	    where: HiveCellRef[];
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveCellUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.set = this.convertValues(source["set"], HiveCellRef);
+	        this.where = this.convertValues(source["where"], HiveCellRef);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveColumn {
+	    name: string;
+	    type: string;
+	    comment?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveColumn(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.comment = source["comment"];
+	    }
+	}
+	export class HiveKerberosConfig {
+	    principal: string;
+	    keytab: string;
+	    krb5_conf?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveKerberosConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.principal = source["principal"];
+	        this.keytab = source["keytab"];
+	        this.krb5_conf = source["krb5_conf"];
+	    }
+	}
+	export class HiveConfig {
+	    host: string;
+	    port: number;
+	    auth_mode: string;
+	    username?: string;
+	    password?: string;
+	    database?: string;
+	    kerberos?: HiveKerberosConfig;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.auth_mode = source["auth_mode"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.database = source["database"];
+	        this.kerberos = this.convertValues(source["kerberos"], HiveKerberosConfig);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveDeleteRowPreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveDeleteRowPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class HiveDeleteRowRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    where: HiveCellRef[];
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveDeleteRowRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.where = this.convertValues(source["where"], HiveCellRef);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class HivePageRowsResult {
+	    columns: HiveColumn[];
+	    rows: string[][];
+	    total_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HivePageRowsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = this.convertValues(source["columns"], HiveColumn);
+	        this.rows = source["rows"];
+	        this.total_rows = source["total_rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveStatementResult {
+	    sql: string;
+	    duration_ms: number;
+	    error?: string;
+	    columns?: HiveColumn[];
+	    rows?: string[][];
+	    total_rows?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveStatementResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sql = source["sql"];
+	        this.duration_ms = source["duration_ms"];
+	        this.error = source["error"];
+	        this.columns = this.convertValues(source["columns"], HiveColumn);
+	        this.rows = source["rows"];
+	        this.total_rows = source["total_rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveTableColumnsResult {
+	    columns: HiveColumn[];
+	    partition_columns: HiveColumn[];
+	    transactional: boolean;
+	    primary_key: string[];
+	    ddl: string;
+	    table_type: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveTableColumnsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = this.convertValues(source["columns"], HiveColumn);
+	        this.partition_columns = this.convertValues(source["partition_columns"], HiveColumn);
+	        this.transactional = source["transactional"];
+	        this.primary_key = source["primary_key"];
+	        this.ddl = source["ddl"];
+	        this.table_type = source["table_type"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveTableInfo {
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveTableInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
 	    }
 	}
 	export class TLSConfig {
@@ -2156,6 +2811,9 @@ export namespace model {
 	    columns?: MysqlColumn[];
 	    rows?: string[][];
 	    primary_key?: string[];
+	    source_database?: string;
+	    source_table?: string;
+	    total_rows?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new MysqlStatementResult(source);
@@ -2169,6 +2827,9 @@ export namespace model {
 	        this.columns = this.convertValues(source["columns"], MysqlColumn);
 	        this.rows = source["rows"];
 	        this.primary_key = source["primary_key"];
+	        this.source_database = source["source_database"];
+	        this.source_table = source["source_table"];
+	        this.total_rows = source["total_rows"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2247,6 +2908,231 @@ export namespace model {
 	        this.member_id = source["member_id"];
 	        this.client_id = source["client_id"];
 	        this.client_host = source["client_host"];
+	    }
+	}
+	export class PostgresCellUpdatePreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresCellUpdatePreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class PostgresCellValue {
+	    column: string;
+	    value?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresCellValue(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.column = source["column"];
+	        this.value = source["value"];
+	    }
+	}
+	export class PostgresCellUpdateRequest {
+	    connection_id: string;
+	    database: string;
+	    schema: string;
+	    relation: string;
+	    relation_kind: string;
+	    set: PostgresCellValue;
+	    where: PostgresCellValue[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresCellUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.relation = source["relation"];
+	        this.relation_kind = source["relation_kind"];
+	        this.set = this.convertValues(source["set"], PostgresCellValue);
+	        this.where = this.convertValues(source["where"], PostgresCellValue);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class PostgresColumn {
+	    name: string;
+	    type: string;
+	    is_in_primary_key: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresColumn(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.is_in_primary_key = source["is_in_primary_key"];
+	    }
+	}
+	export class PostgresConfig {
+	    host: string;
+	    port: number;
+	    username: string;
+	    password?: string;
+	    database: string;
+	    tls_mode: string;
+	    search_path: string;
+	    connect_timeout_ms: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.database = source["database"];
+	        this.tls_mode = source["tls_mode"];
+	        this.search_path = source["search_path"];
+	        this.connect_timeout_ms = source["connect_timeout_ms"];
+	    }
+	}
+	export class PostgresPageRowsResult {
+	    columns: PostgresColumn[];
+	    rows: string[][];
+	    primary_key: string[];
+	    total_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresPageRowsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = this.convertValues(source["columns"], PostgresColumn);
+	        this.rows = source["rows"];
+	        this.primary_key = source["primary_key"];
+	        this.total_rows = source["total_rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PostgresStatementResult {
+	    statement: string;
+	    has_rows: boolean;
+	    duration_ms: number;
+	    error?: string;
+	    columns?: PostgresColumn[];
+	    rows?: string[][];
+	    primary_key?: string[];
+	    affected_rows: number;
+	    source_schema?: string;
+	    source_relation?: string;
+	    source_kind?: string;
+	    total_rows?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresStatementResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.has_rows = source["has_rows"];
+	        this.duration_ms = source["duration_ms"];
+	        this.error = source["error"];
+	        this.columns = this.convertValues(source["columns"], PostgresColumn);
+	        this.rows = source["rows"];
+	        this.primary_key = source["primary_key"];
+	        this.affected_rows = source["affected_rows"];
+	        this.source_schema = source["source_schema"];
+	        this.source_relation = source["source_relation"];
+	        this.source_kind = source["source_kind"];
+	        this.total_rows = source["total_rows"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PostgresTableInfo {
+	    relation: string;
+	    schema: string;
+	    relation_type: string;
+	    relation_kind: string;
+	    raw_relation_type?: string;
+	    primary_key: string[];
+	    comment?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresTableInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.relation = source["relation"];
+	        this.schema = source["schema"];
+	        this.relation_type = source["relation_type"];
+	        this.relation_kind = source["relation_kind"];
+	        this.raw_relation_type = source["raw_relation_type"];
+	        this.primary_key = source["primary_key"];
+	        this.comment = source["comment"];
 	    }
 	}
 	export class ProduceResult {
@@ -2535,6 +3421,291 @@ export namespace model {
 	        this.name = source["name"];
 	        this.partitions = this.convertValues(source["partitions"], Partition);
 	        this.configs = this.convertValues(source["configs"], TopicConfigEntry);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace service {
+	
+	export class CHDeleteRowPreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new CHDeleteRowPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class CHDeleteRowRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    where: model.CHCellValue[];
+	
+	    static createFrom(source: any = {}) {
+	        return new CHDeleteRowRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.where = this.convertValues(source["where"], model.CHCellValue);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class HiveColumnDef {
+	    name: string;
+	    type: string;
+	    comment: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveColumnDef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.comment = source["comment"];
+	    }
+	}
+	export class HiveExportTableResult {
+	    filename: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new HiveExportTableResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filename = source["filename"];
+	        this.content = source["content"];
+	    }
+	}
+	export class MysqlColumnDef {
+	    name: string;
+	    column_type: string;
+	    nullable: boolean;
+	    default_value?: string;
+	    comment: string;
+	    auto_increment: boolean;
+	    after?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlColumnDef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.column_type = source["column_type"];
+	        this.nullable = source["nullable"];
+	        this.default_value = source["default_value"];
+	        this.comment = source["comment"];
+	        this.auto_increment = source["auto_increment"];
+	        this.after = source["after"];
+	    }
+	}
+	export class MysqlDeleteRowPreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlDeleteRowPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class MysqlDeleteRowRequest {
+	    connection_id: string;
+	    database: string;
+	    table: string;
+	    where: model.MysqlCellValue[];
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlDeleteRowRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.table = source["table"];
+	        this.where = this.convertValues(source["where"], model.MysqlCellValue);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class MysqlExportTableResult {
+	    filename: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlExportTableResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.filename = source["filename"];
+	        this.content = source["content"];
+	    }
+	}
+	export class MysqlTableColumn {
+	    name: string;
+	    column_type: string;
+	    data_type: string;
+	    nullable: boolean;
+	    default_value?: string;
+	    extra: string;
+	    comment: string;
+	    is_primary_key: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlTableColumn(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.column_type = source["column_type"];
+	        this.data_type = source["data_type"];
+	        this.nullable = source["nullable"];
+	        this.default_value = source["default_value"];
+	        this.extra = source["extra"];
+	        this.comment = source["comment"];
+	        this.is_primary_key = source["is_primary_key"];
+	    }
+	}
+	export class MysqlTableColumnsResult {
+	    columns: MysqlTableColumn[];
+	    ddl: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MysqlTableColumnsResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.columns = this.convertValues(source["columns"], MysqlTableColumn);
+	        this.ddl = source["ddl"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class PostgresDeleteRowPreview {
+	    statement: string;
+	    matched_rows: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresDeleteRowPreview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.statement = source["statement"];
+	        this.matched_rows = source["matched_rows"];
+	    }
+	}
+	export class PostgresDeleteRowRequest {
+	    connection_id: string;
+	    database: string;
+	    schema: string;
+	    relation: string;
+	    relation_kind: string;
+	    where: model.PostgresCellValue[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PostgresDeleteRowRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connection_id = source["connection_id"];
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.relation = source["relation"];
+	        this.relation_kind = source["relation_kind"];
+	        this.where = this.convertValues(source["where"], model.PostgresCellValue);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

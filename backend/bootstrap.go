@@ -3,10 +3,10 @@ package backend
 import (
 	"context"
 
-	"dataBasePro/backend/internal/kafka"
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
-	"dataBasePro/backend/internal/store"
+	"sheng-shou-yun-he/backend/internal/kafka"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/store"
 )
 
 // NewDefaultApp wires the store, service and app together using the default
@@ -31,6 +31,6 @@ func NewKafkaConnection(name string, bootstrapServers []string) *model.Connectio
 	return &model.Connection{
 		Name:   name,
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: bootstrapServers}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: bootstrapServers}),
 	}
 }

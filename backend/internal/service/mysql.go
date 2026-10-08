@@ -6,13 +6,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // mysqlDialTimeout bounds the initial connect/ping of a new client.
@@ -400,22 +401,34 @@ type mysqlExecutor interface {
 // (statements that return a result set) or an error text. A failing statement
 // records its error and stops the run; the results gathered so far are
 // returned. 单表 SELECT 的结果额外附带 primary_key(查询失败静默置空)。
-func (c *MysqlClient) Execute(ctx context.Context, database, sqlText string) ([]model.MysqlStatementResult, error) {
+// limit>0 启用服务端分页:SELECT/WITH 语句被子查询包装为仅返回 offset 起的
+// limit 行并附 COUNT 总数;SHOW/DESC/EXPLAIN 等不能包装的返回行语句只消费
+// offset+limit 行(取满 limit 行 total_rows=-1,否则 offset+实际行数)。
+func (c *MysqlClient) Execute(ctx context.Context, database, sqlText string, limit, offset int) ([]model.MysqlStatementResult, error) {
+	// 分页参数钳制:limit<0 视为未启用(旧行为),offset<0 视为 0。
+	if limit < 0 {
+		limit = 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	statements := SplitSQLStatements(sqlText)
 	if len(statements) == 0 {
 		return nil, errors.New("没有可执行的 SQL 语句")
 	}
 	if db := strings.TrimSpace(database); db != "" {
-		return c.executeOnPinnedDatabase(ctx, db, statements)
+		return c.executeOnPinnedDatabase(ctx, db, statements, limit, offset)
 	}
-	return c.runMysqlStatements(ctx, c.db, c.defaultDB, statements)
+	return c.runMysqlStatements(ctx, c.db, c.defaultDB, statements, limit, offset, nil)
 }
 
 // executeOnPinnedDatabase grabs one dedicated connection, pins it to the
 // database with a backtick-escaped USE, and runs every statement there so the
 // selected schema persists across the script. The connection goes back to the
 // pool afterwards. USE 失败即中止(库不存在等),不执行任何语句。
-func (c *MysqlClient) executeOnPinnedDatabase(ctx context.Context, database string, statements []string) ([]model.MysqlStatementResult, error) {
+// 语句目标自带显式库名时(如 insert into other_db.t ...),逐语句切到目标库:
+// 未限定表名跟随目标库解析,不再受选中库影响(跨库初始化脚本的常见诉求)。
+func (c *MysqlClient) executeOnPinnedDatabase(ctx context.Context, database string, statements []string, limit, offset int) ([]model.MysqlStatementResult, error) {
 	conn, err := c.db.Conn(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("acquire connection: %w", err)
@@ -424,7 +437,7 @@ func (c *MysqlClient) executeOnPinnedDatabase(ctx context.Context, database stri
 	if _, err := conn.ExecContext(ctx, buildMysqlUseDatabase(database)); err != nil {
 		return nil, fmt.Errorf("use database: %w", err)
 	}
-	return c.runMysqlStatements(ctx, conn, database, statements)
+	return c.runMysqlStatements(ctx, conn, database, statements, limit, offset, mysqlStatementTargetSchema)
 }
 
 // buildMysqlUseDatabase renders the USE statement: the identifier is
@@ -437,20 +450,48 @@ func buildMysqlUseDatabase(database string) string {
 // per-statement results; the first failure records its error and stops the
 // run with the results gathered so far. defaultSchema 是未限定表名解析到的
 // 库(USE 过的专用连接为该库,连接池路径为连接默认库),供单表 SELECT 的
-// 主键元数据查询使用。
-func (c *MysqlClient) runMysqlStatements(ctx context.Context, exec mysqlExecutor, defaultSchema string, statements []string) ([]model.MysqlStatementResult, error) {
+// 主键元数据查询使用。resolveSchema 非空时(专用连接路径)逐语句解析目标
+// 显式库名,与当前库不同则在执行前 USE 切换,并同步主键解析的默认库;为 nil
+// 时(连接池路径)保持 defaultSchema 不变。limit>0 启用服务端分页(包装查询
+// + COUNT 计数,或 SHOW 类语句的客户端截断回退);limit<=0 保持全量旧行为。
+func (c *MysqlClient) runMysqlStatements(ctx context.Context, exec mysqlExecutor, defaultSchema string, statements []string, limit, offset int, resolveSchema func(string) string) ([]model.MysqlStatementResult, error) {
 	out := make([]model.MysqlStatementResult, 0, len(statements))
+	curSchema := defaultSchema
 	for _, stmt := range statements {
 		res := model.MysqlStatementResult{SQL: stmt}
 		start := time.Now()
+		if resolveSchema != nil {
+			// 语句目标带显式库名且与当前库不同:先切库再执行(USE 失败按该
+			// 语句失败处理,中止后续语句)。
+			if s := resolveSchema(stmt); s != "" && !strings.EqualFold(s, curSchema) {
+				if _, err := exec.ExecContext(ctx, buildMysqlUseDatabase(s)); err != nil {
+					res.DurationMs = msSince(start)
+					res.Error = "use database: " + err.Error()
+					return append(out, res), nil
+				}
+				curSchema = s
+			}
+		}
 		if mysqlStatementReturnsRows(stmt) {
-			rows, err := exec.QueryContext(ctx, stmt)
+			// 分页决策:可包装语句改写为子查询 LIMIT/OFFSET;SHOW/DESC/
+			// EXPLAIN 等按原始语句执行但只消费 offset+limit 行。res.SQL 始终
+			// 保持用户原文(单表 SELECT 的主键解析与前端展示都基于原语句)。
+			query, collectMax, wrapped := stmt, 0, false
+			if limit > 0 {
+				if sqlStatementWrappable(stmt) {
+					query = wrapMysqlPagedQuery(stmt, limit, offset)
+					wrapped = true
+				} else {
+					collectMax = offset + limit
+				}
+			}
+			rows, err := exec.QueryContext(ctx, query)
 			if err != nil {
 				res.DurationMs = msSince(start)
 				res.Error = err.Error()
 				return append(out, res), nil
 			}
-			cols, dataRows, err := collectMysqlRows(rows)
+			cols, dataRows, err := collectMysqlRowsN(rows, collectMax)
 			closeErr := rows.Close()
 			if err != nil {
 				res.DurationMs = msSince(start)
@@ -461,6 +502,16 @@ func (c *MysqlClient) runMysqlStatements(ctx context.Context, exec mysqlExecutor
 				res.DurationMs = msSince(start)
 				res.Error = closeErr.Error()
 				return append(out, res), nil
+			}
+			if limit > 0 {
+				if wrapped {
+					// 计数失败不影响语句结果:total_rows 保持不下发(nil)。
+					res.TotalRows = countMysqlWrapped(ctx, exec, stmt)
+				} else {
+					page, full := slicePageRows(dataRows, limit, offset)
+					dataRows = page
+					res.TotalRows = fallbackTotalRows(full, offset, len(page))
+				}
 			}
 			res.Columns, res.Rows = cols, dataRows
 		} else {
@@ -473,33 +524,74 @@ func (c *MysqlClient) runMysqlStatements(ctx context.Context, exec mysqlExecutor
 		res.DurationMs = msSince(start)
 		// 单表 SELECT 附带主键列(information_schema,与 PageRows 同源),
 		// 供前端「复制为 INSERT」可选剥离主键;任何失败静默置空,不计入
-		// 语句耗时,不影响语句结果。
-		res.PrimaryKey = c.mysqlStatementPrimaryKey(ctx, exec, stmt, defaultSchema)
+		// 语句耗时,不影响语句结果。主键解析的默认库用当前生效库
+		// (目标库名切换后跟随目标库)。来源库/表一并透出(删除行定位)。
+		res.PrimaryKey, res.SourceDatabase, res.SourceTable = c.mysqlStatementPrimaryKey(ctx, exec, stmt, curSchema)
 		out = append(out, res)
 	}
 	return out, nil
 }
 
+// wrapMysqlPagedQuery renders the paged form of a wrappable statement: the
+// original text (trailing semicolon stripped) becomes a derived table, and the
+// page window is appended as literal LIMIT/OFFSET (integers, injection-free).
+// 语句顶层以 ORDER BY 结尾且其后无 LIMIT/FOR 等尾巴时,把 ORDER BY 原样外提
+// 到包装外层(派生表不保证保留子查询内的 ORDER BY,跨页顺序可能不稳)。
+func wrapMysqlPagedQuery(stmt string, limit, offset int) string {
+	body := stripTrailingSemicolon(stmt)
+	tail := ""
+	if head, order, ok := splitTrailingTopLevelOrderBy(body); ok {
+		body, tail = head, " "+order
+	}
+	return "SELECT * FROM (" + body + ") _dbp" + tail + " LIMIT " +
+		strconv.Itoa(limit) + " OFFSET " + strconv.Itoa(offset)
+}
+
+// countMysqlWrapped runs `SELECT COUNT(*) FROM (<stmt>) _dbp` on the same
+// connection as the paged query and returns the exact total; a failing count
+// returns nil (total_rows is then omitted rather than guessed).
+func countMysqlWrapped(ctx context.Context, exec mysqlExecutor, stmt string) *int64 {
+	rows, err := exec.QueryContext(ctx,
+		"SELECT COUNT(*) FROM ("+stripTrailingSemicolon(stmt)+") _dbp")
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil
+	}
+	var total int64
+	if err := rows.Scan(&total); err != nil {
+		return nil
+	}
+	return &total
+}
+
 // mysqlStatementPrimaryKey 在语句是单表 SELECT 时查它的主键列
-// (information_schema.columns,与 PageRows 的 primary_key 同源同序)。
-// 未限定表名按 defaultSchema 解析;解析失败、无库可解析、查询报错、无主键
-// 一律返回 nil,绝不影响语句本身的执行结果。
-func (c *MysqlClient) mysqlStatementPrimaryKey(ctx context.Context, exec mysqlExecutor, stmt, defaultSchema string) []string {
+// (information_schema.columns,与 PageRows 的 primary_key 同源同序),并
+// 一并返回解析到的来源库/表,供前端「删除行」定位(未限定表名按
+// defaultSchema 解析)。来源在单表解析与库名解析成功后即返回(与主键有无
+// 无关,前端据此区分「无主键」与「非单表」两种禁用原因);主键查询报错、
+// 无库可解析、非单表一律返回零值,绝不影响语句本身的执行结果。
+func (c *MysqlClient) mysqlStatementPrimaryKey(ctx context.Context, exec mysqlExecutor, stmt, defaultSchema string) (pk []string, sourceDatabase, sourceTable string) {
 	schema, table, ok := singleTableName(stmt)
 	if !ok {
-		return nil
+		return nil, "", ""
 	}
 	if schema == "" {
 		schema = defaultSchema
 	}
 	if strings.TrimSpace(schema) == "" {
-		return nil // 未限定且连接无默认库,information_schema 无从查起
+		return nil, "", "" // 未限定且连接无默认库,information_schema 无从查起
 	}
-	_, pk, err := c.tableColumnsWithPK(ctx, exec, schema, table)
-	if err != nil || len(pk) == 0 {
-		return nil
+	_, pkCols, err := c.tableColumnsWithPK(ctx, exec, schema, table)
+	if err != nil {
+		return nil, "", "" // 表可能已不存在等;来源与主键都不下发
 	}
-	return pk
+	if len(pkCols) == 0 {
+		return nil, schema, table // 单表来源已知,但表无主键
+	}
+	return pkCols, schema, table
 }
 
 // singleTableName 判断一条 SQL 是否为「单表 SELECT」:首关键字 SELECT,
@@ -630,10 +722,66 @@ func mysqlStatementReturnsRows(stmt string) bool {
 	return false
 }
 
+// mysqlDatetimeLayout 是 DATETIME/TIMESTAMP 单元格的显示布局:本地墙钟、
+// 空格分隔、不带时区后缀。
+const mysqlDatetimeLayout = "2006-01-02 15:04:05"
+
+// mysqlDateLayout 是 DATE 单元格的显示布局:只保留日期部分。
+const mysqlDateLayout = "2006-01-02"
+
+// formatMysqlCell renders one MySQL cell for the wire: time-family values are
+// shown as local wall-clock text (DATETIME/TIMESTAMP "2006-01-02 15:04:05",
+// DATE date-only) instead of RFC3339 with a timezone suffix; BIT values arrive
+// as raw bit bytes and render as decimal; everything else delegates to
+// FormatCHCell unchanged.
+func formatMysqlCell(v any, colType string, maxBytes int) *string {
+	if t, ok := v.(time.Time); ok {
+		layout := mysqlDatetimeLayout
+		if strings.EqualFold(colType, "DATE") {
+			layout = mysqlDateLayout
+		}
+		s := t.Format(layout)
+		if maxBytes > 0 && len(s) > maxBytes {
+			s = s[:maxBytes] + CHCellTruncatedSuffix
+		}
+		return &s
+	}
+	if strings.HasPrefix(strings.ToUpper(colType), "BIT") {
+		if b, ok := v.([]byte); ok {
+			s := formatMysqlBit(b)
+			return &s
+		}
+	}
+	return FormatCHCell(v, maxBytes)
+}
+
+// formatMysqlBit renders the driver's raw bit bytes as decimal. MySQL BIT 是
+// 大端位串且最长 64 位,按字节累计即可;超长(理论不可达)兜底十六进制。
+func formatMysqlBit(b []byte) string {
+	if len(b) == 0 {
+		return "0"
+	}
+	if len(b) > 8 {
+		return fmt.Sprintf("%x", b)
+	}
+	var n uint64
+	for _, x := range b {
+		n = n<<8 | uint64(x)
+	}
+	return strconv.FormatUint(n, 10)
+}
+
 // collectMysqlRows drains a result set into wire-shaped columns and
 // pre-formatted string cells (nil = NULL). 列名来自 driver Rows.Columns(),
 // 类型名可能为空(驱动未报告时保持空串)。
 func collectMysqlRows(rows *sql.Rows) ([]model.MysqlColumn, [][]*string, error) {
+	return collectMysqlRowsN(rows, 0)
+}
+
+// collectMysqlRowsN 是 collectMysqlRows 的限量变体:至多消费 max 行(max<=0
+// 表示不限制),供 SHOW/DESC/EXPLAIN 等不能包装的语句做 offset+limit 截断,
+// 避免为取一页而拉全量结果集。
+func collectMysqlRowsN(rows *sql.Rows, max int) ([]model.MysqlColumn, [][]*string, error) {
 	types, err := rows.ColumnTypes()
 	if err != nil {
 		return nil, nil, fmt.Errorf("column types: %w", err)
@@ -648,6 +796,9 @@ func collectMysqlRows(rows *sql.Rows) ([]model.MysqlColumn, [][]*string, error) 
 	pointers := make([]any, width)
 	var out [][]*string
 	for rows.Next() {
+		if max > 0 && len(out) >= max {
+			break
+		}
 		for i := range values {
 			pointers[i] = &values[i]
 		}
@@ -656,7 +807,7 @@ func collectMysqlRows(rows *sql.Rows) ([]model.MysqlColumn, [][]*string, error) 
 		}
 		row := make([]*string, width)
 		for i, v := range values {
-			row[i] = FormatCHCell(v, CHCellMaxBytes)
+			row[i] = formatMysqlCell(v, cols[i].Type, CHCellMaxBytes)
 		}
 		out = append(out, row)
 	}
@@ -717,21 +868,22 @@ func (c *MysqlClient) UpdateCell(ctx context.Context, database, table string, se
 	return nil
 }
 
-// validateCellEdit enforces the WHERE contract for cell edits: the table must
-// have a primary key (information_schema, same source as PageRows metadata)
-// and every where condition must reference a primary key column.
+// validateCellEdit enforces the WHERE contract for cell edits: rows must be
+// located either by primary key (information_schema, same source as PageRows
+// metadata) or — for primary-key-less tables — by the table's full column set.
 func (c *MysqlClient) validateCellEdit(ctx context.Context, database, table string, where []model.MysqlCellValue) error {
 	if strings.TrimSpace(table) == "" {
 		return errors.New("表名不能为空")
 	}
-	_, pk, err := c.tableColumnsWithPK(ctx, c.db, database, table)
+	cols, pk, err := c.tableColumnsWithPK(ctx, c.db, database, table)
 	if err != nil {
 		return err
 	}
-	if err := requireMysqlPrimaryKey(pk); err != nil {
-		return err
+	allColumns := make([]string, len(cols))
+	for i, col := range cols {
+		allColumns[i] = col.Name
 	}
-	return validateMysqlEditWhere(where, pk)
+	return validateMysqlEditWhere(where, pk, allColumns)
 }
 
 // requireMysqlPrimaryKey rejects edits on primary-key-less tables.
@@ -742,25 +894,60 @@ func requireMysqlPrimaryKey(pk []string) error {
 	return nil
 }
 
-// validateMysqlEditWhere verifies the WHERE conditions: non-empty, every
-// condition column named and every column part of the primary key.
-func validateMysqlEditWhere(where []model.MysqlCellValue, pk []string) error {
+// validateMysqlEditWhere verifies the WHERE conditions locate rows in one of
+// two modes: primary-key mode (every condition column is part of the primary
+// key, the precise default) or whole-row mode (the condition column set equals
+// the table's full column set, order-insensitive — the fallback for
+// primary-key-less tables). 其它混合/缺失列组合一律拒绝,避免误伤面过大的
+// UPDATE;集合判断基于 information_schema 的表定义列序与列名。
+func validateMysqlEditWhere(where []model.MysqlCellValue, pk, allColumns []string) error {
 	if len(where) == 0 {
 		return errors.New("where 条件不能为空:已拒绝无定位的全表 UPDATE")
 	}
-	pkSet := make(map[string]bool, len(pk))
-	for _, name := range pk {
-		pkSet[name] = true
-	}
+	whereCols := make([]string, 0, len(where))
+	whereSet := make(map[string]bool, len(where))
 	for _, cond := range where {
 		if strings.TrimSpace(cond.Column) == "" {
 			return errors.New("where 条件列名不能为空")
 		}
-		if !pkSet[cond.Column] {
-			return fmt.Errorf("where 条件列 %q 不是主键列,仅允许按主键定位", cond.Column)
+		whereCols = append(whereCols, cond.Column)
+		whereSet[cond.Column] = true
+	}
+	// 主键模式:表有主键且条件列全部属于主键列。
+	if len(pk) > 0 {
+		pkSet := make(map[string]bool, len(pk))
+		for _, name := range pk {
+			pkSet[name] = true
+		}
+		pkMode := true
+		for _, name := range whereCols {
+			if !pkSet[name] {
+				pkMode = false
+				break
+			}
+		}
+		if pkMode {
+			return nil
 		}
 	}
-	return nil
+	// 整行模式:条件列集合与表全部列集合恰好相等(长度相等且逐一同名,
+	// 顺序无关;重复列因集合大小不等而不匹配)。
+	if len(whereCols) == len(allColumns) && len(whereSet) == len(allColumns) {
+		wholeRow := true
+		for _, name := range allColumns {
+			if !whereSet[name] {
+				wholeRow = false
+				break
+			}
+		}
+		if wholeRow {
+			return nil
+		}
+	}
+	if len(pk) == 0 {
+		return requireMysqlPrimaryKey(pk)
+	}
+	return errors.New("where 条件列必须是主键列或整行所有列,仅支持按主键或整行定位")
 }
 
 // buildMysqlCellUpdateStatement renders the display text of the full UPDATE:
@@ -938,13 +1125,14 @@ func (s *Service) MysqlTruncateTable(ctx context.Context, id, database, table st
 }
 
 // MysqlExecute runs a SQL script statement by statement; database 非空时全部
-// 语句固定在一条 USE 过的专用连接上执行,为空时走连接池。
-func (s *Service) MysqlExecute(ctx context.Context, id, database, sqlText string) ([]model.MysqlStatementResult, error) {
+// 语句固定在一条 USE 过的专用连接上执行,为空时走连接池。limit>0 启用服务端
+// 分页(包装查询 + COUNT 计数,SHOW 类语句客户端截断)。
+func (s *Service) MysqlExecute(ctx context.Context, id, database, sqlText string, limit, offset int) ([]model.MysqlStatementResult, error) {
 	m, err := s.mysql(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	return m.Execute(ctx, database, sqlText)
+	return m.Execute(ctx, database, sqlText, limit, offset)
 }
 
 // MysqlPreviewCellUpdate 预览单元格更新:构造展示语句 + 同 WHERE 命中行数

@@ -8,6 +8,7 @@ import { CSV_MIME, saveFile } from '@/utils/export'
 import { formatBytes } from '@/utils/bytes'
 import { formatCount } from '@/utils/format'
 import { useConnectionsStore } from '@/store/connections'
+import { useToastStore } from '@/store/toast'
 import * as App from '../../../wailsjs/go/backend/App'
 import ConnectionTree from './ConnectionTree.vue'
 
@@ -108,7 +109,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
 
 const conn = (id: string, type: Connection['type'] = 'kafka'): Connection => ({
   id, name: `conn-${id}`, type,
-  config: { bootstrap_servers: ['h:1'] }, created_at: 1, updated_at: 1,
+  config: { bootstrap_servers: ['h:1'] }, sort_order: 0, created_at: 1, updated_at: 1,
 })
 
 async function expand(wrapper: VueWrapper, index = 0): Promise<void> {
@@ -129,6 +130,22 @@ function confirmDialog(): HTMLElement | null {
 }
 function clickConfirmDialog(testId: string): void {
   document.body.querySelector(`[data-test="${testId}"]`)?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+}
+
+// 连接行的低频操作(编辑/删除/健康等)收敛在右键菜单,行内仅保留 ↑↓ 排序
+// 微调按钮:右键 conn-row 打开菜单(teleport 到 body),再从 document.body
+// 点击菜单项(与 ConfirmDialog 同一查询惯例)。
+async function openConnMenu(wrapper: VueWrapper, name: string): Promise<void> {
+  const row = wrapper.findAll('[data-test="conn-row"]').find((n) => n.text().includes(name))
+  if (!row) throw new Error(`conn-row not found: ${name}`)
+  await row.trigger('contextmenu', { clientX: 10, clientY: 10 })
+  await vi.waitFor(() => {
+    expect(document.body.querySelector('[data-test="context-menu"]')).not.toBeNull()
+  })
+}
+
+function clickCtxItem(key: string): void {
+  (document.body.querySelector(`[data-test="context-item-${key}"]`) as HTMLElement).click()
 }
 
 describe('ConnectionTree', () => {
@@ -177,7 +194,7 @@ describe('ConnectionTree', () => {
     expect(wrapper.find('[data-test="conn-caret"]').classes()).toContain('open')
   })
 
-  it('delete button does not collapse the row', async () => {
+  it('删除连接 via the context menu does not collapse the row', async () => {
     ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
@@ -185,16 +202,28 @@ describe('ConnectionTree', () => {
     await vi.waitFor(() => {
       expect(wrapper.find('[data-test="topic-node"]').exists()).toBe(true)
     })
-    await wrapper.find('[data-test="btn-delete"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-delete')
+    await new Promise((r) => setTimeout(r, 0))
     expect(wrapper.emitted('delete')?.[0]).toEqual(['a'])
     expect(wrapper.find('[data-test="conn-caret"]').classes()).toContain('open')
   })
 
-  it('edit button emits edit-connection with the connection without toggling the row', async () => {
+  it('labels the connection menu delete entry 删除连接 as a danger item', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    await wrapper.find('[data-test="btn-edit-connection"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    const del = document.body.querySelector('[data-test="context-item-conn-delete"]')
+    expect(del?.textContent).toBe('删除连接')
+    expect(del?.classList.contains('danger')).toBe(true)
+  })
+
+  it('emits edit-connection with the connection from the context menu without toggling the row', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-edit')
+    await new Promise((r) => setTimeout(r, 0))
     expect(wrapper.emitted('edit-connection')?.[0]).toEqual([conn('a')])
-    // @click.stop：点击编辑不应触发行展开。
+    // 右键与菜单点击均不触发行展开。
     expect(wrapper.find('[data-test="conn-caret"]').classes()).not.toContain('open')
   })
 
@@ -538,7 +567,7 @@ describe('ConnectionTree', () => {
     ])
     const redisConn = (): Connection => ({
       id: 'r1', name: 'redis-local', type: 'redis',
-      config: { addr: 'h:6379' } as RedisConfigShape, created_at: 1, updated_at: 1,
+      config: { addr: 'h:6379' } as RedisConfigShape, sort_order: 0, created_at: 1, updated_at: 1,
     })
     const wrapper = mount(ConnectionTree, { props: { connections: [redisConn()] } })
     await expand(wrapper)
@@ -580,18 +609,19 @@ describe('ConnectionTree', () => {
     })
   })
 
-  it('emits open-health from the connection row health entry and does not render a drawer itself', async () => {
-    ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([{ name: 'user-log', partitions: [] }])
-    ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
+  it('emits open-health from the connection context menu and does not render a drawer itself', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    expect(wrapper.find('[data-test="btn-cluster-health"]').exists()).toBe(true)
-    await wrapper.find('[data-test="btn-cluster-health"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    expect(document.body.querySelector('[data-test="context-item-conn-health"]')?.textContent).toBe('集群健康')
+    clickCtxItem('conn-health')
+    await new Promise((r) => setTimeout(r, 0))
     expect(wrapper.emitted('open-health')?.[0]).toEqual(['a'])
   })
 
-  it('hides the cluster health entry for non-kafka connections', () => {
+  it('hides the cluster health entry for non-kafka connections', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('m', 'mysql')] } })
-    expect(wrapper.find('[data-test="btn-cluster-health"]').exists()).toBe(false)
+    await openConnMenu(wrapper, 'conn-m')
+    expect(document.body.querySelector('[data-test="context-item-conn-health"]')).toBeNull()
   })
 
   it('opens and closes the topic creation form from the Topics header', async () => {
@@ -795,9 +825,11 @@ describe('ConnectionTree', () => {
     expect(wrapper.findAll('[data-test="btn-delete-group"]')).toHaveLength(2)
   })
 
-  it('emits delete and new', async () => {
+  it('emits delete from the context menu and new', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    await wrapper.find('[data-test="btn-delete"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
+    clickCtxItem('conn-delete')
+    await new Promise((r) => setTimeout(r, 0))
     expect(wrapper.emitted('delete')?.[0]).toEqual(['a'])
     await wrapper.find('[data-test="btn-new"]').trigger('click')
     expect(wrapper.emitted('new')).toBeTruthy()
@@ -838,10 +870,16 @@ describe('ConnectionTree', () => {
     expect(wrapper.findAll('[data-test="group-node"]')).toHaveLength(0)
   })
 
-  it('renders a status dot and a connect button for each connection', () => {
+  it('renders a status dot and no inline action buttons for each connection', () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
     expect(wrapper.findAll('[data-test="conn-status-dot"]')).toHaveLength(1)
-    expect(wrapper.find('[data-test="btn-connect"]').exists()).toBe(true)
+    // 行内操作(连接/健康/监控/编辑/删除)已全部收敛进右键菜单,行内仅剩
+    // 展开箭头 + 状态点 + 名称 + 类型徽标,不再渲染任何按钮。
+    expect(wrapper.find('[data-test="btn-connect"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-cluster-health"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-es-monitor"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-edit-connection"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="btn-delete"]').exists()).toBe(false)
   })
 
   it('shows the type-specific color class on the dot when connected', () => {
@@ -866,31 +904,93 @@ describe('ConnectionTree', () => {
     expect(dot.classes()).toContain('conn-status-error')
   })
 
-  it('connects a disconnected connection via the connect button', async () => {
+  it('connects a disconnected connection via the context menu 打开连接', async () => {
     const store = useConnectionsStore()
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    expect(wrapper.find('[data-test="btn-connect"]').text()).toContain('连接')
-    await wrapper.find('[data-test="btn-connect"]').trigger('click')
-    expect(api.connect).toHaveBeenCalledWith('a')
+    await openConnMenu(wrapper, 'conn-a')
+    expect(document.body.querySelector('[data-test="context-item-conn-toggle"]')?.textContent).toBe('打开连接')
+    clickCtxItem('conn-toggle')
+    await vi.waitFor(() => {
+      expect(api.connect).toHaveBeenCalledWith('a')
+    })
     await vi.waitFor(() => {
       expect(store.statusById['a']).toBe('connected')
     })
   })
 
-  it('disconnects a connected connection via the connect button', async () => {
+  it('disconnects a connected connection via the context menu 断开连接', async () => {
     const store = useConnectionsStore()
     store.setStatus('a', 'connected')
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    expect(wrapper.find('[data-test="btn-connect"]').text()).toContain('断开')
-    await wrapper.find('[data-test="btn-connect"]').trigger('click')
-    expect(api.disconnect).toHaveBeenCalledWith('a')
-    expect(store.statusById['a']).toBe('disconnected')
+    await openConnMenu(wrapper, 'conn-a')
+    // 已连接时首项文案切换为「断开连接」。
+    expect(document.body.querySelector('[data-test="context-item-conn-toggle"]')?.textContent).toBe('断开连接')
+    clickCtxItem('conn-toggle')
+    await vi.waitFor(() => {
+      expect(api.disconnect).toHaveBeenCalledWith('a')
+    })
+    await vi.waitFor(() => {
+      expect(store.statusById['a']).toBe('disconnected')
+    })
   })
 
-  it('does not expand the row when clicking the connect button', async () => {
+  it('does not expand the row on right-click', async () => {
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    await wrapper.find('[data-test="btn-connect"]').trigger('click')
+    await openConnMenu(wrapper, 'conn-a')
     expect(wrapper.find('[data-test="conn-caret"]').classes()).not.toContain('open')
+  })
+
+  // --- 连接右键菜单结构(行内按钮收敛后的专项回归锁) ---
+
+  it('kafka 连接菜单:打开连接/集群健康/分隔线/编辑/删除,且无集群监控', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await openConnMenu(wrapper, 'conn-a')
+    const menu = document.body.querySelector('[data-test="context-menu"]') as HTMLElement
+    // 顺序固定:类型专属项与编辑/删除之间以分隔线分组。
+    const tests = Array.from(menu.children).map((n) => n.getAttribute('data-test'))
+    expect(tests).toEqual([
+      'context-item-conn-toggle',
+      'context-item-conn-health',
+      'context-separator',
+      'context-item-conn-edit',
+      'context-item-conn-delete',
+    ])
+    const labels = Array.from(menu.querySelectorAll('.context-item')).map((n) => n.textContent)
+    expect(labels).toEqual(['打开连接', '集群健康', '编辑连接', '删除连接'])
+    // kafka 不渲染 es 专属的集群监控。
+    expect(document.body.querySelector('[data-test="context-item-conn-es-monitor"]')).toBeNull()
+  })
+
+  it('es 连接菜单:含集群监控、无集群健康', async () => {
+    const api2 = fakeApi({ listEsIndices: vi.fn(async () => []) })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
+    await openConnMenu(wrapper, 'conn-es')
+    const menu = document.body.querySelector('[data-test="context-menu"]') as HTMLElement
+    const tests = Array.from(menu.children).map((n) => n.getAttribute('data-test'))
+    expect(tests).toEqual([
+      'context-item-conn-toggle',
+      'context-item-conn-es-monitor',
+      'context-separator',
+      'context-item-conn-edit',
+      'context-item-conn-delete',
+    ])
+    expect(document.body.querySelector('[data-test="context-item-conn-health"]')).toBeNull()
+  })
+
+  it('mysql 连接菜单:无类型专属项,仅 打开连接/分隔线/编辑/删除', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('m', 'mysql')] } })
+    await openConnMenu(wrapper, 'conn-m')
+    const menu = document.body.querySelector('[data-test="context-menu"]') as HTMLElement
+    const tests = Array.from(menu.children).map((n) => n.getAttribute('data-test'))
+    expect(tests).toEqual([
+      'context-item-conn-toggle',
+      'context-separator',
+      'context-item-conn-edit',
+      'context-item-conn-delete',
+    ])
+    expect(document.body.querySelector('[data-test="context-item-conn-health"]')).toBeNull()
+    expect(document.body.querySelector('[data-test="context-item-conn-es-monitor"]')).toBeNull()
   })
 
   it('marks a connection connected after a successful expand load', async () => {
@@ -1131,7 +1231,7 @@ describe('ConnectionTree', () => {
   const mysqlConn = (id: string, type: 'mysql' | 'tidb' = 'mysql'): Connection => ({
     id, name: `conn-${id}`, type,
     config: { host: 'h.internal', port: 3306, username: 'app', password: '', database: '', tls_mode: 'disabled' },
-    created_at: 1, updated_at: 1,
+    sort_order: 0, created_at: 1, updated_at: 1,
   })
 
   it('lists mysql databases when a mysql connection expands', async () => {
@@ -1292,6 +1392,406 @@ describe('ConnectionTree', () => {
     })
   })
 
+  async function expandOneMysqlTable(wrapper: VueWrapper): Promise<void> {
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="mysql-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="mysql-table-node"]').exists()).toBe(true)
+    })
+  }
+
+  it('shows the five mysql table context menu items on right-click', async () => {
+    setApi(fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['shop']),
+      listMysqlTables: vi.fn(async () => [{ name: 'users', engine: 'InnoDB', table_rows: 3 }]),
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await expandOneMysqlTable(wrapper)
+    expect(document.body.querySelector('[data-test="context-menu"]')).toBeNull()
+    await wrapper.find('[data-test="mysql-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    const keys = Array.from(document.body.querySelectorAll('[data-test^="context-item-"]')).map((n) => n.getAttribute('data-test'))
+    expect(keys).toEqual([
+      'context-item-open-mysql-table',
+      'context-item-mysql-edit-columns',
+      'context-item-mysql-export',
+      'context-item-mysql-truncate',
+      'context-item-mysql-drop',
+    ])
+  })
+
+  it('drops a mysql table from the context menu after confirmation and refetches the table list', async () => {
+    const mysqlDropTable = vi.fn(async () => {})
+    const listMysqlTables = vi
+      .fn()
+      .mockResolvedValueOnce([{ name: 'users', engine: 'InnoDB', table_rows: 1 }, { name: 'orders', engine: 'InnoDB', table_rows: 2 }])
+      .mockResolvedValue([{ name: 'orders', engine: 'InnoDB', table_rows: 2 }])
+    setApi(fakeApi({ listMysqlDatabases: vi.fn(async () => ['shop']), listMysqlTables, mysqlDropTable }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await expandOneMysqlTable(wrapper)
+    expect(wrapper.findAll('[data-test="mysql-table-node"]')).toHaveLength(2)
+    await wrapper.findAll('[data-test="mysql-table-node"]')[0].trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-mysql-drop"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    // 危险确认文案含 db.table 与「不可恢复」。
+    expect(confirmDialog()?.textContent).toContain('shop.users')
+    expect(confirmDialog()?.textContent).toContain('不可恢复')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(mysqlDropTable).toHaveBeenCalledWith({ connection_id: 'my', database: 'shop', table: 'users' })
+    })
+    // 删除后重拉该库表清单,被删表消失。
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="mysql-table-name"]').map((n) => n.text())).toEqual(['orders'])
+    })
+    expect(listMysqlTables).toHaveBeenCalledTimes(2)
+  })
+
+  it('truncates a mysql table from the context menu after confirmation and refetches the table list', async () => {
+    const mysqlTruncateTable = vi.fn(async () => {})
+    const listMysqlTables = vi.fn(async () => [{ name: 'users', engine: 'InnoDB', table_rows: 1 }])
+    setApi(fakeApi({ listMysqlDatabases: vi.fn(async () => ['shop']), listMysqlTables, mysqlTruncateTable }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await expandOneMysqlTable(wrapper)
+    await wrapper.find('[data-test="mysql-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-mysql-truncate"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    expect(confirmDialog()?.textContent).toContain('shop.users')
+    expect(confirmDialog()?.textContent).toContain('清空')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(mysqlTruncateTable).toHaveBeenCalledWith({ connection_id: 'my', database: 'shop', table: 'users' })
+    })
+    await vi.waitFor(() => {
+      expect(listMysqlTables).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('opens the export dialog from the 导出表 menu and exports via mysqlExportTable and saveFile', async () => {
+    localStorage.clear()
+    const mysqlExportTable = vi.fn(async () => ({ filename: 'users_20260928.sql', content: 'CREATE TABLE `users` (`id` int);' }))
+    setApi(fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['shop']),
+      listMysqlTables: vi.fn(async () => [{ name: 'users', engine: 'InnoDB', table_rows: 1 }]),
+      mysqlExportTable,
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await expandOneMysqlTable(wrapper)
+    await wrapper.find('[data-test="mysql-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-mysql-export"]') as HTMLElement).click()
+    // 菜单点击只打开选项弹窗,不直接发起导出;弹窗内展示 db.table。
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="mysql-export-dialog"]')).not.toBeNull()
+    })
+    expect(document.body.querySelector('[data-test="mysql-export-dialog"]')?.textContent).toContain('shop.users')
+    expect(mysqlExportTable).not.toHaveBeenCalled()
+    ;(document.body.querySelector('[data-test="btn-export-confirm"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(mysqlExportTable).toHaveBeenCalledWith({
+        connection_id: 'my',
+        database: 'shop',
+        table: 'users',
+        include_ddl: true,
+        include_data: true,
+        insert_per_row: false,
+        drop_table_if_exists: false,
+        strip_auto_increment: false,
+        include_create_db: false,
+      })
+    })
+    await vi.waitFor(() => {
+      expect(vi.mocked(saveFile)).toHaveBeenCalledWith('users_20260928.sql', 'CREATE TABLE `users` (`id` int);', 'application/sql')
+    })
+  })
+
+  it('opens the structure dialog from the 编辑表字段 menu item', async () => {
+    const mysqlTableColumns = vi.fn(async () => ({ columns: [], ddl: '' }))
+    setApi(fakeApi({
+      listMysqlDatabases: vi.fn(async () => ['shop']),
+      listMysqlTables: vi.fn(async () => [{ name: 'users', engine: 'InnoDB', table_rows: 1 }]),
+      mysqlTableColumns,
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [mysqlConn('my')] } })
+    await expandOneMysqlTable(wrapper)
+    expect(document.body.querySelector('[data-test="mysql-structure-dialog"]')).toBeNull()
+    await wrapper.find('[data-test="mysql-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-mysql-edit-columns"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="mysql-structure-dialog"]')).not.toBeNull()
+    })
+    expect(mysqlTableColumns).toHaveBeenCalledWith({ connection_id: 'my', database: 'shop', table: 'users' })
+  })
+
+  // --- Hive 二级树(与 MySQL 同构:库 → 表,懒加载 + 模糊过滤 + 右键菜单) ---
+
+  const hiveConn = (id: string): Connection => ({
+    id, name: `conn-${id}`, type: 'hive',
+    config: { host: 'h.internal', port: 10000, auth_mode: 'nosasl' } as Connection['config'],
+    sort_order: 0, created_at: 1, updated_at: 1,
+  })
+
+  async function expandOneHiveTable(wrapper: VueWrapper): Promise<void> {
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="hive-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-table-node"]').exists()).toBe(true)
+    })
+  }
+
+  it('shows the Hive label with its bee icon for a hive connection', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    expect(wrapper.findAll('[data-test="conn-type"]').map((n) => n.text())).toEqual(['Hive'])
+    // 类型徽标走 hive 专属样式类。
+    expect(wrapper.find('[data-test="conn-type"]').classes()).toContain('conn-type-hive')
+  })
+
+  it('lists hive databases when a hive connection expands', async () => {
+    const api2 = fakeApi({
+      listHiveDatabases: vi.fn(async () => ['default', 'ods']),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="hive-db-node"]')).toHaveLength(2)
+    })
+    expect(api2.listHiveDatabases).toHaveBeenCalledWith('hv')
+    expect(api2.listTopics).not.toHaveBeenCalled()
+    expect(wrapper.findAll('[data-test="hive-db-name"]').map((n) => n.text())).toEqual(['default', 'ods'])
+  })
+
+  it('lazily loads hive tables when a database node expands and emits open-hive-table on double click', async () => {
+    const api2 = fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'events' }, { name: 'users' }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-db-node"]').exists()).toBe(true)
+    })
+    // 展开连接只拉数据库,表在数据库节点展开时才懒加载。
+    expect(api2.listHiveTables).not.toHaveBeenCalled()
+    await wrapper.find('[data-test="hive-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="hive-table-node"]')).toHaveLength(2)
+    })
+    expect(api2.listHiveTables).toHaveBeenCalledWith({ connection_id: 'hv', database: 'ods' })
+    expect(wrapper.findAll('[data-test="hive-table-name"]').map((n) => n.text())).toEqual(['events', 'users'])
+    // 库节点出现表计数徽标;表节点无引擎/行数徽标(HiveTableInfo 仅名称)。
+    expect(wrapper.find('[data-test="hive-db-count"]').text()).toBe('2')
+    expect(wrapper.find('[data-test="hive-table-engine"]').exists()).toBe(false)
+    // 双击表节点打开表。
+    await wrapper.findAll('[data-test="hive-table-node"]')[0].trigger('dblclick')
+    expect(wrapper.emitted('open-hive-table')?.[0]).toEqual(['hv', 'ods', 'events'])
+  })
+
+  it('fuzzy filters hive tables inside an expanded database', async () => {
+    const api2 = fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'user_events' }, { name: 'order_events' }, { name: 'dim_date' }]),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    // 未过滤时计数徽标显示表总数,过滤后显示「可见/总数」。
+    expect(wrapper.find('[data-test="hive-db-count"]').text()).toBe('3')
+    await wrapper.find('[data-test="hive-table-filter"]').setValue('events')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="hive-table-node"]')).toHaveLength(2)
+    })
+    expect(wrapper.findAll('[data-test="hive-table-name"]').map((n) => n.text())).toEqual(['user_events', 'order_events'])
+    expect(wrapper.find('[data-test="hive-db-count"]').text()).toBe('2/3')
+    // 清空恢复全部。
+    await wrapper.find('[data-test="hive-table-filter"]').setValue('')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="hive-table-node"]')).toHaveLength(3)
+    })
+  })
+
+  it('shows the empty hint when a hive database has no tables', async () => {
+    const api2 = fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => []),
+    })
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="hive-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="hive-table-empty"]').text()).toBe('（无表）')
+    })
+  })
+
+  it('shows the five hive table context menu items on right-click', async () => {
+    setApi(fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'events' }]),
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    expect(document.body.querySelector('[data-test="context-menu"]')).toBeNull()
+    await wrapper.find('[data-test="hive-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    const keys = Array.from(document.body.querySelectorAll('[data-test^="context-item-"]')).map((n) => n.getAttribute('data-test'))
+    expect(keys).toEqual([
+      'context-item-open-hive-table',
+      'context-item-hive-edit-columns',
+      'context-item-hive-export',
+      'context-item-hive-truncate',
+      'context-item-hive-drop',
+    ])
+  })
+
+  it('drops a hive table from the context menu after confirmation and refetches the table list', async () => {
+    const hiveDropTable = vi.fn(async () => {})
+    const listHiveTables = vi
+      .fn()
+      .mockResolvedValueOnce([{ name: 'events' }, { name: 'users' }])
+      .mockResolvedValue([{ name: 'users' }])
+    setApi(fakeApi({ listHiveDatabases: vi.fn(async () => ['ods']), listHiveTables, hiveDropTable }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    expect(wrapper.findAll('[data-test="hive-table-node"]')).toHaveLength(2)
+    await wrapper.findAll('[data-test="hive-table-node"]')[0].trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-hive-drop"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    // 危险确认文案含 db.table 与「不可恢复」。
+    expect(confirmDialog()?.textContent).toContain('ods.events')
+    expect(confirmDialog()?.textContent).toContain('不可恢复')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(hiveDropTable).toHaveBeenCalledWith({ connection_id: 'hv', database: 'ods', table: 'events' })
+    })
+    // 删除后重拉该库表清单,被删表消失。
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="hive-table-name"]').map((n) => n.text())).toEqual(['users'])
+    })
+    expect(listHiveTables).toHaveBeenCalledTimes(2)
+  })
+
+  it('truncates a managed hive table from the context menu after confirmation and refetches', async () => {
+    const hiveTruncateTable = vi.fn(async () => {})
+    const listHiveTables = vi.fn(async () => [{ name: 'events' }])
+    setApi(fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables,
+      hiveTruncateTable,
+      // 截断守卫:先探测表类型(MANAGED_TABLE 放行)。
+      hiveTableColumns: vi.fn(async () => ({
+        columns: [], partition_columns: [], transactional: false, primary_key: [], ddl: '', table_type: 'MANAGED_TABLE',
+      })),
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    await wrapper.find('[data-test="hive-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-hive-truncate"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(confirmDialog()).not.toBeNull()
+    })
+    expect(confirmDialog()?.textContent).toContain('ods.events')
+    expect(confirmDialog()?.textContent).toContain('清空')
+    clickConfirmDialog('confirm-dialog-ok')
+    await vi.waitFor(() => {
+      expect(hiveTruncateTable).toHaveBeenCalledWith({ connection_id: 'hv', database: 'ods', table: 'events' })
+    })
+    await vi.waitFor(() => {
+      expect(listHiveTables).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  it('blocks truncating a non-managed hive table with a hint instead of the confirm dialog', async () => {
+    const hiveTruncateTable = vi.fn(async () => {})
+    setApi(fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'ext_events' }]),
+      hiveTruncateTable,
+      // 外部表:守卫拦截,仅 toast 提示。
+      hiveTableColumns: vi.fn(async () => ({
+        columns: [], partition_columns: [], transactional: false, primary_key: [], ddl: '', table_type: 'EXTERNAL_TABLE',
+      })),
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    await wrapper.find('[data-test="hive-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-hive-truncate"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(useToastStore().message).toContain('仅内部表(MANAGED_TABLE)支持清空')
+    })
+    // 不弹确认、不发截断请求。
+    expect(confirmDialog()).toBeNull()
+    expect(hiveTruncateTable).not.toHaveBeenCalled()
+  })
+
+  it('opens the structure dialog from the 编辑表字段 menu item for a hive table', async () => {
+    const hiveTableColumns = vi.fn(async () => ({
+      columns: [], partition_columns: [], transactional: false, primary_key: [], ddl: '', table_type: 'MANAGED_TABLE',
+    }))
+    setApi(fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'events' }]),
+      hiveTableColumns,
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    expect(document.body.querySelector('[data-test="hive-structure-dialog"]')).toBeNull()
+    await wrapper.find('[data-test="hive-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-hive-edit-columns"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-test="hive-structure-dialog"]')).not.toBeNull()
+    })
+    expect(hiveTableColumns).toHaveBeenCalledWith({ connection_id: 'hv', database: 'ods', table: 'events' })
+  })
+
+  it('exports a hive table structure via hiveExportTable and saveFile', async () => {
+    const hiveExportTable = vi.fn(async () => ({ filename: 'events_20261003.sql', content: 'CREATE TABLE `events` (`id` bigint);' }))
+    setApi(fakeApi({
+      listHiveDatabases: vi.fn(async () => ['ods']),
+      listHiveTables: vi.fn(async () => [{ name: 'events' }]),
+      hiveExportTable,
+    }))
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await expandOneHiveTable(wrapper)
+    await wrapper.find('[data-test="hive-table-node"]').trigger('contextmenu', { clientX: 10, clientY: 20 })
+    ;(document.body.querySelector('[data-test="context-item-hive-export"]') as HTMLElement).click()
+    await vi.waitFor(() => {
+      expect(hiveExportTable).toHaveBeenCalledWith({ connection_id: 'hv', database: 'ods', table: 'events' })
+    })
+    await vi.waitFor(() => {
+      expect(vi.mocked(saveFile)).toHaveBeenCalledWith('events_20261003.sql', 'CREATE TABLE `events` (`id` bigint);', 'application/sql')
+    })
+  })
+
+  it('marks the hive connection as error and shows the message when listing databases fails', async () => {
+    const api2 = fakeApi({
+      listHiveDatabases: vi.fn(async () => {
+        throw new Error('dial tcp 127.0.0.1:10000 failed')
+      }),
+    })
+    setApi(api2)
+    const store = useConnectionsStore()
+    const wrapper = mount(ConnectionTree, { props: { connections: [hiveConn('hv')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="tree-error"]').text()).toBe('dial tcp 127.0.0.1:10000 failed')
+      expect(store.statusById['hv']).toBe('error')
+    })
+  })
+
   it('lists clickhouse databases when a clickhouse connection expands', async () => {
     ;(api.listCHDatabases as ReturnType<typeof vi.fn>).mockResolvedValue(['default', 'logs'])
     const ch = { ...conn('ch'), type: 'clickhouse' as const }
@@ -1412,7 +1912,7 @@ describe('ConnectionTree', () => {
   const esConn = (id: string): Connection => ({
     id, name: `conn-${id}`, type: 'es',
     config: { hosts: ['127.0.0.1:9200'], username: '', password: '', api_key: '', auth_mode: 'none', tls_mode: 'disabled' },
-    created_at: 1, updated_at: 1,
+    sort_order: 0, created_at: 1, updated_at: 1,
   })
 
   it('lists es indices with doc-count badges when an es connection expands', async () => {
@@ -1619,15 +2119,16 @@ describe('ConnectionTree', () => {
     expect(wrapper.find('[data-test="section-tab-es-templates"]').classes()).not.toContain('active')
   })
 
-  it('ES 连接行渲染集群监控图标(与 Kafka 🩺 同位,连接图标左侧),点击 emit open-es-monitor', async () => {
+  it('ES 连接右键菜单含集群监控项,点击 emit open-es-monitor', async () => {
     const api2 = fakeApi({ listEsIndices: vi.fn(async () => []) })
     setApi(api2)
     const wrapper = mount(ConnectionTree, { props: { connections: [esConn('es')] } })
-    // 图标在连接行上,无需展开即可见。
-    const btn = wrapper.find('[data-test="btn-es-monitor"]')
-    expect(btn.exists()).toBe(true)
-    expect(btn.text()).toBe('📈')
-    await btn.trigger('click')
+    // 菜单在连接行右键打开,无需展开。
+    await openConnMenu(wrapper, 'conn-es')
+    const item = document.body.querySelector('[data-test="context-item-conn-es-monitor"]')
+    expect(item?.textContent).toBe('集群监控')
+    ;(item as HTMLElement).click()
+    await new Promise((r) => setTimeout(r, 0))
     // 事件名与参数一字不差:open-es-monitor + 连接 id(Layout 由并行方接线)。
     expect(wrapper.emitted('open-es-monitor')?.[0]).toEqual(['es'])
   })
@@ -1636,8 +2137,10 @@ describe('ConnectionTree', () => {
     ;(api.listTopics as ReturnType<typeof vi.fn>).mockResolvedValue([])
     ;(api.listConsumerGroups as ReturnType<typeof vi.fn>).mockResolvedValue([])
     const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
-    await expand(wrapper)
-    expect(wrapper.find('[data-test="es-monitor-btn"]').exists()).toBe(false)
+    await openConnMenu(wrapper, 'conn-a')
+    expect(document.body.querySelector('[data-test="context-item-conn-es-monitor"]')).toBeNull()
+    // kafka 连接的类型专属项是集群健康。
+    expect(document.body.querySelector('[data-test="context-item-conn-health"]')).not.toBeNull()
   })
 
   it('lazily loads and renders es templates with order badges when the templates section activates', async () => {
@@ -2019,6 +2522,118 @@ describe('ConnectionTree', () => {
       expect(listEsTemplates.mock.calls.length).toBeGreaterThan(fetchesBefore)
     })
   })
+
+  // --- 连接排序:hover ↑↓ 微调按钮 / 右键菜单上移下移 / 原生拖拽 ---
+
+  it('renders hover move buttons for every connection row', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    expect(wrapper.findAll('[data-test="btn-move-up"]')).toHaveLength(3)
+    expect(wrapper.findAll('[data-test="btn-move-down"]')).toHaveLength(3)
+  })
+
+  it('disables the move buttons at the list boundaries', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    const rows = wrapper.findAll('[data-test="connection"]')
+    expect(rows[0].find('[data-test="btn-move-up"]').attributes('disabled')).toBeDefined()
+    expect(rows[0].find('[data-test="btn-move-down"]').attributes('disabled')).toBeUndefined()
+    expect(rows[2].find('[data-test="btn-move-up"]').attributes('disabled')).toBeUndefined()
+    expect(rows[2].find('[data-test="btn-move-down"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('emits reorder on move-up without toggling the row (click.stop)', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    const rows = wrapper.findAll('[data-test="connection"]')
+    await rows[1].find('[data-test="btn-move-up"]').trigger('click')
+    expect(wrapper.emitted('reorder')?.[0]).toEqual([['b', 'a', 'c']])
+    // click.stop:不触发行点击展开(否则会调 listTopics)。
+    expect(api.listTopics).not.toHaveBeenCalled()
+  })
+
+  it('emits reorder on move-down', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    const rows = wrapper.findAll('[data-test="connection"]')
+    await rows[1].find('[data-test="btn-move-down"]').trigger('click')
+    expect(wrapper.emitted('reorder')?.[0]).toEqual([['a', 'c', 'b']])
+  })
+
+  it('offers 上移/下移 in the connection context menu and emits reorder', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    await openConnMenu(wrapper, 'conn-b')
+    expect(document.body.querySelector('[data-test="context-item-move-up"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-test="context-item-move-down"]')).not.toBeNull()
+    clickCtxItem('move-up')
+    expect(wrapper.emitted('reorder')?.[0]).toEqual([['b', 'a', 'c']])
+  })
+
+  it('omits the move-up entry for the first connection in the context menu', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b')] } })
+    await openConnMenu(wrapper, 'conn-a')
+    expect(document.body.querySelector('[data-test="context-item-move-up"]')).toBeNull()
+    expect(document.body.querySelector('[data-test="context-item-move-down"]')).not.toBeNull()
+  })
+
+  it('omits the move-down entry for the last connection in the context menu', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b')] } })
+    await openConnMenu(wrapper, 'conn-b')
+    expect(document.body.querySelector('[data-test="context-item-move-down"]')).toBeNull()
+    expect(document.body.querySelector('[data-test="context-item-move-up"]')).not.toBeNull()
+  })
+
+  it('omits both move entries for a single connection', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await openConnMenu(wrapper, 'conn-a')
+    expect(document.body.querySelector('[data-test="context-item-move-up"]')).toBeNull()
+    expect(document.body.querySelector('[data-test="context-item-move-down"]')).toBeNull()
+  })
+
+  it('drags a connection row onto another row and emits the new order', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    const rows = wrapper.findAll('[data-test="conn-row"]')
+    const setData = vi.fn()
+    await rows[0].trigger('dragstart', { dataTransfer: { setData, effectAllowed: '', dropEffect: '' } })
+    expect(setData).toHaveBeenCalledWith('text/plain', 'a')
+    // 悬停在行 c 下半部(jsdom 无几何信息,clientY>中点)→ 插入其后。
+    await rows[2].trigger('dragover', { clientY: 10, dataTransfer: { dropEffect: '' } })
+    await rows[2].trigger('drop', { dataTransfer: { getData: vi.fn(() => 'a') } })
+    expect(wrapper.emitted('reorder')?.[0]).toEqual([['b', 'c', 'a']])
+  })
+
+  it('marks the insertion point while hovering and clears it on dragend', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    const rows = wrapper.findAll('[data-test="conn-row"]')
+    await rows[0].trigger('dragstart', { dataTransfer: { setData: vi.fn(), effectAllowed: '', dropEffect: '' } })
+    await rows[2].trigger('dragover', { clientY: 0, dataTransfer: { dropEffect: '' } })
+    expect(rows[2].classes()).toContain('drop-before')
+    await rows[0].trigger('dragend')
+    expect(rows[2].classes()).not.toContain('drop-before')
+  })
+
+  it('does not emit reorder when dropping onto itself', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b')] } })
+    const rows = wrapper.findAll('[data-test="conn-row"]')
+    await rows[0].trigger('dragstart', { dataTransfer: { setData: vi.fn(), effectAllowed: '', dropEffect: '' } })
+    await rows[0].trigger('dragover', { clientY: 10, dataTransfer: { dropEffect: '' } })
+    expect(rows[0].classes()).not.toContain('drop-after')
+    await rows[0].trigger('drop', { dataTransfer: { getData: vi.fn(() => 'a') } })
+    expect(wrapper.emitted('reorder')).toBeUndefined()
+  })
+
+  it('renders a rounded letter badge with the brand letter per type', () => {
+    const wrapper = mount(ConnectionTree, {
+      props: { connections: [conn('k'), { ...conn('m'), type: 'mysql' }, { ...conn('r'), type: 'redis' }, { ...conn('h'), type: 'hive' }] },
+    })
+    const badges = wrapper.findAll('[data-test="conn-type-badge"]')
+    expect(badges.map((b) => b.text())).toEqual(['K', 'M', 'R', 'H'])
+    // 品牌色经类型 class 接 CSS 变量(亮暗主题在 styles.css 各自取值)。
+    expect(badges[0].classes()).toContain('type-badge-kafka')
+    expect(badges[1].classes()).toContain('type-badge-mysql')
+    expect(badges[3].classes()).toContain('type-badge-hive')
+  })
+
+  it('falls back to the capitalized first letter for unknown types', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [{ ...conn('x'), type: 'weird' as Connection['type'] }] } })
+    expect(wrapper.find('[data-test="conn-type-badge"]').text()).toBe('W')
+  })
 })
 
 // --- client 层:ES 模板/监控 API 必须路由到正确的 wailsjs 绑定 ---
@@ -2048,4 +2663,121 @@ describe('client ES template & cluster-stats bindings', () => {
     await expect(api.esClusterStats?.({ connection_id: 'es' })).resolves.toEqual({ cluster_name: 'demo', status: 'green' })
     expect(esClusterStats).toHaveBeenCalledWith({ connection_id: 'es' })
   })
+})
+
+describe('PostgreSQL 数据库 → schema → relation 树', () => {
+  const pgConn = (id: string): Connection => ({
+    id, name: `conn-${id}`, type: 'postgres',
+    config: { host: 'h', port: 5432, username: 'u', password: '', database: 'postgres', tls_mode: 'disable' },
+    sort_order: 0, created_at: 1, updated_at: 1,
+  })
+
+  function fakePg(overrides: Partial<Api> = {}): Api {
+    return fakeApi({
+      listPostgresDatabases: vi.fn(async () => ['shop']),
+      listPostgresSchemas: vi.fn(async () => ['public', 'app']),
+      listPostgresTables: vi.fn(async () => [
+        { schema: 'public', relation: 'users', relation_type: 'table' as const, relation_kind: 'table' as const },
+        { schema: 'public', relation: 'user_view', relation_type: 'view' as const, relation_kind: 'view' as const },
+      ]),
+      ...overrides,
+    })
+  }
+
+  it('展开连接时列出数据库', async () => {
+    const api2 = fakePg()
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [pgConn('pg')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="pg-db-node"]')).toHaveLength(1)
+    })
+    expect(api2.listPostgresDatabases).toHaveBeenCalledWith('pg')
+    expect(wrapper.find('[data-test="pg-db-name"]').text()).toBe('shop')
+  })
+
+  it('展开数据库节点时懒加载 schema 清单', async () => {
+    const api2 = fakePg()
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [pgConn('pg')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-db-node"]').exists()).toBe(true)
+    })
+    expect(api2.listPostgresSchemas).not.toHaveBeenCalled()
+    await wrapper.find('[data-test="pg-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="pg-schema-node"]')).toHaveLength(2)
+    })
+    expect(api2.listPostgresSchemas).toHaveBeenCalledWith({ connection_id: 'pg', database: 'shop' })
+    expect(wrapper.findAll('[data-test="pg-schema-name"]').map((n) => n.text())).toEqual(['public', 'app'])
+  })
+
+  it('展开 schema 节点时懒加载 relation 并按类型标注', async () => {
+    const api2 = fakePg()
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [pgConn('pg')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="pg-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-schema-node"]').exists()).toBe(true)
+    })
+    expect(api2.listPostgresTables).not.toHaveBeenCalled()
+    await wrapper.findAll('[data-test="pg-schema-node"]')[0].trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.findAll('[data-test="pg-relation-node"]')).toHaveLength(2)
+    })
+    expect(api2.listPostgresTables).toHaveBeenCalledWith({ connection_id: 'pg', database: 'shop', schema: 'public' })
+    expect(wrapper.findAll('[data-test="pg-relation-name"]').map((n) => n.text())).toEqual(['users', 'user_view'])
+    expect(wrapper.findAll('[data-test="pg-relation-type"]').map((n) => n.text())).toEqual(['table', 'view'])
+  })
+
+  it('双击 relation 节点触发 open-postgres-table', async () => {
+    const api2 = fakePg()
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [pgConn('pg')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="pg-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-schema-node"]').exists()).toBe(true)
+    })
+    await wrapper.findAll('[data-test="pg-schema-node"]')[0].trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-relation-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="pg-relation-node"]').trigger('dblclick')
+    expect(wrapper.emitted('open-postgres-table')?.[0]).toEqual(['pg', 'shop', 'public', 'users', 'table'])
+  })
+
+  it('relation 节点支持键盘打开:role/tabindex 与 Enter/Space 触发', async () => {
+    const api2 = fakePg()
+    setApi(api2)
+    const wrapper = mount(ConnectionTree, { props: { connections: [pgConn('pg')] } })
+    await wrapper.find('[data-test="conn-caret"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-db-node"]').exists()).toBe(true)
+    })
+    await wrapper.find('[data-test="pg-db-node"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-schema-node"]').exists()).toBe(true)
+    })
+    await wrapper.findAll('[data-test="pg-schema-node"]')[0].trigger('click')
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="pg-relation-node"]').exists()).toBe(true)
+    })
+    const node = wrapper.find('[data-test="pg-relation-node"]')
+    expect(node.attributes('role')).toBe('button')
+    expect(node.attributes('tabindex')).toBe('0')
+    await node.trigger('keydown.enter')
+    expect(wrapper.emitted('open-postgres-table')?.[0]).toEqual(['pg', 'shop', 'public', 'users', 'table'])
+    await node.trigger('keydown.space')
+    expect(wrapper.emitted('open-postgres-table')?.[1]).toEqual(['pg', 'shop', 'public', 'users', 'table'])
+  })
+
 })

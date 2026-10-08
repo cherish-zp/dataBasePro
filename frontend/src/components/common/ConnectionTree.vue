@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { getApi } from '@/api/client'
-import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo, CHTableInfo, MysqlTableInfo, EsIndexInfo, EsTemplateInfo } from '@/api/types'
+import type { Connection, Topic, ConsumerGroup, TopicMessageCounts, RedisDBInfo, CHTableInfo, MysqlTableInfo, PostgresRelationInfo, EsIndexInfo, EsTemplateInfo, HiveTableInfo } from '@/api/types'
 import { fuzzyScore } from '@/utils/fuzzy'
 import { formatCount } from '@/utils/format'
 import { formatBytes } from '@/utils/bytes'
 import { CSV_MIME, exportCsv, saveFile, type ExportColumn } from '@/utils/export'
+import { moveId, reorderIds } from './connReorder'
 import { useConnectionsStore, type ConnectionStatus } from '@/store/connections'
+import { useToastStore } from '@/store/toast'
 import ConfirmDialog from './ConfirmDialog.vue'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu.vue'
 import PromptDialog from './PromptDialog.vue'
 import TopicDetailDrawer from '@/components/kafka/TopicDetailDrawer.vue'
 import ResetOffsetDialog from '@/components/kafka/ResetOffsetDialog.vue'
+import MysqlTableStructure from '@/components/kafka/MysqlTableStructure.vue'
+import MysqlExportDialog from '@/components/kafka/MysqlExportDialog.vue'
+import HiveTableStructure from '@/components/kafka/HiveTableStructure.vue'
 
 const props = defineProps<{ connections: Connection[] }>()
 const emit = defineEmits<{
@@ -22,29 +27,39 @@ const emit = defineEmits<{
   (e: 'open-health', connectionId: string): void
   (e: 'open-ch-table', connectionId: string, database: string, table: string): void
   (e: 'open-mysql-table', connectionId: string, database: string, table: string): void
+  (e: 'open-hive-table', connectionId: string, database: string, table: string): void
+  (e: 'open-postgres-table', connectionId: string, database: string, schema: string, relation: string, relationType: 'table' | 'view' | 'materialized_view'): void
   (e: 'open-es-index', connectionId: string, index: string): void
   (e: 'open-es-template', connectionId: string, template: string): void
   (e: 'open-es-template-create', connectionId: string): void
   (e: 'open-es-monitor', connectionId: string): void
   (e: 'delete', connectionId: string): void
   (e: 'edit-connection', conn: Connection): void
+  // 连接排序:hover ↑↓ / 右键菜单上移下移 / 拖拽共用同一出口,负载为
+  // 重排后的完整 id 顺序,由外层(Layout)转调 store.reorderConnections 持久化。
+  (e: 'reorder', ids: string[]): void
   (e: 'new'): void
 }>()
 
 const connStore = useConnectionsStore()
 
 // Per data-source type metadata so the tree can grow to ES later.
-const TYPE_META: Record<string, { label: string; icon: string }> = {
-  kafka: { label: 'Kafka', icon: '⚡' },
-  redis: { label: 'Redis', icon: '🧱' },
-  clickhouse: { label: 'ClickHouse', icon: '🗄️' },
-  mysql: { label: 'MySQL', icon: '🐬' },
-  tidb: { label: 'TiDB', icon: '🌿' },
-  es: { label: 'ES', icon: '🔎' },
+// letter 驱动行尾「圆角小方块 + 品牌色首字母」徽标;品牌主色/柔和底色不经
+// JS,统一走 styles.css 的 --type-* CSS 变量(亮暗主题各自取值),由
+// .type-badge-<type> class 关联,保证对比度双主题都成立。
+const TYPE_META: Record<string, { label: string; letter: string }> = {
+  kafka: { label: 'Kafka', letter: 'K' },
+  mysql: { label: 'MySQL', letter: 'M' },
+  redis: { label: 'Redis', letter: 'R' },
+  clickhouse: { label: 'ClickHouse', letter: 'C' },
+  tidb: { label: 'TiDB', letter: 'T' },
+  es: { label: 'ES', letter: 'E' },
+  postgres: { label: 'PostgreSQL', letter: 'P' },
+  hive: { label: 'Hive', letter: 'H' },
 }
 
-function typeMeta(conn: Connection): { label: string; icon: string } {
-  return TYPE_META[conn.type] ?? { label: conn.type, icon: '📦' }
+function typeMeta(conn: Connection): { label: string; letter: string } {
+  return TYPE_META[conn.type] ?? { label: conn.type, letter: conn.type.charAt(0).toUpperCase() || '?' }
 }
 
 const STATUS_LABEL: Record<ConnectionStatus, string> = {
@@ -86,8 +101,10 @@ async function onToggleConnect(conn: Connection): Promise<void> {
 // actions, so adding MySQL tables later is a matter of declaring a new entry
 // here and a create/delete branch in the dispatch functions below. ES 的
 // es-index / es-template 不作为 collection 分区,但复用同一批交互状态
-// (右键菜单、删除确认),因此也纳入 ObjectKind。
-type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db' | 'es-index' | 'es-template'
+// (右键菜单、删除确认),因此也纳入 ObjectKind。'connection' 承载连接节点
+// 自身的右键菜单(打开/断开、集群健康/监控、上移/下移、编辑、删除);
+// 行内另保留 hover 显现的 ↑↓ 排序微调按钮与原生拖拽(见 conn-row)。
+type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db' | 'es-index' | 'es-template' | 'mysql-table' | 'hive-table' | 'connection'
 interface ObjectCollection {
   key: string
   label: string
@@ -130,6 +147,23 @@ const mysqlTablesByDb = ref<Record<string, MysqlTableInfo[]>>({})
 const mysqlTableLoadingByDb = ref<Record<string, boolean>>({})
 const mysqlExpandedByDb = ref<Record<string, boolean>>({})
 const mysqlTableFilterByDb = ref<Record<string, string>>({})
+// --- Hive 二级树(与 MySQL 同构:库 → 表,懒加载表清单;表节点仅名称) ---
+const hiveDBs = ref<Record<string, string[]>>({})
+const hiveTablesByDb = ref<Record<string, HiveTableInfo[]>>({})
+const hiveTableLoadingByDb = ref<Record<string, boolean>>({})
+const hiveExpandedByDb = ref<Record<string, boolean>>({})
+const hiveTableFilterByDb = ref<Record<string, string>>({})
+// --- PostgreSQL 三级树:数据库 → schema → relation(逐级懒加载并缓存) ---
+const pgDBs = ref<Record<string, string[]>>({})
+// 键 `${connId}/${db}`:每个数据库节点独立的 schema 清单与展开状态。
+const pgSchemasByDb = ref<Record<string, string[]>>({})
+const pgSchemaLoadingByDb = ref<Record<string, boolean>>({})
+const pgExpandedByDb = ref<Record<string, boolean>>({})
+// 键 `${connId}/${db}/${schema}`:每个 schema 节点独立的 relation 清单与展开状态。
+const pgRelationsBySchema = ref<Record<string, PostgresRelationInfo[]>>({})
+const pgRelationLoadingBySchema = ref<Record<string, boolean>>({})
+const pgExpandedBySchema = ref<Record<string, boolean>>({})
+const pgRelationFilterBySchema = ref<Record<string, string>>({})
 // --- Elasticsearch 一级树(连接 → 索引;系统索引由后端过滤,无二级展开) ---
 const esIndices = ref<Record<string, EsIndexInfo[]>>({})
 // ES 一级树的索引名模糊过滤词(按连接缓存)。
@@ -160,9 +194,9 @@ async function toggle(conn: Connection): Promise<void> {
     void loadEsTemplates(id)
   }
   if (
-    !topicsByConn.value[id] && !redisDBs.value[id] && !chDBs.value[id] && !mysqlDBs.value[id] && !esIndices.value[id]
+    !topicsByConn.value[id] && !redisDBs.value[id] && !chDBs.value[id] && !mysqlDBs.value[id] && !esIndices.value[id] && !pgDBs.value[id] && !hiveDBs.value[id]
     && (conn.type === 'kafka' || conn.type === 'redis' || conn.type === 'clickhouse'
-      || conn.type === 'mysql' || conn.type === 'tidb' || conn.type === 'es')
+      || conn.type === 'mysql' || conn.type === 'tidb' || conn.type === 'es' || conn.type === 'postgres' || conn.type === 'hive')
   ) {
     await load(id)
   }
@@ -185,9 +219,17 @@ async function load(connId: string): Promise<void> {
       // 后端默认已过滤系统库(information_schema/performance_schema 等)。
       mysqlDBs.value[connId] = (await getApi().listMysqlDatabases?.(connId)) ?? []
       connStore.setStatus(connId, 'connected')
+    } else if (type === 'hive') {
+      // 后端默认已过滤系统库(default 保留)。
+      hiveDBs.value[connId] = (await getApi().listHiveDatabases?.(connId)) ?? []
+      connStore.setStatus(connId, 'connected')
     } else if (type === 'es') {
       // 后端默认已过滤系统索引(.kibana* 等)。
       esIndices.value[connId] = (await getApi().listEsIndices?.(connId)) ?? []
+      connStore.setStatus(connId, 'connected')
+    } else if (type === 'postgres') {
+      // 后端默认已过滤模板库等系统数据库。
+      pgDBs.value[connId] = (await getApi().listPostgresDatabases?.(connId)) ?? []
       connStore.setStatus(connId, 'connected')
     } else {
       const [topics, groups] = await Promise.all([
@@ -312,6 +354,144 @@ function mysqlDbCountLabel(connId: string, db: string): string {
   const q = mysqlTableFilterOf(connId, db)
   if (!q) return String(total)
   return `${filteredMysqlTables(connId, db).length}/${total}`
+}
+
+// --- Hive 二级树:数据库 → 表(展开库节点时懒加载表清单) ---
+
+function hiveDbKey(connId: string, db: string): string {
+  return `${connId}/${db}`
+}
+
+function isHiveDbExpanded(connId: string, db: string): boolean {
+  return !!hiveExpandedByDb.value[hiveDbKey(connId, db)]
+}
+
+async function toggleHiveDb(connId: string, db: string): Promise<void> {
+  const key = hiveDbKey(connId, db)
+  hiveExpandedByDb.value[key] = !hiveExpandedByDb.value[key]
+  if (!hiveExpandedByDb.value[key] || hiveTablesByDb.value[key]) return
+  // 首次展开懒加载表清单(系统库表由后端过滤)。
+  hiveTableLoadingByDb.value[key] = true
+  try {
+    hiveTablesByDb.value[key] = (await getApi().listHiveTables?.({
+      connection_id: connId,
+      database: db,
+    })) ?? []
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    hiveTableLoadingByDb.value[key] = false
+  }
+}
+
+function hiveTableFilterOf(connId: string, db: string): string {
+  return (hiveTableFilterByDb.value[hiveDbKey(connId, db)] ?? '').trim()
+}
+
+// filteredHiveTables 对表名做本地模糊过滤(fuzzyScore),按相关度排序。
+function filteredHiveTables(connId: string, db: string): HiveTableInfo[] {
+  const list = hiveTablesByDb.value[hiveDbKey(connId, db)] ?? []
+  const q = hiveTableFilterOf(connId, db)
+  if (!q) return list
+  return list
+    .map((t) => ({ t, score: fuzzyScore(q, t.name) }))
+    .filter((x) => x.score !== Infinity)
+    .sort((a, b) => a.score - b.score)
+    .map((x) => x.t)
+}
+
+// hiveDbCountLabel 数据库节点的表计数徽标:未过滤显示总数,过滤中显示「可见/总数」。
+function hiveDbCountLabel(connId: string, db: string): string {
+  const total = (hiveTablesByDb.value[hiveDbKey(connId, db)] ?? []).length
+  const q = hiveTableFilterOf(connId, db)
+  if (!q) return String(total)
+  return `${filteredHiveTables(connId, db).length}/${total}`
+}
+
+// --- PostgreSQL 三级树:数据库 → schema → relation ---
+
+function pgDbKey(connId: string, db: string): string {
+  return `${connId}/${db}`
+}
+
+function pgSchemaKey(connId: string, db: string, schema: string): string {
+  return `${connId}/${db}/${schema}`
+}
+
+function isPgDbExpanded(connId: string, db: string): boolean {
+  return !!pgExpandedByDb.value[pgDbKey(connId, db)]
+}
+
+// togglePgDb 展开/收起数据库节点;首次展开懒加载 schema 清单。
+async function togglePgDb(connId: string, db: string): Promise<void> {
+  const key = pgDbKey(connId, db)
+  pgExpandedByDb.value[key] = !pgExpandedByDb.value[key]
+  if (!pgExpandedByDb.value[key] || pgSchemasByDb.value[key]) return
+  pgSchemaLoadingByDb.value[key] = true
+  try {
+    pgSchemasByDb.value[key] = (await getApi().listPostgresSchemas?.({
+      connection_id: connId,
+      database: db,
+    })) ?? []
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    pgSchemaLoadingByDb.value[key] = false
+  }
+}
+
+function isPgSchemaExpanded(connId: string, db: string, schema: string): boolean {
+  return !!pgExpandedBySchema.value[pgSchemaKey(connId, db, schema)]
+}
+
+// togglePgSchema 展开/收起 schema 节点;首次展开懒加载 relation 清单(系统
+// schema 由后端过滤)。
+async function togglePgSchema(connId: string, db: string, schema: string): Promise<void> {
+  const key = pgSchemaKey(connId, db, schema)
+  pgExpandedBySchema.value[key] = !pgExpandedBySchema.value[key]
+  if (!pgExpandedBySchema.value[key] || pgRelationsBySchema.value[key]) return
+  pgRelationLoadingBySchema.value[key] = true
+  try {
+    pgRelationsBySchema.value[key] = (await getApi().listPostgresTables?.({
+      connection_id: connId,
+      database: db,
+      schema,
+    })) ?? []
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    pgRelationLoadingBySchema.value[key] = false
+  }
+}
+
+function pgRelationFilterOf(connId: string, db: string, schema: string): string {
+  return (pgRelationFilterBySchema.value[pgSchemaKey(connId, db, schema)] ?? '').trim()
+}
+
+// openPgRelation 打开 PG relation 详情页;双击与键盘(Enter/Space)共用入口。
+function openPgRelation(connId: string, db: string, r: PostgresRelationInfo): void {
+  emit('open-postgres-table', connId, db, r.schema, r.relation, r.relation_type)
+}
+
+// filteredPgRelations 对 relation 名做本地模糊过滤(fuzzyScore),按相关度排序。
+function filteredPgRelations(connId: string, db: string, schema: string): PostgresRelationInfo[] {
+  const list = pgRelationsBySchema.value[pgSchemaKey(connId, db, schema)] ?? []
+  const q = pgRelationFilterOf(connId, db, schema)
+  if (!q) return list
+  return list
+    .map((r) => ({ r, score: fuzzyScore(q, r.relation) }))
+    .filter((x) => x.score !== Infinity)
+    .sort((a, b) => a.score - b.score)
+    .map((x) => x.r)
+}
+
+// pgSchemaCountLabel schema 节点的 relation 计数徽标:未过滤显示总数,
+// 过滤中显示「可见/总数」(与 MySQL 库节点徽标同构)。
+function pgSchemaCountLabel(connId: string, db: string, schema: string): string {
+  const total = (pgRelationsBySchema.value[pgSchemaKey(connId, db, schema)] ?? []).length
+  const q = pgRelationFilterOf(connId, db, schema)
+  if (!q) return String(total)
+  return `${filteredPgRelations(connId, db, schema).length}/${total}`
 }
 
 // --- ES 索引过滤(一级树,过滤词按连接缓存,与 MySQL 表过滤同构) ---
@@ -592,13 +772,19 @@ async function submitCreate(conn: Connection): Promise<void> {
 // confirm holds the pending destructive action. The dialog is rendered by
 // Wails (window.confirm is silently unsupported in WKWebView and always
 // returns false), so deletion is confirmed in-app instead. `names` marks a
-// batch delete of several topics at once.
-const confirm = ref<{ connId: string; kind: ObjectKind; name: string; names?: string[] } | null>(null)
+// batch delete of several topics at once; mysql-table 节点额外带 action
+// (drop/truncate)与 db,用于删除表与截断表两种确认。
+const confirm = ref<{ connId: string; kind: ObjectKind; name: string; names?: string[]; action?: 'drop' | 'truncate'; db?: string } | null>(null)
 
 const confirmMessage = computed(() => {
   const pending = confirm.value
   if (!pending) return ''
   if (pending.names) return `确认删除 ${pending.names.length} 个 Topic？此操作不可恢复。`
+  if (pending.kind === 'mysql-table' || pending.kind === 'hive-table') {
+    const target = `${pending.db ?? ''}.${pending.name}`
+    if (pending.action === 'truncate') return `确认截断表「${target}」？表数据将被清空，此操作不可恢复。`
+    return `确认删除表「${target}」？表结构与数据将被删除，此操作不可恢复。`
+  }
   if (pending.kind === 'es-index') return `确认删除索引「${pending.name}」？此操作不可恢复。`
   if (pending.kind === 'es-template') return `确认删除索引模板「${pending.name}」？此操作不可恢复。`
   return `确认删除 ${pending.kind === 'topic' ? 'Topic' : 'Consumer Group'}「${pending.name}」？此操作不可恢复。`
@@ -608,6 +794,7 @@ const confirmText = computed(() => {
   const pending = confirm.value
   if (!pending) return '删除'
   if (pending.names) return `删除 ${pending.names.length} 个 Topic`
+  if (pending.kind === 'mysql-table' || pending.kind === 'hive-table') return pending.action === 'truncate' ? '截断表' : '删除表'
   if (pending.kind === 'es-index') return '删除索引'
   if (pending.kind === 'es-template') return '删除模板'
   return `删除 ${pending.kind === 'topic' ? 'Topic' : '消费组'}`
@@ -617,13 +804,125 @@ const confirmText = computed(() => {
 // edit opens the drawer straight into config-editing mode (编辑配置 entry).
 const detailMeta = ref<{ connId: string; topic: string; edit: boolean } | null>(null)
 
+// --- 连接排序:hover ↑↓ 微调 / 右键菜单上移下移 / 原生拖拽 -------------------
+
+// props.connections 即侧栏的展示顺序(store 列表),所有排序入口都基于它
+// 计算完整 id 顺序,经 emit('reorder', ids) 交外层持久化。
+const connIds = computed(() => props.connections.map((c) => c.id))
+
+function isFirstConn(id: string): boolean {
+  return connIds.value[0] === id
+}
+
+function isLastConn(id: string): boolean {
+  return connIds.value.length > 0 && connIds.value[connIds.value.length - 1] === id
+}
+
+// moveConn 上移/下移一位;边界由按钮 disabled 与菜单省略项兜底,这里再守一道。
+function moveConn(conn: Connection, delta: -1 | 1): void {
+  if ((delta === -1 && isFirstConn(conn.id)) || (delta === 1 && isLastConn(conn.id))) return
+  emit('reorder', moveId(connIds.value, conn.id, delta))
+}
+
+// 原生 HTML5 拖拽:仅顶层连接行 draggable;dragstart 记录源 id(Firefox 需要
+// setData 才能发起拖拽),dragover 按鼠标在目标行的上/下半部计算插入位,
+// drop 用最后一次 dragover 的插入位重排。拖拽与点击由浏览器天然区分
+// (拖后不触发 click),无需手动抑制。
+const dragFromId = ref<string | null>(null)
+const dropHint = ref<{ targetId: string; place: 'before' | 'after' } | null>(null)
+
+function onConnDragStart(conn: Connection, e: DragEvent): void {
+  dragFromId.value = conn.id
+  dropHint.value = null
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', conn.id)
+  }
+}
+
+function onConnDragOver(conn: Connection, e: DragEvent): void {
+  if (!dragFromId.value) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  // 拖回自身行不显示插入位,drop 也会被忽略。
+  if (conn.id === dragFromId.value) {
+    dropHint.value = null
+    return
+  }
+  // jsdom 无几何信息(rect 全 0),clientY 未传时按上半部处理。
+  const rect = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect()
+  const after = rect ? e.clientY > rect.top + rect.height / 2 : false
+  dropHint.value = { targetId: conn.id, place: after ? 'after' : 'before' }
+}
+
+function onConnDrop(conn: Connection, e: DragEvent): void {
+  e.preventDefault()
+  // 源 id 优先取 dragstart 记录的值,跨组件拖入时回退 dataTransfer。
+  const fromId = dragFromId.value || e.dataTransfer?.getData('text/plain') || ''
+  const place = dropHint.value?.place ?? 'before'
+  clearConnDragState()
+  if (!fromId || fromId === conn.id) return
+  const next = reorderIds(connIds.value, fromId, conn.id, place)
+  if (next.join('\u0000') !== connIds.value.join('\u0000')) emit('reorder', next)
+}
+
+function onConnDragEnd(): void {
+  clearConnDragState()
+}
+
+function clearConnDragState(): void {
+  dragFromId.value = null
+  dropHint.value = null
+}
+
 // --- Right-click context menus ----------------------------------------------
 
 // ctxMenu targets the right-clicked tree node; items differ per object kind.
-const ctxMenu = ref<{ x: number; y: number; kind: ObjectKind; connId: string; name: string; partitions: number } | null>(null)
+// db 仅 mysql-table 节点使用(表所属的数据库);conn 仅 connection 节点使用
+// (右键菜单需要按 type 与连接状态动态出项,并透传给编辑连接 emit)。
+const ctxMenu = ref<{ x: number; y: number; kind: ObjectKind; connId: string; name: string; partitions: number; db?: string; conn?: Connection } | null>(null)
 
 const ctxItems = computed<ContextMenuItem[]>(() => {
   if (!ctxMenu.value) return []
+  if (ctxMenu.value.kind === 'connection') {
+    const c = ctxMenu.value.conn
+    if (!c) return []
+    // 连接节点的破坏性/低频操作收敛在右键菜单:首项随连接状态切换文案,
+    // 类型专属项(kafka 健康诊断 / es 集群监控)居中,分隔线隔开排序/编辑与
+    // 破坏性的删除。行内 hover 按钮仅保留 ↑↓ 排序微调(见 conn-row)。
+    const items: ContextMenuItem[] = [{ key: 'conn-toggle', label: isConnected(c.id) ? '断开连接' : '打开连接' }]
+    if (c.type === 'kafka') items.push({ key: 'conn-health', label: '集群健康' })
+    if (c.type === 'es') items.push({ key: 'conn-es-monitor', label: '集群监控' })
+    items.push(
+      { key: 'conn-sep', label: '', separator: true },
+      { key: 'conn-edit', label: '编辑连接' },
+      { key: 'conn-delete', label: '删除连接', danger: true },
+    )
+    // 上移/下移与行内 hover 按钮同一语义;ContextMenu 不支持禁用项,
+    // 边界(首行上移/末行下移/仅一个连接)时直接省略该项。
+    const editIdx = items.findIndex((it) => it.key === 'conn-edit')
+    if (!isFirstConn(c.id)) items.splice(editIdx, 0, { key: 'move-up', label: '上移' })
+    if (!isLastConn(c.id)) items.splice(items.findIndex((it) => it.key === 'conn-edit'), 0, { key: 'move-down', label: '下移' })
+    return items
+  }
+  if (ctxMenu.value.kind === 'mysql-table') {
+    return [
+      { key: 'open-mysql-table', label: '打开表' },
+      { key: 'mysql-edit-columns', label: '编辑表字段…' },
+      { key: 'mysql-export', label: '导出表…' },
+      { key: 'mysql-truncate', label: '截断表', danger: true },
+      { key: 'mysql-drop', label: '删除表', danger: true },
+    ]
+  }
+  if (ctxMenu.value.kind === 'hive-table') {
+    return [
+      { key: 'open-hive-table', label: '打开表' },
+      { key: 'hive-edit-columns', label: '编辑表字段…' },
+      { key: 'hive-export', label: '导出表结构' },
+      { key: 'hive-truncate', label: '截断表', danger: true },
+      { key: 'hive-drop', label: '删除表', danger: true },
+    ]
+  }
   if (ctxMenu.value.kind === 'topic') {
     return [
       { key: 'browse', label: '打开消息浏览' },
@@ -670,6 +969,20 @@ function openEsTemplateMenu(e: MouseEvent, connId: string, name: string): void {
   ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'es-template', connId, name, partitions: 0 }
 }
 
+function openMysqlTableMenu(e: MouseEvent, connId: string, db: string, name: string): void {
+  ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'mysql-table', connId, name, partitions: 0, db }
+}
+
+function openHiveTableMenu(e: MouseEvent, connId: string, db: string, name: string): void {
+  ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'hive-table', connId, name, partitions: 0, db }
+}
+
+// openConnMenu 打开连接节点自身的右键菜单;行内低频操作(编辑/删除/健康等)
+// 仍收敛于此,行内仅保留 ↑↓ 排序微调按钮。
+function openConnMenu(conn: Connection, e: MouseEvent): void {
+  ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'connection', connId: conn.id, name: conn.name, partitions: 0, conn }
+}
+
 function closeCtxMenu(): void {
   ctxMenu.value = null
 }
@@ -678,6 +991,30 @@ function onCtxSelect(key: string): void {
   const m = ctxMenu.value
   if (!m) return
   switch (key) {
+    case 'conn-toggle':
+      // 打开/断开连接(与原行内按钮同一入口);菜单本身在 pick 后已关闭。
+      if (m.conn) void onToggleConnect(m.conn)
+      break
+    case 'move-up':
+      // 与行内 ↑ 按钮同一入口(moveConn 内部再做一次边界守卫)。
+      if (m.conn) moveConn(m.conn, -1)
+      break
+    case 'move-down':
+      if (m.conn) moveConn(m.conn, 1)
+      break
+    case 'conn-health':
+      emit('open-health', m.connId)
+      break
+    case 'conn-es-monitor':
+      emit('open-es-monitor', m.connId)
+      break
+    case 'conn-edit':
+      if (m.conn) emit('edit-connection', m.conn)
+      break
+    case 'conn-delete':
+      // 删除连接仍由 App.vue 的确认弹窗链路兜底,这里只透传 id。
+      emit('delete', m.connId)
+      break
     case 'browse':
       emit('open-topic', m.connId, m.name, (topicsByConn.value[m.connId] ?? []).find((t) => t.name === m.name)?.partitions.map((p) => p.id) ?? [])
       break
@@ -723,6 +1060,128 @@ function onCtxSelect(key: string): void {
     case 'delete-es-template':
       askDelete(props.connections.find((c) => c.id === m.connId)!, 'es-template', m.name)
       break
+    case 'open-mysql-table':
+      emit('open-mysql-table', m.connId, m.db ?? '', m.name)
+      break
+    case 'mysql-edit-columns':
+      if (m.db !== undefined) structureMeta.value = { connId: m.connId, db: m.db, table: m.name }
+      break
+    case 'mysql-export':
+      if (m.db !== undefined) exportMeta.value = { connId: m.connId, db: m.db, table: m.name }
+      break
+    case 'mysql-truncate':
+      askMysqlTableConfirm(m.connId, m.db ?? '', m.name, 'truncate')
+      break
+    case 'mysql-drop':
+      askMysqlTableConfirm(m.connId, m.db ?? '', m.name, 'drop')
+      break
+    case 'open-hive-table':
+      emit('open-hive-table', m.connId, m.db ?? '', m.name)
+      break
+    case 'hive-edit-columns':
+      if (m.db !== undefined) hiveStructureMeta.value = { connId: m.connId, db: m.db, table: m.name }
+      break
+    case 'hive-export':
+      if (m.db !== undefined) void exportHiveTable(m.connId, m.db, m.name)
+      break
+    case 'hive-truncate':
+      // 仅内部表(MANAGED_TABLE)可清空:先探测表类型,非内部表 toast 提示。
+      if (m.db !== undefined) void askHiveTableConfirm(m.connId, m.db, m.name, 'truncate')
+      break
+    case 'hive-drop':
+      if (m.db !== undefined) confirm.value = { connId: m.connId, kind: 'hive-table', name: m.name, action: 'drop', db: m.db }
+      break
+  }
+}
+
+// structureMeta holds the mysql table whose structure-editing dialog is open.
+const structureMeta = ref<{ connId: string; db: string; table: string } | null>(null)
+
+// exportMeta holds the mysql table whose export-options dialog is open; the
+// actual export (mysqlExportTable + saveFile) lives in MysqlExportDialog.
+const exportMeta = ref<{ connId: string; db: string; table: string } | null>(null)
+
+// askMysqlTableConfirm 进入删除表/截断表的确认;文案与按钮随 action 区分。
+function askMysqlTableConfirm(connId: string, db: string, table: string, action: 'drop' | 'truncate'): void {
+  confirm.value = { connId, kind: 'mysql-table', name: table, action, db }
+}
+
+// reloadMysqlTables 重置某库的表清单缓存;库节点仍展开时立即重新拉取,
+// 让删除/截断后的树立即反映新状态(与 toggleMysqlDb 的懒加载逻辑一致)。
+async function reloadMysqlTables(connId: string, db: string): Promise<void> {
+  const key = mysqlDbKey(connId, db)
+  delete mysqlTablesByDb.value[key]
+  if (!isMysqlDbExpanded(connId, db)) return
+  mysqlTableLoadingByDb.value[key] = true
+  try {
+    mysqlTablesByDb.value[key] = (await getApi().listMysqlTables?.({
+      connection_id: connId,
+      database: db,
+    })) ?? []
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    mysqlTableLoadingByDb.value[key] = false
+  }
+}
+
+// --- Hive 表节点动作:结构编辑弹窗 / 导出表结构 / 截断(仅内部表)与删除 ---
+
+// hiveStructureMeta holds the hive table whose structure-editing dialog is open.
+const hiveStructureMeta = ref<{ connId: string; db: string; table: string } | null>(null)
+
+// exportHiveTable 导出表结构(SHOW CREATE TABLE 原文)并经原生对话框存为 .sql;
+// Hive 普通表不支持 INSERT VALUES,数据导出不提供,无需选项弹窗。
+async function exportHiveTable(connId: string, db: string, table: string): Promise<void> {
+  try {
+    const res = await getApi().hiveExportTable?.({ connection_id: connId, database: db, table })
+    if (res) await saveFile(res.filename, res.content, 'application/sql')
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  }
+}
+
+// askHiveTableConfirm 进入截断表确认前的守卫:hiveTableColumns 探测表类型,
+// 非 MANAGED_TABLE(外部表/视图等)或探测失败时 toast 提示并终止,不弹确认。
+async function askHiveTableConfirm(connId: string, db: string, table: string, action: 'truncate'): Promise<void> {
+  try {
+    const meta = await getApi().hiveTableColumns?.({ connection_id: connId, database: db, table })
+    if ((meta?.table_type ?? '') !== 'MANAGED_TABLE') {
+      try {
+        useToastStore().show('仅内部表(MANAGED_TABLE)支持清空')
+      } catch {
+        // pinia 未激活时忽略提示
+      }
+      return
+    }
+  } catch (e) {
+    // 探测失败视为不可清空,不能盲目开放危险操作。
+    try {
+      useToastStore().show(e instanceof Error ? e.message : String(e))
+    } catch {
+      // pinia 未激活时忽略提示
+    }
+    return
+  }
+  confirm.value = { connId, kind: 'hive-table', name: table, action, db }
+}
+
+// reloadHiveTables 重置某库的表清单缓存;库节点仍展开时立即重新拉取,
+// 让删除/截断后的树立即反映新状态(与 reloadMysqlTables 同构)。
+async function reloadHiveTables(connId: string, db: string): Promise<void> {
+  const key = hiveDbKey(connId, db)
+  delete hiveTablesByDb.value[key]
+  if (!isHiveDbExpanded(connId, db)) return
+  hiveTableLoadingByDb.value[key] = true
+  try {
+    hiveTablesByDb.value[key] = (await getApi().listHiveTables?.({
+      connection_id: connId,
+      database: db,
+    })) ?? []
+  } catch (e) {
+    errorByConn.value[connId] = e instanceof Error ? e.message : String(e)
+  } finally {
+    hiveTableLoadingByDb.value[key] = false
   }
 }
 
@@ -845,6 +1304,48 @@ async function executeDelete(): Promise<void> {
       await getApi().deleteTopic({ connection_id: pending.connId, topic: pending.name })
     } else if (pending.kind === 'group') {
       await getApi().deleteConsumerGroup({ connection_id: pending.connId, group: pending.name })
+    } else if (pending.kind === 'mysql-table') {
+      const db = pending.db ?? ''
+      if (pending.action === 'truncate') {
+        await getApi().mysqlTruncateTable?.({ connection_id: pending.connId, database: db, table: pending.name })
+      } else {
+        await getApi().mysqlDropTable?.({ connection_id: pending.connId, database: db, table: pending.name })
+      }
+      // 成功即时反馈:截断/删除已真实执行(后端审计可查),避免「静默成功」
+      // 让人误以为无效;打开中的表浏览器/控制台是旧结果,重新查询即见清空。
+      try {
+        useToastStore().show(
+          pending.action === 'truncate'
+            ? `表 ${db}.${pending.name} 已截断`
+            : `表 ${db}.${pending.name} 已删除`,
+        )
+      } catch {
+        // pinia 未激活时忽略提示,不能中断后续刷新
+      }
+      // 删除/截断成功后只刷新该库的表清单,不动整棵连接树。
+      await reloadMysqlTables(pending.connId, db)
+      return
+    } else if (pending.kind === 'hive-table') {
+      const db = pending.db ?? ''
+      if (pending.action === 'truncate') {
+        await getApi().hiveTruncateTable?.({ connection_id: pending.connId, database: db, table: pending.name })
+      } else {
+        await getApi().hiveDropTable?.({ connection_id: pending.connId, database: db, table: pending.name })
+      }
+      // 成功即时反馈:截断/删除已真实执行(后端审计可查),避免「静默成功」
+      // 让人误以为无效;打开中的表浏览器/控制台是旧结果,重新查询即见清空。
+      try {
+        useToastStore().show(
+          pending.action === 'truncate'
+            ? `表 ${db}.${pending.name} 已截断`
+            : `表 ${db}.${pending.name} 已删除`,
+        )
+      } catch {
+        // pinia 未激活时忽略提示,不能中断后续刷新
+      }
+      // 删除/截断成功后只刷新该库的表清单,不动整棵连接树。
+      await reloadHiveTables(pending.connId, db)
+      return
     } else if (pending.kind === 'es-index') {
       await getApi().esDeleteIndex?.({ connection_id: pending.connId, index: pending.name })
     } else if (pending.kind === 'es-template') {
@@ -900,7 +1401,22 @@ function exportTopics(conn: Connection): void {
     <button class="tree-new" type="button" data-test="btn-new" @click="emit('new')">＋ 新建连接</button>
     <div v-if="connections.length === 0" class="tree-empty" data-test="tree-empty">暂无连接</div>
     <div v-for="conn in connections" :key="conn.id" class="conn" data-test="connection">
-      <div class="conn-row" data-test="conn-row" @click="toggle(conn)">
+      <div
+        class="conn-row"
+        data-test="conn-row"
+        draggable="true"
+        :class="{
+          active: isExpanded(conn.id),
+          'drop-before': dropHint?.targetId === conn.id && dropHint.place === 'before',
+          'drop-after': dropHint?.targetId === conn.id && dropHint.place === 'after',
+        }"
+        @click="toggle(conn)"
+        @contextmenu.prevent.stop="openConnMenu(conn, $event)"
+        @dragstart="onConnDragStart(conn, $event)"
+        @dragover="onConnDragOver(conn, $event)"
+        @drop="onConnDrop(conn, $event)"
+        @dragend="onConnDragEnd"
+      >
         <span class="caret" data-test="conn-caret" :class="{ open: isExpanded(conn.id) }">
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
             <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
@@ -914,15 +1430,44 @@ function exportTopics(conn: Connection): void {
           :title="STATUS_LABEL[statusOf(conn.id)]"
         ></span>
         <span class="conn-name" data-test="conn-name">{{ conn.name }}</span>
+        <!-- 圆角小方块 + 品牌色首字母:主色/字色走 --type-* 变量(亮暗两套)。 -->
+        <span
+          class="conn-type-badge"
+          :class="`type-badge-${conn.type}`"
+          data-test="conn-type-badge"
+          aria-hidden="true"
+        >{{ typeMeta(conn).letter }}</span>
         <span class="conn-type" :class="`conn-type-${conn.type}`" data-test="conn-type">{{ typeMeta(conn).label }}</span>
-        <button class="conn-toggle" type="button" data-test="btn-connect" :title="isConnected(conn.id) ? '关闭连接' : '打开连接'" @click.stop="onToggleConnect(conn)">
-          <span class="toggle-icon">⏻</span>
-          <span class="toggle-text">{{ isConnected(conn.id) ? '断开' : '连接' }}</span>
-        </button>
-        <button v-if="conn.type === 'kafka'" class="conn-health" type="button" data-test="btn-cluster-health" title="集群健康" @click.stop="emit('open-health', conn.id)">🩺</button>
-        <button v-if="conn.type === 'es'" class="conn-health" type="button" data-test="btn-es-monitor" title="集群监控" @click.stop="emit('open-es-monitor', conn.id)">📈</button>
-        <button class="conn-edit" type="button" data-test="btn-edit-connection" title="编辑连接" @click.stop="emit('edit-connection', conn)">✎</button>
-        <button class="conn-delete" type="button" data-test="btn-delete" @click.stop="emit('delete', conn.id)">🗑</button>
+        <!-- ↑↓ 排序微调:hover 显现(与 leaf-del 同范式),边界 disabled 置灰;
+             click.stop 防止触发行的展开/收起。 -->
+        <span class="conn-actions">
+          <button
+            class="conn-move"
+            type="button"
+            data-test="btn-move-up"
+            title="上移"
+            aria-label="上移"
+            :disabled="isFirstConn(conn.id)"
+            @click.stop="moveConn(conn, -1)"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M4 10 8 6l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <button
+            class="conn-move"
+            type="button"
+            data-test="btn-move-down"
+            title="下移"
+            aria-label="下移"
+            :disabled="isLastConn(conn.id)"
+            @click.stop="moveConn(conn, 1)"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </span>
       </div>
 
       <div v-if="isExpanded(conn.id) && (conn.type === 'kafka' || conn.type === 'redis')" class="conn-children">
@@ -1271,6 +1816,7 @@ function exportTopics(conn: Connection): void {
                   data-test="mysql-table-node"
                   :title="`${t.name}(${t.engine})`"
                   @dblclick="emit('open-mysql-table', conn.id, db, t.name)"
+                  @contextmenu.prevent.stop="openMysqlTableMenu($event, conn.id, db, t.name)"
                 >
                   <span class="leaf-name" data-test="mysql-table-name">{{ t.name }}</span>
                   <span class="leaf-badge engine" data-test="mysql-table-engine">{{ t.engine }}</span>
@@ -1285,6 +1831,159 @@ function exportTopics(conn: Connection): void {
             </template>
           </template>
           <div v-if="(mysqlDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="mysql-db-empty">（无数据库）</div>
+        </template>
+      </div>
+      <div v-else-if="isExpanded(conn.id) && conn.type === 'hive'" class="conn-children">
+        <div v-if="loadingByConn[conn.id]" class="conn-loading" data-test="tree-loading">加载中…</div>
+        <div v-else-if="errorByConn[conn.id]" class="conn-error" data-test="tree-error">{{ errorByConn[conn.id] }}</div>
+        <template v-else>
+          <template v-for="db in hiveDBs[conn.id] ?? []" :key="db">
+            <div class="leaf ch-db-node" data-test="hive-db-node" :title="`数据库 ${db}`" @click="toggleHiveDb(conn.id, db)">
+              <span class="caret" :class="{ open: isHiveDbExpanded(conn.id, db) }" data-test="hive-db-caret">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                  <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              <span class="leaf-name" data-test="hive-db-name">{{ db }}</span>
+              <span
+                v-if="hiveTablesByDb[hiveDbKey(conn.id, db)]"
+                class="leaf-badge"
+                data-test="hive-db-count"
+              >{{ hiveDbCountLabel(conn.id, db) }}</span>
+            </div>
+            <template v-if="isHiveDbExpanded(conn.id, db)">
+              <div class="ch-table-filter">
+                <input
+                  v-model="hiveTableFilterByDb[hiveDbKey(conn.id, db)]"
+                  class="search-input ch-filter-input"
+                  type="search"
+                  data-test="hive-table-filter"
+                  placeholder="🔍 模糊搜索表…"
+                  autocapitalize="off"
+                  autocorrect="off"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div
+                v-if="hiveTableLoadingByDb[hiveDbKey(conn.id, db)]"
+                class="leaf muted"
+                data-test="hive-tables-loading"
+              >加载中…</div>
+              <template v-else>
+                <div
+                  v-for="t in filteredHiveTables(conn.id, db)"
+                  :key="t.name"
+                  class="leaf ch-table"
+                  data-test="hive-table-node"
+                  :title="t.name"
+                  @dblclick="emit('open-hive-table', conn.id, db, t.name)"
+                  @contextmenu.prevent.stop="openHiveTableMenu($event, conn.id, db, t.name)"
+                >
+                  <span class="leaf-name" data-test="hive-table-name">{{ t.name }}</span>
+                </div>
+                <div
+                  v-if="filteredHiveTables(conn.id, db).length === 0"
+                  class="leaf muted"
+                  data-test="hive-table-empty"
+                >{{ (hiveTablesByDb[hiveDbKey(conn.id, db)] ?? []).length === 0 ? '（无表）' : '无匹配表' }}</div>
+              </template>
+            </template>
+          </template>
+          <div v-if="(hiveDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="hive-db-empty">（无数据库）</div>
+        </template>
+      </div>
+      <div v-else-if="isExpanded(conn.id) && conn.type === 'postgres'" class="conn-children">
+        <div v-if="loadingByConn[conn.id]" class="conn-loading" data-test="tree-loading">加载中…</div>
+        <div v-else-if="errorByConn[conn.id]" class="conn-error" data-test="tree-error">{{ errorByConn[conn.id] }}</div>
+        <template v-else>
+          <template v-for="db in pgDBs[conn.id] ?? []" :key="db">
+            <div class="leaf ch-db-node" data-test="pg-db-node" :title="`数据库 ${db}`" @click="togglePgDb(conn.id, db)">
+              <span class="caret" :class="{ open: isPgDbExpanded(conn.id, db) }" data-test="pg-db-caret">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                  <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              <span class="leaf-name" data-test="pg-db-name">{{ db }}</span>
+              <span
+                v-if="pgSchemasByDb[pgDbKey(conn.id, db)]"
+                class="leaf-badge"
+                data-test="pg-db-count"
+              >{{ (pgSchemasByDb[pgDbKey(conn.id, db)] ?? []).length }}</span>
+            </div>
+            <template v-if="isPgDbExpanded(conn.id, db)">
+              <div
+                v-if="pgSchemaLoadingByDb[pgDbKey(conn.id, db)]"
+                class="leaf muted"
+                data-test="pg-schemas-loading"
+              >加载中…</div>
+              <template v-else>
+                <template v-for="schema in pgSchemasByDb[pgDbKey(conn.id, db)] ?? []" :key="schema">
+                  <div class="leaf ch-db-node pg-schema-node-inner" data-test="pg-schema-node" :title="`Schema ${schema}`" @click="togglePgSchema(conn.id, db, schema)">
+                    <span class="caret" :class="{ open: isPgSchemaExpanded(conn.id, db, schema) }" data-test="pg-schema-caret">
+                      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                        <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
+                    <span class="leaf-name" data-test="pg-schema-name">{{ schema }}</span>
+                    <span
+                      v-if="pgRelationsBySchema[pgSchemaKey(conn.id, db, schema)]"
+                      class="leaf-badge"
+                      data-test="pg-schema-count"
+                    >{{ pgSchemaCountLabel(conn.id, db, schema) }}</span>
+                  </div>
+                  <template v-if="isPgSchemaExpanded(conn.id, db, schema)">
+                    <div class="ch-table-filter">
+                      <input
+                        v-model="pgRelationFilterBySchema[pgSchemaKey(conn.id, db, schema)]"
+                        class="search-input ch-filter-input"
+                        type="search"
+                        data-test="pg-relation-filter"
+                        placeholder="🔍 模糊搜索表…"
+                        autocapitalize="off"
+                        autocorrect="off"
+                        autocomplete="off"
+                        spellcheck="false"
+                      />
+                    </div>
+                    <div
+                      v-if="pgRelationLoadingBySchema[pgSchemaKey(conn.id, db, schema)]"
+                      class="leaf muted"
+                      data-test="pg-relations-loading"
+                    >加载中…</div>
+                    <template v-else>
+                      <div
+                        v-for="r in filteredPgRelations(conn.id, db, schema)"
+                        :key="`${r.relation_type}:${r.relation}`"
+                        class="leaf ch-table"
+                        data-test="pg-relation-node"
+                        role="button"
+                        tabindex="0"
+                        :title="`${r.relation}(${r.relation_type})`"
+                        @dblclick="openPgRelation(conn.id, db, r)"
+                        @keydown.enter.prevent="openPgRelation(conn.id, db, r)"
+                        @keydown.space.prevent="openPgRelation(conn.id, db, r)"
+                      >
+                        <span class="leaf-name" data-test="pg-relation-name">{{ r.relation }}</span>
+                        <span class="leaf-badge engine" data-test="pg-relation-type">{{ r.relation_type }}</span>
+                      </div>
+                      <div
+                        v-if="filteredPgRelations(conn.id, db, schema).length === 0"
+                        class="leaf muted"
+                        data-test="pg-relation-empty"
+                      >{{ (pgRelationsBySchema[pgSchemaKey(conn.id, db, schema)] ?? []).length === 0 ? '（无表）' : '无匹配表' }}</div>
+                    </template>
+                  </template>
+                </template>
+                <div
+                  v-if="(pgSchemasByDb[pgDbKey(conn.id, db)] ?? []).length === 0"
+                  class="leaf muted"
+                  data-test="pg-schema-empty"
+                >（无 schema）</div>
+              </template>
+            </template>
+          </template>
+          <div v-if="(pgDBs[conn.id] ?? []).length === 0" class="leaf muted" data-test="pg-db-empty">（无数据库）</div>
         </template>
       </div>
       <div v-else-if="isExpanded(conn.id) && conn.type === 'es'" class="conn-children">
@@ -1474,6 +2173,29 @@ function exportTopics(conn: Connection): void {
       :group="resetMeta?.group ?? null"
       @close="resetMeta = null"
     />
+    <MysqlTableStructure
+      :show="!!structureMeta"
+      :connection-id="structureMeta?.connId ?? ''"
+      :database="structureMeta?.db ?? ''"
+      :table="structureMeta?.table ?? ''"
+      @close="structureMeta = null"
+    />
+    <!-- Hive 编辑表字段弹窗(与 MySQL 同型,按 Hive 方言裁剪)。 -->
+    <HiveTableStructure
+      :show="!!hiveStructureMeta"
+      :connection-id="hiveStructureMeta?.connId ?? ''"
+      :database="hiveStructureMeta?.db ?? ''"
+      :table="hiveStructureMeta?.table ?? ''"
+      @close="hiveStructureMeta = null"
+    />
+    <MysqlExportDialog
+      v-if="exportMeta"
+      :show="true"
+      :connection-id="exportMeta.connId"
+      :database="exportMeta.db"
+      :table="exportMeta.table"
+      @close="exportMeta = null"
+    />
     <ConfirmDialog
       :show="!!confirm"
       :message="confirmMessage"
@@ -1517,24 +2239,62 @@ function exportTopics(conn: Connection): void {
 </template>
 
 <style scoped>
-.tree { padding: 8px; font-size: 13px; color: var(--text); font-family: var(--font); }
+.tree { padding: 10px 8px 12px; font-size: 13px; color: var(--text); font-family: var(--font); }
 .tree-new {
   width: 100%; box-sizing: border-box;
   background: var(--accent); color: #fff; border: none;
-  border-radius: 8px; padding: 8px; cursor: pointer; margin-bottom: 10px; font-size: 13px;
-  box-shadow: 0 1px 2px rgba(0, 113, 227, 0.3);
-  transition: background 0.15s ease;
+  border-radius: 9px; padding: 8px 10px; cursor: pointer; margin-bottom: 10px; font-size: 13px; font-weight: 500;
+  /* 层次:投影 + 顶部内高光;按下轻微缩放反馈。 */
+  box-shadow: 0 1px 2px rgba(0, 113, 227, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  transition: background 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
 }
 .tree-new:hover { background: var(--accent-hover); }
-.tree-empty { color: var(--text-tertiary); padding: 10px 8px; }
-.conn { margin-bottom: 2px; }
+.tree-new:active { transform: scale(0.98); box-shadow: 0 1px 1px rgba(0, 113, 227, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.1); }
+.tree-new:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft), 0 1px 2px rgba(0, 113, 227, 0.3); }
+.tree-empty {
+  color: var(--text-tertiary); font-size: 12.5px; text-align: center;
+  padding: 26px 12px; margin: 2px 2px 8px;
+  border: 1px dashed var(--border-strong); border-radius: 10px;
+}
+.conn { margin-bottom: 1px; }
 .conn-row {
   display: flex; align-items: center; gap: 8px;
-  padding: 7px 8px; border-radius: 8px; cursor: pointer;
+  padding: 8px 9px; border-radius: 8px; cursor: pointer;
   transition: background 0.12s ease;
   user-select: none;
 }
 .conn-row:hover { background: var(--bg-hover); }
+/* 选中(展开)态:与 hover 区分的轻底色,常驻标识当前浏览的连接。 */
+.conn-row.active { background: var(--bg-active); }
+/* ↑↓ 排序微调按钮:hover 显现(范式同 leaf-del);disabled 置灰。 */
+.conn-actions { display: inline-flex; align-items: center; gap: 1px; flex: none; margin-left: 2px; }
+.conn-move {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; box-sizing: border-box;
+  background: none; border: none; color: var(--text-tertiary); cursor: pointer;
+  border-radius: 5px; padding: 0; flex: none; opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.conn-row:hover .conn-move { opacity: 1; }
+.conn-move:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); }
+.conn-move:active:not(:disabled) { transform: scale(0.92); }
+.conn-move:disabled { opacity: 0; cursor: default; }
+.conn-row:hover .conn-move:disabled { opacity: 0.35; }
+/* 拖拽插入位置指示线:accent 色 2px 横线压在目标行的上/下边缘。 */
+.conn-row.drop-before, .conn-row.drop-after { position: relative; }
+.conn-row.drop-before::before,
+.conn-row.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.conn-row.drop-before::before { top: -2px; }
+.conn-row.drop-after::after { bottom: -2px; }
 .caret {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; color: var(--text-tertiary);
@@ -1544,12 +2304,32 @@ function exportTopics(conn: Connection): void {
 .caret.open { transform: rotate(90deg); color: var(--text-secondary); }
 .conn-name { font-weight: 600; flex: 1; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn-type { font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 5px; flex: none; }
-.conn-type-kafka { color: var(--info); background: var(--info-soft); }
-.conn-type-mysql { color: var(--warn); background: var(--warn-soft); }
-.conn-type-es { color: var(--ok); background: var(--ok-soft); }
-.conn-type-redis { color: var(--danger); background: var(--danger-soft); }
-.conn-type-clickhouse { color: var(--warn); background: var(--warn-soft); }
-.conn-type-tidb { color: var(--ok); background: var(--ok-soft); }
+/* 品牌色首字母徽标:实底主色圆角方块,字色按类型配白/深保证对比;
+   颜色变量(含 dark 覆盖)统一在 styles.css 定义。 */
+.conn-type-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; flex: none;
+  border-radius: 5px;
+  font-size: 10px; font-weight: 700; line-height: 1;
+  font-family: var(--mono);
+  background: var(--bg-active); color: var(--text-secondary);
+}
+.type-badge-kafka { background: var(--type-kafka); color: var(--type-kafka-contrast); }
+.type-badge-mysql { background: var(--type-mysql); color: var(--type-mysql-contrast); }
+.type-badge-redis { background: var(--type-redis); color: var(--type-redis-contrast); }
+.type-badge-es { background: var(--type-es); color: var(--type-es-contrast); }
+.type-badge-tidb { background: var(--type-tidb); color: var(--type-tidb-contrast); }
+.type-badge-clickhouse { background: var(--type-clickhouse); color: var(--type-clickhouse-contrast); }
+.type-badge-postgres { background: var(--type-postgres); color: var(--type-postgres-contrast); }
+.type-badge-hive { background: var(--type-hive); color: var(--type-hive-contrast); }
+/* 类型文字徽标:品牌主色文字 + 柔和底色(替代共享的语义色)。 */
+.conn-type-kafka { color: var(--type-kafka); background: var(--type-kafka-soft); }
+.conn-type-mysql { color: var(--type-mysql); background: var(--type-mysql-soft); }
+.conn-type-es { color: var(--type-es); background: var(--type-es-soft); }
+.conn-type-redis { color: var(--type-redis); background: var(--type-redis-soft); }
+.conn-type-clickhouse { color: var(--type-clickhouse); background: var(--type-clickhouse-soft); }
+.conn-type-tidb { color: var(--type-tidb); background: var(--type-tidb-soft); }
+.conn-type-hive { color: var(--type-hive); background: var(--type-hive-soft); }
 .conn-status {
   width: 8px; height: 8px; border-radius: 50%; flex: none; margin: 0 6px;
   background: var(--text-tertiary);
@@ -1560,25 +2340,12 @@ function exportTopics(conn: Connection): void {
 .conn-status-redis { background: var(--danger); }
 .conn-status-clickhouse { background: var(--warn); }
 .conn-status-tidb { background: var(--ok); }
+.conn-status-hive { background: var(--warn); }
 .conn-status-connecting { background: var(--ok); animation: conn-pulse 1.1s ease-in-out infinite; }
 .conn-status-error { background: var(--danger); }
 .conn-status-disconnected { background: var(--text-tertiary); }
 .conn-status-unknown { background: var(--text-tertiary); }
 @keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-.conn-toggle {
-  display: flex; align-items: center; gap: 3px;
-  background: none; border: 1px solid var(--border-strong); color: var(--text-secondary);
-  font-size: 11px; font-weight: 500; border-radius: 6px; padding: 1px 7px; cursor: pointer; flex: none;
-  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
-}
-.conn-toggle:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
-.conn-toggle .toggle-icon { font-size: 12px; line-height: 1; }
-.conn-delete { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; flex: none; }
-.conn-delete:hover { color: var(--danger); background: var(--danger-soft); }
-.conn-health { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; font-size: 12px; line-height: 1; flex: none; transition: color 0.15s ease, background 0.15s ease; }
-.conn-health:hover { color: var(--ok); background: var(--ok-soft); }
-.conn-edit { background: none; border: none; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; padding: 1px 3px; flex: none; transition: color 0.15s ease, background 0.15s ease; }
-.conn-edit:hover { color: var(--accent); background: var(--accent-soft); }
 .conn-children { margin-left: 16px; border-left: 1px solid var(--border); padding-left: 8px; }
 .topic-search { margin: 6px 0 2px; }
 .topic-toolbar { display: flex; align-items: center; gap: 6px; margin: 4px 0 2px; }
@@ -1631,7 +2398,7 @@ function exportTopics(conn: Connection): void {
 .group-label.clickable:active .group-add { transform: scale(0.92); }
 .leaf {
   display: flex; align-items: center; gap: 6px;
-  padding: 4px 7px; border-radius: 6px; cursor: pointer;
+  padding: 5px 7px; border-radius: 6px; cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transition: background 0.12s ease, color 0.12s ease;
 }

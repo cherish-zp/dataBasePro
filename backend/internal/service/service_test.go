@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/store"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/store"
 )
 
 // fakeKafka implements KafkaDataSource for service-layer tests.
@@ -149,7 +149,7 @@ func sampleConn() *model.Connection {
 	return &model.Connection{
 		Name: "local",
 		Type: model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {
+		Config: model.MustConfigJSON(model.KafkaConfig{
 			BootstrapServers: []string{"localhost:9092"},
 		}),
 	}

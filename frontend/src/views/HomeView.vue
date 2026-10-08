@@ -7,15 +7,27 @@ interface Feature {
   desc: string
 }
 
+// 支持的数据源(徽标条,与后端 builtinDrivers 保持一致)。
+const SOURCES = [
+  { icon: '⚡', name: 'Kafka' },
+  { icon: '🐬', name: 'MySQL' },
+  { icon: '🌿', name: 'TiDB' },
+  { icon: '🐘', name: 'PostgreSQL' },
+  { icon: '🐝', name: 'Hive' },
+  { icon: '🗄️', name: 'ClickHouse' },
+  { icon: '🔎', name: 'Elasticsearch' },
+  { icon: '🧱', name: 'Redis' },
+]
+
 const FEATURES: Feature[] = [
-  { icon: '⚡', title: 'Kafka 消息浏览', desc: 'Topic 消息检索、分区过滤、批量生产与导出' },
-  { icon: '🗄️', title: 'ClickHouse 表浏览', desc: '分页 / 过滤 / 排序,双击单元格直接更新数据' },
-  { icon: '🧵', title: 'Redis 键值管理', desc: '五种类型读写、TTL 设置与内存占用查看' },
-  { icon: '💬', title: '双 SQL 控制台', desc: 'Kafka 消息 SQL 与 ClickHouse SQL,支持查询文件保存' },
-  { icon: '👥', title: '消费组与 Lag 总览', desc: '消费状态 / 成员 / 堆积明细,重置消费位移' },
-  { icon: '🫀', title: '集群健康与审计', desc: 'Broker 健康检查、操作审计日志、深浅色主题' },
-  { icon: '🐬', title: 'MySQL / TiDB 管理', desc: '库表浏览、主键定位的数据编辑与 SQL 控制台' },
-  { icon: '🔎', title: 'Elasticsearch 管理', desc: '索引浏览、文档编辑与 SQL 查询' },
+  { icon: '🗂️', title: '八大数据源', desc: '统一连接管理与库表树,连接状态一目了然' },
+  { icon: '💬', title: '六套 SQL 控制台', desc: '多语句执行、结果分页、查询文件保存与快捷键' },
+  { icon: '✏️', title: '数据编辑', desc: '主键/整行定位的单元格编辑与行删除,预览确认防误操作' },
+  { icon: '🛠️', title: '表管理', desc: '右键截断、删表、编辑表字段、导出表结构' },
+  { icon: '⚡', title: 'Kafka 全家桶', desc: '消息浏览、批量生产、消费组 Lag 总览、集群健康' },
+  { icon: '🧱', title: 'Redis 管理', desc: '五种类型读写、TTL 设置与内存占用查看' },
+  { icon: '🎛️', title: '效率工具', desc: '⌘K 命令面板、tab 草稿、深浅色主题、操作审计' },
+  { icon: '🔄', title: '自更新与文档', desc: '新版本红点提醒、原位无感升级、内置使用文档' },
 ]
 </script>
 
@@ -24,7 +36,12 @@ const FEATURES: Feature[] = [
     <div class="hero">
       <div class="logo">🪐</div>
       <h1 class="title" data-test="home-title">多数据源数据库管理客户端</h1>
-      <p class="desc">在左侧数据源树新建或选择连接，双击对象即可开始浏览。</p>
+      <p class="desc">一个客户端管理八类数据源：浏览、查询、编辑、导出一站式完成。</p>
+      <div class="sources" data-test="home-sources">
+        <span v-for="src in SOURCES" :key="src.name" class="source-badge" data-test="home-source-badge">
+          <span class="source-icon">{{ src.icon }}</span>{{ src.name }}
+        </span>
+      </div>
     </div>
 
     <div class="features">
@@ -57,11 +74,31 @@ const FEATURES: Feature[] = [
 .title { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 10px; }
 .desc { color: var(--text-secondary); font-size: 14px; line-height: 1.65; margin: 0; }
 
+.sources {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.source-icon { font-size: 13px; }
+
 .features {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-  width: min(860px, 100%);
+  width: min(1080px, 100%);
 }
 .feature {
   display: flex;

@@ -6,8 +6,8 @@ package backend
 import (
 	"fmt"
 
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
 )
 
 // RedisScanRequest carries the key-space page parameters.
@@ -21,7 +21,7 @@ type RedisScanRequest struct {
 
 // RedisScanResult is one SCAN page: the next cursor plus key metadata.
 type RedisScanResult struct {
-	Cursor uint64              `json:"cursor"`
+	Cursor uint64               `json:"cursor"`
 	Keys   []model.RedisKeyInfo `json:"keys"`
 }
 

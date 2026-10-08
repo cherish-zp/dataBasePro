@@ -51,4 +51,23 @@ describe('ConfirmDialog', () => {
     mount(ConfirmDialog, { props: { show: true, message: '删除？' } })
     expect(dialog()).not.toBeNull()
   })
+
+  it('confirmDisabled=true 禁用确认按钮,取消仍可用', async () => {
+    const wrapper = mount(ConfirmDialog, { props: { show: true, message: '删除？', confirmDisabled: true } })
+    const ok = dialog()?.querySelector('[data-test="confirm-dialog-ok"]') as HTMLButtonElement
+    expect(ok.disabled).toBe(true)
+    // 组件层再兜底:confirmDisabled 时点击确认不 emit(合成事件绕过 disabled 也拦截)。
+    clickDialog('confirm-dialog-ok')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.emitted('confirm')).toBeFalsy()
+    clickDialog('confirm-dialog-cancel')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.emitted('cancel')).toBeTruthy()
+  })
+
+  it('confirmDisabled 缺省时确认按钮可点(向后兼容)', () => {
+    mount(ConfirmDialog, { props: { show: true, message: '删除？' } })
+    const ok = dialog()?.querySelector('[data-test="confirm-dialog-ok"]') as HTMLButtonElement
+    expect(ok.disabled).toBe(false)
+  })
 })

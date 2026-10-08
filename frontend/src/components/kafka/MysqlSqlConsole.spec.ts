@@ -16,6 +16,8 @@ const appMocks = vi.hoisted(() => ({
   MysqlExecute: vi.fn(),
   MysqlPreviewCellUpdate: vi.fn(),
   MysqlUpdateCell: vi.fn(),
+  MysqlPreviewDeleteRow: vi.fn(),
+  MysqlDeleteRow: vi.fn(),
   ListMysqlTables: vi.fn(),
   ListMysqlDatabases: vi.fn(),
   ListQueryFiles: vi.fn(),
@@ -39,6 +41,9 @@ interface MysqlStatementResult {
   columns?: MysqlColumn[]
   rows?: (string | null)[][]
   primary_key?: string[]
+  source_database?: string
+  source_table?: string
+  total_rows?: number
 }
 
 // 组件暴露给全局右栏的查询文件能力。
@@ -194,6 +199,11 @@ describe('MysqlSqlConsole', () => {
       matched_rows: 1,
     }))
     app.MysqlUpdateCell.mockImplementation(async () => {})
+    app.MysqlPreviewDeleteRow.mockImplementation(async () => ({
+      statement: "DELETE FROM `shop`.`users` WHERE `id` = '1'",
+      matched_rows: 1,
+    }))
+    app.MysqlDeleteRow.mockImplementation(async () => {})
     app.ListMysqlDatabases.mockResolvedValue(['shop', 'orders'])
     app.ListQueryFiles.mockImplementation(async () => [])
     app.ReadQueryFile.mockImplementation(async () => ({ content: '', connection_id: '' }))
@@ -345,7 +355,7 @@ describe('MysqlSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
     await waitForTabs(wrapper, 2)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad', database: 'shop' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad', database: 'shop', limit: 500, offset: 0 })
     // Tab 条下方只渲染 active(第 0 个)一张卡:语句原文、耗时、列与行(NULL 单元格)。
     expect(resultTabEls(wrapper)).toHaveLength(2)
     expect(resultCards(wrapper)).toHaveLength(1)
@@ -391,7 +401,7 @@ describe('MysqlSqlConsole', () => {
     cmInput(wrapper).dispatch({ selection: { anchor: 10, head: 18 } })
     await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
     await waitForTabs(wrapper, 2)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT 2', database: 'shop' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT 2', database: 'shop', limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -405,7 +415,7 @@ describe('MysqlSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1')
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop', limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -420,7 +430,7 @@ describe('MysqlSqlConsole', () => {
     await nextTick()
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1;', database: 'shop' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1;', database: 'shop', limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -435,7 +445,7 @@ describe('MysqlSqlConsole', () => {
     await nextTick()
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT bad', database: 'shop' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT bad', database: 'shop', limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -448,7 +458,7 @@ describe('MysqlSqlConsole', () => {
     cmInput(wrapper).dispatch({ selection: { anchor: 0, head: 8 } })
     pressRunShortcut(wrapper)
     await waitForCards(wrapper, 1)
-    expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop' })
+    expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop', limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -462,7 +472,7 @@ describe('MysqlSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     pressRunShortcut(wrapper, { metaKey: true, shiftKey: true })
     await waitForTabs(wrapper, 2)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad', database: 'shop' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad', database: 'shop', limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -474,7 +484,7 @@ describe('MysqlSqlConsole', () => {
     await typeSql(wrapper, 'SELECT 1; SELECT bad')
     wrapper.findComponent(SqlEditor).vm.$emit('run-statement', 'SELECT bad')
     await waitForCards(wrapper, 1)
-    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT bad', database: 'shop' })
+    expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT bad', database: 'shop', limit: 500, offset: 0 })
     wrapper.unmount()
   })
 
@@ -780,7 +790,7 @@ describe('MysqlSqlConsole', () => {
       await typeSql(wrapper, 'SELECT 1')
       pressRunShortcut(wrapper)
       await waitForCards(wrapper, 1)
-      expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop' })
+      expect(app.MysqlExecute).toHaveBeenCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop', limit: 500, offset: 0 })
       wrapper.unmount()
     })
 
@@ -804,6 +814,39 @@ describe('MysqlSqlConsole', () => {
           database: 'shop',
         })
       })
+      wrapper.unmount()
+    })
+
+    // 回归:同名覆盖保存成功后,再点右栏同一文件不得误弹「当前 SQL 未保存,
+    // 载入将替换?」——保存成功必须把脏检查快照对齐到刚保存的内容。
+    it('同名覆盖保存后再次载入同一文件不弹未保存确认', async () => {
+      app.ReadQueryFile.mockResolvedValue({ content: 'SELECT 1', connection_id: 'm1', database: 'shop' })
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      // 打开已关联文件「166[总控].sql」:编辑器与快照都是 SELECT 1。
+      exposedApi(wrapper).loadQueryFile('166[总控]')
+      await vi.waitFor(() => {
+        expect(exposedApi(wrapper).currentFile()).toBe('166[总控].sql')
+      })
+      // 编辑后同名覆盖保存(⌘S 路径,currentFile 不变)。
+      await typeSql(wrapper, 'SELECT 42')
+      exposedApi(wrapper).requestSave()
+      await vi.waitFor(() => {
+        expect(app.WriteQueryFile).toHaveBeenCalledWith(
+          expect.objectContaining({ name: '166[总控].sql', content: 'SELECT 42' }),
+        )
+      })
+      await vi.waitFor(() => {
+        expect(app.ListQueryFiles).toHaveBeenCalled()
+      })
+      // 再次点击右栏同一文件:不弹确认,直接重新载入(ReadQueryFile 第二次调用)。
+      const readsBefore = app.ReadQueryFile.mock.calls.length
+      exposedApi(wrapper).loadQueryFile('166[总控]')
+      await vi.waitFor(() => {
+        expect(app.ReadQueryFile.mock.calls.length).toBeGreaterThan(readsBefore)
+      })
+      expect(bodyEl('confirm-dialog')).toBeNull()
       wrapper.unmount()
     })
 
@@ -902,6 +945,79 @@ describe('MysqlSqlConsole', () => {
       await confirmPrompt('新文件.sql')
       await vi.waitFor(() => {
         expect(tabsStore.openTabs[0].title).toBe('新文件.sql')
+      })
+      wrapper.unmount()
+    })
+  })
+
+  // --- 草稿恢复与持久化:切 tab 销毁重建后内容/文件关联不丢 --------------------
+
+  describe('草稿恢复与持久化(切 tab 不丢内容)', () => {
+    function mountWithDraftTab(draft?: { sql: string; file: string | null; database?: string }) {
+      const tabsStore = useTabsStore()
+      tabsStore.openTabs.push({
+        id: 'm-tab1',
+        kind: 'mysql-sql',
+        title: 'SQL 控制台',
+        connectionId: 'm1',
+        database: 'shop',
+        draft,
+      })
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      return { wrapper, tabsStore }
+    }
+
+    it('挂载时从 tab draft 恢复编辑器内容与文件关联,标题跟随文件名,不读盘', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab({ sql: 'SELECT draft', file: '草稿.sql' })
+      await vi.waitFor(() => {
+        expect(cmInput(wrapper).state.doc.toString()).toBe('SELECT draft')
+      })
+      expect(tabsStore.openTabs[0].title).toBe('草稿.sql')
+      // 恢复只重建文件关联,不走载入链路。
+      expect(app.ReadQueryFile).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it('无 draft 的 tab 挂载行为不变(空编辑器、默认标题)', () => {
+      const { wrapper, tabsStore } = mountWithDraftTab()
+      expect(cmInput(wrapper).state.doc.toString()).toBe('')
+      expect(tabsStore.openTabs[0].title).toBe('SQL 控制台')
+      wrapper.unmount()
+    })
+
+    it('编辑内容写回 tab draft,文件关联同步持久化', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab()
+      await typeSql(wrapper, 'SELECT 42')
+      await vi.waitFor(() => {
+        expect(tabsStore.openTabs[0].draft).toEqual({ sql: 'SELECT 42', file: null, database: 'shop' })
+      })
+      wrapper.unmount()
+    })
+
+    // 回归:从 SQL 文件打开的控制台未关联库,手动选择库后切 tab,库选择不得
+    // 退回「连接默认数据库」(否则查询因无库上下文报错)。
+    it('挂载时恢复 draft 中的库选择,切库后写回 draft', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab({
+        sql: 'SELECT 1',
+        file: null,
+        database: 'orders',
+      })
+      await vi.waitFor(() => {
+        // 挂载补全按恢复的库加载。
+        expect(app.ListMysqlTables).toHaveBeenLastCalledWith({ connection_id: 'm1', database: 'orders' })
+      })
+      const select = wrapper.find('[data-test="mysql-db-select"]')
+      expect((select.element as HTMLSelectElement).value).toBe('orders')
+      // 库清单异步加载完成后再切库,避免 option 缺失导致选值落空。
+      await vi.waitFor(() => {
+        expect(select.findAll('option').length).toBeGreaterThanOrEqual(2)
+      })
+      // 切库后写回 draft.database。
+      await select.setValue('shop')
+      await vi.waitFor(() => {
+        expect(tabsStore.openTabs[0].draft?.database).toBe('shop')
       })
       wrapper.unmount()
     })
@@ -1017,6 +1133,42 @@ describe('MysqlSqlConsole', () => {
       wrapper.unmount()
     })
 
+    it('结果携带主键时 where 仅含主键列原值(整行不再参与定位)', async () => {
+      const withPk = { ...singleTableSelect('SELECT * FROM shop.users WHERE id = 1 LIMIT 10'), primary_key: ['id'] }
+      const wrapper = await mountWithResults([withPk])
+      await startEdit(wrapper, 0, 0, 1)
+      resultCards(wrapper)[0].vm.$emit('edit-commit', 'carol')
+      await vi.waitFor(() => {
+        expect(app.MysqlPreviewCellUpdate).toHaveBeenCalledTimes(1)
+      })
+      expect(app.MysqlPreviewCellUpdate).toHaveBeenCalledWith({
+        connection_id: 'm1',
+        database: 'shop',
+        table: 'users',
+        set: { column: 'name', value: 'carol' },
+        where: [{ column: 'id', value: '1' }],
+      })
+      wrapper.unmount()
+    })
+
+    it('匹配 0 行:弹窗提示未命中并禁用执行,点击不落库', async () => {
+      app.MysqlPreviewCellUpdate.mockResolvedValue({
+        statement: 'UPDATE `users` SET `name` = \'x\' WHERE `id` = \'1\'',
+        matched_rows: 0,
+      })
+      const wrapper = await mountWithResults([singleTableSelect()])
+      await editAndSubmit(wrapper, 'x')
+      const msg = bodyEl('confirm-dialog-message')?.textContent ?? ''
+      expect(msg).toContain('匹配 0 行')
+      expect(msg).toContain('未命中任何行,数据可能已被修改或不存在')
+      const okBtn = bodyEl('confirm-dialog-ok') as HTMLButtonElement
+      expect(okBtn.disabled).toBe(true)
+      okBtn.click()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(app.MysqlUpdateCell).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
     it('确认后执行 MysqlUpdateCell 并重跑该条语句原位替换结果,其他语句不受影响', async () => {
       const first = singleTableSelect()
       const second: MysqlStatementResult = {
@@ -1046,7 +1198,7 @@ describe('MysqlSqlConsole', () => {
       })
       // 刷新入参是该条语句的原文(而非整段脚本)。
       await vi.waitFor(() => {
-        expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: first.sql, database: 'shop' })
+        expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: first.sql, database: 'shop', limit: 500, offset: 0 })
       })
       // 第一条结果被替换为刷新后的行;第二条结果保持原样(切 tab 查看)。
       await vi.waitFor(() => {
@@ -1134,6 +1286,226 @@ describe('MysqlSqlConsole', () => {
       })
       expect(bodyEl('confirm-dialog')).toBeNull()
       expect(app.MysqlUpdateCell).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+  })
+
+  describe('删除行(单表 SELECT + 主键)', () => {
+    // 可删除结果:主键 id + 后端回传的来源库/表,两行数据。
+    const deletableSelect = (sql = 'SELECT * FROM users WHERE id = 1 LIMIT 10'): MysqlStatementResult => ({
+      sql,
+      duration_ms: 5,
+      columns: [
+        { name: 'id', type: 'int' },
+        { name: 'name', type: 'varchar' },
+      ],
+      rows: [
+        ['1', 'alice'],
+        ['2', 'bob'],
+      ],
+      primary_key: ['id'],
+      source_database: 'shop',
+      source_table: 'users',
+    })
+
+    async function mountWithResults(results: MysqlStatementResult[]): Promise<VueWrapper> {
+      app.MysqlExecute.mockImplementation(withSystemGuard(async () => results))
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, results.map((r) => r.sql).join('; '))
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, results.length)
+      return wrapper
+    }
+
+    // 行首删除按钮(active 卡内)。
+    function rowDeleteBtns(wrapper: VueWrapper) {
+      return resultCards(wrapper)[0].findAll('[data-test="btn-row-delete"]')
+    }
+
+    async function openDeleteConfirm(wrapper: VueWrapper, row = 0): Promise<void> {
+      await rowDeleteBtns(wrapper)[row].trigger('click')
+      await vi.waitFor(() => {
+        expect(bodyEl('confirm-dialog')).not.toBeNull()
+      })
+    }
+
+    it('启用判定:有主键+来源表的行可删;无主键与非单表结果禁用并给原因', async () => {
+      const wrapper = await mountWithResults([deletableSelect()])
+      const ok = rowDeleteBtns(wrapper)[0]
+      expect(ok.attributes('disabled')).toBeUndefined()
+      expect(ok.attributes('title')).toBe('删除该行')
+      wrapper.unmount()
+
+      const noPk: MysqlStatementResult = {
+        ...deletableSelect('SELECT * FROM logs'),
+        primary_key: [],
+        source_table: 'logs',
+      }
+      const wrapper2 = await mountWithResults([noPk])
+      const b2 = rowDeleteBtns(wrapper2)[0]
+      expect(b2.attributes('disabled')).toBeDefined()
+      expect(b2.attributes('title')).toBe('该表无主键,无法定位行')
+      wrapper2.unmount()
+
+      const join: MysqlStatementResult = {
+        sql: 'SELECT a.id FROM users a JOIN orders b ON a.uid = b.id',
+        duration_ms: 1,
+        columns: [{ name: 'id', type: 'int' }],
+        rows: [['x']],
+      }
+      const wrapper3 = await mountWithResults([join])
+      const b3 = rowDeleteBtns(wrapper3)[0]
+      expect(b3.attributes('disabled')).toBeDefined()
+      expect(b3.attributes('title')).toBe('仅单表查询可删除:无法定位来源表')
+      await b3.trigger('click')
+      expect(app.MysqlPreviewDeleteRow).not.toHaveBeenCalled()
+      wrapper3.unmount()
+    })
+
+    it('点击删除:预览 where 仅含主键列原值,弹窗展示 DELETE 全文与命中行数', async () => {
+      app.MysqlPreviewDeleteRow.mockResolvedValue({
+        statement: "DELETE FROM `shop`.`users` WHERE `id` = '2'",
+        matched_rows: 1,
+      })
+      const wrapper = await mountWithResults([deletableSelect()])
+      await openDeleteConfirm(wrapper, 1)
+      expect(app.MysqlPreviewDeleteRow).toHaveBeenCalledTimes(1)
+      expect(app.MysqlPreviewDeleteRow).toHaveBeenCalledWith({
+        connection_id: 'm1',
+        database: 'shop',
+        table: 'users',
+        where: [{ column: 'id', value: '2' }],
+      })
+      const msg = bodyEl('confirm-dialog-message')?.textContent ?? ''
+      expect(msg).toContain("DELETE FROM `shop`.`users` WHERE `id` = '2'")
+      expect(msg).toContain('匹配 1 行')
+      wrapper.unmount()
+    })
+
+    it('命中多行:弹窗警示且确认按钮禁用,点击不执行', async () => {
+      app.MysqlPreviewDeleteRow.mockResolvedValue({
+        statement: "DELETE FROM `shop`.`users` WHERE `age` = '30'",
+        matched_rows: 3,
+      })
+      const wrapper = await mountWithResults([deletableSelect()])
+      await openDeleteConfirm(wrapper)
+      const msg = bodyEl('confirm-dialog-message')?.textContent ?? ''
+      expect(msg).toContain('命中 3 行')
+      expect(msg).toContain('已禁止执行')
+      const okBtn = bodyEl('confirm-dialog-ok') as HTMLButtonElement
+      expect(okBtn.disabled).toBe(true)
+      okBtn.click()
+      await new Promise((r) => setTimeout(r, 0))
+      expect(app.MysqlDeleteRow).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it('确认后执行 MysqlDeleteRow 并重跑该条语句原位替换结果,其他语句不受影响', async () => {
+      const first = deletableSelect()
+      const second: MysqlStatementResult = {
+        sql: 'SELECT 42',
+        duration_ms: 1,
+        columns: [{ name: 'answer', type: 'int' }],
+        rows: [['42']],
+      }
+      app.MysqlExecute.mockImplementation(
+        withSystemGuard(async (req) => {
+          // 重跑该条语句:返回删除 id=1 后的行集。
+          if (req.sql === first.sql) return [{ ...first, rows: [['2', 'bob']] }]
+          if (req.sql === `${first.sql}; ${second.sql}`) return [first, second]
+          return []
+        }),
+      )
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, `${first.sql}; ${second.sql}`)
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      await openDeleteConfirm(wrapper)
+      ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect(app.MysqlDeleteRow).toHaveBeenCalledTimes(1)
+      })
+      expect(app.MysqlDeleteRow).toHaveBeenCalledWith({
+        connection_id: 'm1',
+        database: 'shop',
+        table: 'users',
+        where: [{ column: 'id', value: '1' }],
+      })
+      // 刷新入参是该条语句的原文(而非整段脚本)。
+      await vi.waitFor(() => {
+        expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: first.sql, database: 'shop', limit: 500, offset: 0 })
+      })
+      await vi.waitFor(() => {
+        expect(resultCards(wrapper)[0].props('rows')).toEqual([['2', 'bob']])
+      })
+      await selectTab(wrapper, 1)
+      expect(resultCards(wrapper)[0].props('rows')).toEqual([['42']])
+      wrapper.unmount()
+    })
+
+    it('第 2 页删除后按同页 offset 刷新', async () => {
+      const paged = { ...deletableSelect(), total_rows: 1000 }
+      app.MysqlExecute.mockImplementation(withSystemGuard(async () => [paged]))
+      const wrapper = mount(MysqlSqlConsole, {
+        props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' },
+      })
+      await typeSql(wrapper, paged.sql)
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      await wrapper.find('[data-test="pager-next"]').trigger('click')
+      await vi.waitFor(() => {
+        expect(app.MysqlExecute).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 500 }))
+      })
+      await openDeleteConfirm(wrapper)
+      ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect(app.MysqlDeleteRow).toHaveBeenCalledTimes(1)
+      })
+      // 刷新保持在第 2 页(offset=500),不跳回首页。
+      await vi.waitFor(() => {
+        expect(app.MysqlExecute).toHaveBeenLastCalledWith(expect.objectContaining({ sql: paged.sql, offset: 500 }))
+      })
+      wrapper.unmount()
+    })
+
+    it('删除失败:错误展示且弹窗保持打开,不刷新查询', async () => {
+      app.MysqlDeleteRow.mockRejectedValue(new Error('模拟删除失败'))
+      const wrapper = await mountWithResults([deletableSelect()])
+      const execCalls = app.MysqlExecute.mock.calls.length
+      await openDeleteConfirm(wrapper)
+      ;(bodyEl('confirm-dialog-ok') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="mysql-sql-error"]').text()).toContain('模拟删除失败')
+      })
+      expect(app.MysqlExecute.mock.calls.length).toBe(execCalls)
+      wrapper.unmount()
+    })
+
+    it('取消确认弹窗不执行删除', async () => {
+      const wrapper = await mountWithResults([deletableSelect()])
+      await openDeleteConfirm(wrapper)
+      ;(bodyEl('confirm-dialog-cancel') as HTMLElement).click()
+      await vi.waitFor(() => {
+        expect(bodyEl('confirm-dialog')).toBeNull()
+      })
+      expect(app.MysqlDeleteRow).not.toHaveBeenCalled()
+      expect(resultCards(wrapper)[0].props('rows')).toEqual(deletableSelect().rows)
+      wrapper.unmount()
+    })
+
+    it('预览失败时展示错误且不打开确认弹窗', async () => {
+      app.MysqlPreviewDeleteRow.mockRejectedValue(new Error('模拟预览失败'))
+      const wrapper = await mountWithResults([deletableSelect()])
+      await rowDeleteBtns(wrapper)[0].trigger('click')
+      await vi.waitFor(() => {
+        expect(wrapper.find('[data-test="mysql-sql-error"]').text()).toContain('模拟预览失败')
+      })
+      expect(bodyEl('confirm-dialog')).toBeNull()
+      expect(app.MysqlDeleteRow).not.toHaveBeenCalled()
       wrapper.unmount()
     })
   })
@@ -1276,7 +1648,7 @@ describe('MysqlSqlConsole', () => {
       expect(wrapper.find('[data-test="menu-run-selection"]').exists()).toBe(true)
       await wrapper.find('[data-test="menu-run-selection"]').trigger('click')
       await waitForTabs(wrapper, 1)
-      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop' })
+      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop', limit: 500, offset: 0 })
       // 无选区右键 →「执行当前语句」:执行光标所在语句(第 2 段)。
       await typeSql(wrapper, 'SELECT 1; SELECT bad')
       wrapper.findComponent(SqlEditor).vm.$emit('cursor', { line: 1, col: 13 })
@@ -1284,12 +1656,158 @@ describe('MysqlSqlConsole', () => {
       await openRunMenu(wrapper)
       await wrapper.find('[data-test="menu-run-current"]').trigger('click')
       await waitForTabs(wrapper, 1)
-      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT bad', database: 'shop' })
+      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT bad', database: 'shop', limit: 500, offset: 0 })
       // 「运行全部」→ 整段脚本交给后端。
       await openRunMenu(wrapper)
       await wrapper.find('[data-test="menu-run-all"]').trigger('click')
       await waitForTabs(wrapper, 2)
-      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad', database: 'shop' })
+      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1; SELECT bad', database: 'shop', limit: 500, offset: 0 })
+      wrapper.unmount()
+    })
+  })
+
+  // --- 结果区分页(服务端分页,默认 500 条/页) ---------------------------------
+
+  describe('结果区分页', () => {
+    const pagedRows = (n: number) => Array.from({ length: n }, (_, i) => [String(i)])
+
+    it('新查询请求带 limit=500&offset=0,精确总数显示「共 N 条 · 第 p/last 页」', async () => {
+      app.MysqlExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x' }], rows: pagedRows(500), total_rows: 1234 },
+      ])
+      const wrapper = mount(MysqlSqlConsole, { props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop', limit: 500, offset: 0 })
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 1,234 条 · 第 1/3 页')
+      wrapper.unmount()
+    })
+
+    it('下一页以 offset=500 重放上次脚本,上一页回到 offset=0;翻页不受编辑器影响', async () => {
+      app.MysqlExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x' }], rows: pagedRows(500), total_rows: -1 },
+      ])
+      const wrapper = mount(MysqlSqlConsole, { props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('至少 500 条 · 第 1 页')
+      await wrapper.find('[data-test="pager-next"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop', limit: 500, offset: 500 })
+      await typeSql(wrapper, 'SELECT 2')
+      await wrapper.find('[data-test="pager-prev"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: 'SELECT 1', database: 'shop', limit: 500, offset: 0 })
+      wrapper.unmount()
+    })
+
+    it('下一页禁用:所有行结果行数都小于每页 500 条', async () => {
+      app.MysqlExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x' }], rows: [['1']], total_rows: 1 },
+      ])
+      const wrapper = mount(MysqlSqlConsole, { props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      expect((wrapper.find('[data-test="pager-prev"]').element as HTMLButtonElement).disabled).toBe(true)
+      wrapper.unmount()
+    })
+
+    it('fake 结果无 total_rows:显示「第 x-y 条」,不报错', async () => {
+      app.MysqlExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x' }], rows: [['1'], ['2']] },
+      ])
+      const wrapper = mount(MysqlSqlConsole, { props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('第 1-2 条')
+      wrapper.unmount()
+    })
+
+    it('脚本含 DML(UPDATE …; SELECT …)时隐藏分页条,避免翻页重放重复写库', async () => {
+      app.MysqlExecute.mockResolvedValue([
+        { sql: 'UPDATE t SET x = x + 1 WHERE id = 1', duration_ms: 2 },
+        { sql: 'SELECT * FROM t', duration_ms: 1, columns: [{ name: 'x' }], rows: [['1'], ['2']], total_rows: 2 },
+      ])
+      const wrapper = mount(MysqlSqlConsole, { props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' } })
+      await typeSql(wrapper, 'UPDATE t SET x = x + 1 WHERE id = 1; SELECT * FROM t')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 2)
+      expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('WITH 可能是数据修改 CTE,保守隐藏分页条', async () => {
+      app.MysqlExecute.mockResolvedValue([
+        {
+          sql: 'WITH c AS (SELECT 1 AS x) SELECT * FROM c',
+          duration_ms: 1,
+          columns: [{ name: 'x' }],
+          rows: [['1']],
+          total_rows: 1,
+        },
+      ])
+      const wrapper = mount(MysqlSqlConsole, { props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' } })
+      await typeSql(wrapper, 'WITH c AS (SELECT 1 AS x) SELECT * FROM c')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(false)
+      wrapper.unmount()
+    })
+
+    it('前导注释不影响只读判定:注释 + SELECT 仍显示分页条,翻页按原脚本重放', async () => {
+      app.MysqlExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x' }], rows: pagedRows(500), total_rows: 1200 },
+      ])
+      const wrapper = mount(MysqlSqlConsole, { props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' } })
+      await typeSql(wrapper, '-- 查询\nSELECT 1')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="result-pager"]').exists()).toBe(true)
+      await wrapper.find('[data-test="pager-next"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(app.MysqlExecute).toHaveBeenLastCalledWith({ connection_id: 'm1', sql: '-- 查询\nSELECT 1', database: 'shop', limit: 500, offset: 500 })
+      wrapper.unmount()
+    })
+
+    it('恰好整页(total_rows=500)时下一页禁用;total_rows=1200 时下一页可用', async () => {
+      app.MysqlExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x' }], rows: pagedRows(500), total_rows: 500 },
+      ])
+      const wrapper = mount(MysqlSqlConsole, { props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 500 条 · 第 1/1 页')
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      wrapper.unmount()
+      // total=1200 → 共 3 页,本页 500 行,下一页可用。
+      app.MysqlExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x' }], rows: pagedRows(500), total_rows: 1200 },
+      ])
+      const wrapper2 = mount(MysqlSqlConsole, { props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' } })
+      await typeSql(wrapper2, 'SELECT 1')
+      await wrapper2.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper2, 1)
+      expect((wrapper2.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(false)
+      wrapper2.unmount()
+    })
+
+    it('分页条容器带跨页顺序说明 tooltip', async () => {
+      app.MysqlExecute.mockResolvedValue([
+        { sql: 'SELECT 1', duration_ms: 1, columns: [{ name: 'x' }], rows: [['1']], total_rows: 1 },
+      ])
+      const wrapper = mount(MysqlSqlConsole, { props: { tabId: 'm-tab1', connectionId: 'm1', database: 'shop' } })
+      await typeSql(wrapper, 'SELECT 1')
+      await wrapper.find('[data-test="btn-mysql-run"]').trigger('click')
+      await waitForTabs(wrapper, 1)
+      expect(wrapper.find('[data-test="result-pager"]').attributes('title')).toBe(
+        '跨页分页由数据库 ORDER BY 保证顺序;无排序查询顺序以数据库返回为准',
+      )
       wrapper.unmount()
     })
   })

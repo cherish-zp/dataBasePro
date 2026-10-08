@@ -2,10 +2,12 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   EditorState,
+  EditorSelection,
   Compartment,
   Range,
   RangeSet,
   RangeValue,
+  type ChangeSpec,
   type Extension,
 } from '@codemirror/state'
 import {
@@ -27,6 +29,9 @@ import {
   closeBrackets,
   closeBracketsKeymap,
   completionKeymap,
+  completeFromList,
+  ifNotIn,
+  type CompletionSource,
 } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import {
@@ -37,6 +42,7 @@ import {
 } from '@codemirror/language'
 import { tags as t } from '@lezer/highlight'
 import { splitSqlStatements } from '@/utils/sqlSplit'
+import { SQL_EXTRA_KEYWORDS, dedupeSqlKeywords } from '@/utils/sqlKeywords'
 
 export interface SqlTableSchema {
   name: string
@@ -116,6 +122,28 @@ function sqlExtension(tables: SqlTableSchema[]): Extension {
   // upperCaseKeywords:键入 as/select 等自动转大写。
   return sql({ schema: schemaOf(tables), upperCaseKeywords: true })
 }
+
+// lang-sql 默认方言(StandardSQL)的关键词补全不含 TRUNCATE/SHOW 等常用语句关键词
+// (见 utils/sqlKeywords.ts),这里构建一个只补缺失词的额外补全源:标签 type 为
+// keyword,经 completeFromList 大小写不敏感匹配、选中后整词大写应用,与
+// upperCaseKeywords 行为一致;ifNotIn 与 lang-sql 内置关键词补全同款,字符串/
+// 注释/点号后不触发。经 EditorState.languageData 全局 facet 注册,与 lang-sql
+// 自带的表/列/关键词补全源并存(autocompletion 用 languageDataAt 收集),不做
+// override、不改变现有补全行为。
+function extraKeywordCompletionSource(): CompletionSource {
+  const options = dedupeSqlKeywords(SQL_EXTRA_KEYWORDS).map((label) => ({
+    label,
+    type: 'keyword',
+  }))
+  return ifNotIn(
+    ['QuotedIdentifier', 'String', 'LineComment', 'BlockComment', '.'],
+    completeFromList(options),
+  )
+}
+
+const extraKeywordCompletion = EditorState.languageData.of(() => [
+  { autocomplete: extraKeywordCompletionSource() },
+])
 
 // 主题色全部走 CSS 变量,自动跟随 [data-theme] 深浅色切换。
 const editorTheme = EditorView.theme({
@@ -304,6 +332,52 @@ const updateListener = EditorView.updateListener.of((update) => {
   }
 })
 
+// —— 复制当前行(Windows/Linux Ctrl+D,macOS ⌘D)——
+
+// 标准编辑器 duplicate-line 行为:无选区时复制光标所在行;有选区时复制选区
+// 触及的每一行(VSCode 语义);多选区一并处理,同一行只复制一次。单个
+// transaction 提交(⌘Z 一步撤销);复制后每个光标/选区端点落到所在行副本
+// 上的同列位置。CodeMirror 6 无内置该命令,此处自定义。
+function duplicateLine(view: EditorView): boolean {
+  const state = view.state
+  const doc = state.doc
+  // 1. 收集所有待复制行号(多选区/跨行选区去重,升序)。
+  const lineNums = new Set<number>()
+  for (const range of state.selection.ranges) {
+    const from = doc.lineAt(range.from).number
+    const to = doc.lineAt(range.to).number
+    for (let n = from; n <= to; n++) lineNums.add(n)
+  }
+  if (lineNums.size === 0) return false
+  const lines = [...lineNums].sort((a, b) => a - b).map((n) => doc.line(n))
+  // 2. 每行行尾插入「\n + 该行内容」(末行原文无换行符时同样成立)。
+  const changes: ChangeSpec[] = lines.map((line) => ({
+    from: line.to,
+    insert: `\n${line.text}`,
+  }))
+  // 3. 各行副本在新文档中的起始 offset:原行尾 + 先前所有副本长度 + 自身换行符。
+  const copyStart = new Map<number, number>()
+  let acc = 0
+  for (const line of lines) {
+    copyStart.set(line.number, line.to + acc + 1)
+    acc += line.text.length + 1
+  }
+  // 4. 选区映射:端点落到所在行副本上的同列(所在行未被复制时原位,理论不可达)。
+  const mapToCopy = (pos: number): number => {
+    const line = doc.lineAt(pos)
+    const start = copyStart.get(line.number)
+    return start === undefined ? pos : start + (pos - line.from)
+  }
+  const selection = EditorSelection.create(
+    state.selection.ranges.map((range) =>
+      EditorSelection.range(mapToCopy(range.anchor), mapToCopy(range.head)),
+    ),
+    state.selection.mainIndex,
+  )
+  view.dispatch(state.update({ changes, selection, scrollIntoView: true }))
+  return true
+}
+
 // —— 右键执行菜单(enableRunMenu)——
 
 const menuEl = ref<HTMLElement | null>(null)
@@ -358,6 +432,8 @@ function onDocKeydown(ev: KeyboardEvent): void {
 onMounted(() => {
   if (!host.value) return
   const extensions: Extension[] = [
+    // 允许多光标/多选区(默认会折叠为单光标),复制当前行等命令依赖它。
+    EditorState.allowMultipleSelections.of(true),
     runGutterCompartment.of(props.statementGutter ? runGutterExtension() : []),
     lineNumbers(),
     marksGutterCompartment.of(
@@ -369,8 +445,17 @@ onMounted(() => {
     indentOnInput(),
     bracketMatching(),
     autocompletion(),
+    extraKeywordCompletion,
     closeBrackets(),
-    keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...completionKeymap]),
+    keymap.of([
+      // 复制当前行:CM 的 Mod-d 自动映射 mac ⌘D / 其它平台 Ctrl+D;
+      // 置于最前,优先于 defaultKeymap 等既有绑定。
+      { key: 'Mod-d', run: duplicateLine, preventDefault: true },
+      ...closeBracketsKeymap,
+      ...defaultKeymap,
+      ...historyKeymap,
+      ...completionKeymap,
+    ]),
     sqlCompartment.of(sqlExtension(props.tables)),
     placeholderCompartment.of(props.placeholder ? cmPlaceholder(props.placeholder) : []),
     editorTheme,

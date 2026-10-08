@@ -228,6 +228,56 @@ describe('SqlConsole', () => {
     expect(wrapper.find('[data-test="btn-sql-file-area"]').exists()).toBe(false)
   })
 
+  // --- 草稿恢复与持久化:切 tab 销毁重建后内容/文件关联不丢 --------------------
+
+  describe('草稿恢复与持久化(切 tab 不丢内容)', () => {
+    function mountWithDraftTab(topic: string, draft?: { sql: string; file: string | null }) {
+      setActivePinia(createPinia())
+      setApi(fakeApi())
+      const tabsStore = useTabsStore()
+      tabsStore.openTabs.push({
+        id: 'tab1',
+        kind: 'sql',
+        title: topic ? `SQL · ${topic}` : 'SQL 查询',
+        connectionId: 'c',
+        topic,
+        partitions: [0, 1],
+        draft,
+      })
+      const wrapper = mount(SqlConsole, {
+        props: { tabId: 'tab1', connectionId: 'c', topic, partitions: [0, 1] },
+      })
+      return { wrapper, tabsStore }
+    }
+
+    it('挂载时从 tab draft 恢复编辑器内容与文件关联,标题跟随文件名', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab('orders', { sql: 'SELECT draft', file: '草稿.sql' })
+      await vi.waitFor(() => {
+        expect(editorSql(wrapper)).toBe('SELECT draft')
+      })
+      expect(tabsStore.openTabs[0].title).toBe('草稿.sql')
+      wrapper.unmount()
+    })
+
+    it('无 draft 的 tab 保留 topic 预填模板与默认标题', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab('orders')
+      await vi.waitFor(() => {
+        expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 100')
+      })
+      expect(tabsStore.openTabs[0].title).toBe('SQL · orders')
+      wrapper.unmount()
+    })
+
+    it('编辑内容写回 tab draft,文件关联同步持久化', async () => {
+      const { wrapper, tabsStore } = mountWithDraftTab('orders')
+      await setSql(wrapper, 'SELECT 42')
+      await vi.waitFor(() => {
+        expect(tabsStore.openTabs[0].draft).toEqual({ sql: 'SELECT 42', file: null })
+      })
+      wrapper.unmount()
+    })
+  })
+
   it('命令条收纳运行按钮与历史菜单,编辑器独立全宽(与结果区同宽)', () => {
     const { wrapper } = mountConsole()
     const toolbar = wrapper.find('[data-test="sql-toolbar"]')
@@ -1033,6 +1083,39 @@ describe('SqlConsole', () => {
       expect(editorSql(wrapper)).toBe('SELECT * FROM orders LIMIT 50')
     })
 
+    // 回归:同名覆盖保存成功后,再点右栏同一文件不得误弹「当前 SQL 未保存,
+    // 载入将替换?」——保存成功必须把脏检查快照对齐到刚保存的内容。
+    it('同名覆盖保存后再次载入同一文件不弹未保存确认', async () => {
+      mockFileBackend([file('166[总控].sql', 'c', 'SELECT * FROM errors LIMIT 10')])
+      const { wrapper } = mountConsole()
+      const vm = exposedApi(wrapper)
+      // 有 topic 的控制台带模板,先清空避免载入确认。
+      await setSql(wrapper, '')
+      vm.loadQueryFile('166[总控].sql')
+      await flushPromises()
+      expect(vm.currentFile()).toBe('166[总控].sql')
+      // 编辑后同名覆盖保存(⌘S 走 saveCurrent → requestSave,currentFile 不变)。
+      await setSql(wrapper, 'SELECT 42')
+      const listsBefore = queryFileMocks.ListQueryFiles.mock.calls.length
+      await cmContent(wrapper).trigger('keydown', { key: 's', metaKey: true })
+      await flushPromises()
+      expect(queryFileMocks.WriteQueryFile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: '166[总控].sql', content: 'SELECT 42' }),
+      )
+      // 保存后刷新列表(refreshFiles)完成,再进行下一步载入。
+      await vi.waitFor(() => {
+        expect(queryFileMocks.ListQueryFiles.mock.calls.length).toBeGreaterThan(listsBefore)
+      })
+      // 再次点击右栏同一文件:不弹确认,直接重新载入(ReadQueryFile 第二次调用)。
+      const readsBefore = queryFileMocks.ReadQueryFile.mock.calls.length
+      vm.loadQueryFile('166[总控].sql')
+      await nextTick()
+      expect(promptEl('confirm-dialog')).toBeNull()
+      await flushPromises()
+      expect(queryFileMocks.ReadQueryFile.mock.calls.length).toBeGreaterThan(readsBefore)
+      expect(editorSql(wrapper)).toBe('SELECT * FROM errors LIMIT 10')
+    })
+
     it('askRemoveCurrentFile → 删除确认 → DeleteQueryFile 并清空编辑器', async () => {
       mockFileBackend([file('近一小时错误.sql', 'c', 'SELECT * FROM errors LIMIT 10')])
       const { wrapper } = mountConsole()
@@ -1155,6 +1238,45 @@ describe('SqlConsole', () => {
       expect(wrapper.find('[data-test="sql-error"]').text()).toContain('SQL 中未找到表名')
       expect(api.consumeMessages).not.toHaveBeenCalled()
       expect(useSqlHistoryStore().history).toEqual([])
+    })
+  })
+
+  // --- 前端分页(纯前端控制台,每页 500 条,翻页只做切片不重新请求) ---------
+
+  describe('前端分页', () => {
+    const manyMessages = (n: number) => Array.from({ length: n }, (_, i) => msg('k', `v${i}`, i))
+
+    it('结果多于 500 条时切片展示,页码信息给出总数与页数;翻页不重新请求', async () => {
+      const { wrapper, api } = mountConsole({ consumeMessages: vi.fn(async () => manyMessages(1200)) })
+      await setSql(wrapper, 'SELECT * FROM orders')
+      await runOnce(wrapper)
+      expect(cardRows(wrapper)).toHaveLength(500)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 1,200 条 · 第 1/3 页')
+      expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    })
+
+    it('下一页/上一页只做前端切片,边界禁用', async () => {
+      const { wrapper, api } = mountConsole({ consumeMessages: vi.fn(async () => manyMessages(600)) })
+      await setSql(wrapper, 'SELECT * FROM orders')
+      await runOnce(wrapper)
+      await wrapper.find('[data-test="pager-next"]').trigger('click')
+      expect(cardRows(wrapper)).toHaveLength(100)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 600 条 · 第 2/2 页')
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      await wrapper.find('[data-test="pager-prev"]').trigger('click')
+      expect(cardRows(wrapper)).toHaveLength(500)
+      expect(api.consumeMessages).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+    })
+
+    it('结果不足 500 条时单页展示,下一页禁用', async () => {
+      const { wrapper } = mountConsole({ consumeMessages: vi.fn(async () => [msg('k', 'v')]) })
+      await setSql(wrapper, 'SELECT * FROM orders')
+      await runOnce(wrapper)
+      expect(wrapper.find('[data-test="pager-info"]').text()).toBe('共 1 条 · 第 1/1 页')
+      expect((wrapper.find('[data-test="pager-next"]').element as HTMLButtonElement).disabled).toBe(true)
+      wrapper.unmount()
     })
   })
 })

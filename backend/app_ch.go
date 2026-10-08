@@ -6,7 +6,7 @@ package backend
 import (
 	"strings"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 // DriverInfo describes one builtin driver for the driver management page.
@@ -43,6 +43,13 @@ var builtinDrivers = []DriverInfo{
 		Description: "ClickHouse 库表浏览、分页查询与 SQL 控制台(原生 TCP 协议)",
 	},
 	{
+		Name:        "PostgreSQL",
+		Library:     "pgx",
+		Version:     "v5.11.0",
+		DefaultPort: 5432,
+		Description: "PostgreSQL 库/模式浏览、分页查询与 SQL 控制台(原生 TCP 协议)",
+	},
+	{
 		Name:        "Elasticsearch",
 		Library:     "net/http + encoding/json",
 		Version:     "v8.x",
@@ -62,6 +69,13 @@ var builtinDrivers = []DriverInfo{
 		Version:     "v1.10.1",
 		DefaultPort: 4000,
 		Description: "TiDB 库表浏览、分页查询与 SQL 控制台(兼容 MySQL 协议)",
+	},
+	{
+		Name:        "Hive",
+		Library:     "gohive",
+		Version:     "v1.6.0",
+		DefaultPort: 10000,
+		Description: "HiveServer2 原生 Thrift 客户端,支持 NOSASL/LDAP/Kerberos",
 	},
 }
 
@@ -97,10 +111,14 @@ type CHTruncateTableRequest struct {
 	OnCluster bool `json:"on_cluster,omitempty"`
 }
 
-// CHExecuteRequest carries the multi-statement SQL script.
+// CHExecuteRequest carries the multi-statement SQL script. Limit/Offset 启用
+// 服务端分页:Limit>0 时仅返回 Offset 起的 Limit 行,结果按语句类型附
+// total_rows(≥0 精确 / -1 无法计数)。
 type CHExecuteRequest struct {
 	ConnectionID string `json:"connection_id"`
 	SQL          string `json:"sql"`
+	Limit        int    `json:"limit,omitempty"`
+	Offset       int    `json:"offset,omitempty"`
 }
 
 // TestCHConnection verifies reachability without persisting anything.
@@ -146,7 +164,7 @@ func (a *App) CHTruncateTable(req CHTruncateTableRequest) error {
 func (a *App) CHExecute(req CHExecuteRequest) ([]model.CHStatementResult, error) {
 	ctx, cancel := a.newContext()
 	defer cancel()
-	results, err := a.svc.CHExecute(ctx, req.ConnectionID, req.SQL)
+	results, err := a.svc.CHExecute(ctx, req.ConnectionID, req.SQL, req.Limit, req.Offset)
 	a.audit(req.ConnectionID, "ch_execute", auditSQLTarget(req.SQL), auditResult(err), auditDetail(err))
 	return results, err
 }

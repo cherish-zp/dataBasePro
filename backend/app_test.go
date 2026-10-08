@@ -12,10 +12,10 @@ import (
 	"github.com/twmb/franz-go/pkg/kfake"
 	"github.com/twmb/franz-go/pkg/kgo"
 
-	"dataBasePro/backend/internal/kafka"
-	"dataBasePro/backend/internal/model"
-	"dataBasePro/backend/internal/service"
-	"dataBasePro/backend/internal/store"
+	"sheng-shou-yun-he/backend/internal/kafka"
+	"sheng-shou-yun-he/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/service"
+	"sheng-shou-yun-he/backend/internal/store"
 )
 
 func newTestApp(t *testing.T) *App {
@@ -43,7 +43,7 @@ func TestAppCreateAndListConnections(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -75,7 +75,7 @@ func TestAppAuditsCreateConnection(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -122,7 +122,7 @@ func TestAppAuditsDeleteConnectionWithNameTarget(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -170,7 +170,7 @@ func TestAppListAuditDefaultLimit(t *testing.T) {
 		if _, err := app.CreateConnection(&model.Connection{
 			Name:   fmt.Sprintf("c-%d", i),
 			Type:   model.ConnectionTypeKafka,
-			Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+			Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 		}); err != nil {
 			t.Fatalf("create #%d: %v", i, err)
 		}
@@ -212,7 +212,7 @@ func TestAppEndToEnd(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "fake",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: cluster.ListenAddrs()}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: cluster.ListenAddrs()}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -269,7 +269,7 @@ func TestAppUpdateConnectionAppliesChanges(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -278,7 +278,7 @@ func TestAppUpdateConnectionAppliesChanges(t *testing.T) {
 	updated, err := app.UpdateConnection(UpdateConnectionRequest{
 		ID:     created.ID,
 		Name:   "renamed",
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"broker-a:9092", "broker-b:9092"}, SecurityProtocol: "SSL"}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"broker-a:9092", "broker-b:9092"}, SecurityProtocol: "SSL"}),
 	})
 	if err != nil {
 		t.Fatalf("UpdateConnection: %v", err)
@@ -312,7 +312,7 @@ func TestAppUpdateConnectionValidation(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -322,11 +322,11 @@ func TestAppUpdateConnectionValidation(t *testing.T) {
 	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: created.ID, Name: ""}); err == nil {
 		t.Fatal("empty name must be rejected")
 	}
-	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: created.ID, Name: "x", Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"no-port"}})}); err == nil {
+	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: created.ID, Name: "x", Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"no-port"}})}); err == nil {
 		t.Fatal("invalid bootstrap server must be rejected")
 	}
 	// 不存在的 id 必须报错。
-	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: "nope", Name: "x", Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}})}); err == nil {
+	if _, err := app.UpdateConnection(UpdateConnectionRequest{ID: "nope", Name: "x", Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}})}); err == nil {
 		t.Fatal("unknown id must be rejected")
 	}
 
@@ -350,7 +350,7 @@ func TestAppAuditsUpdateConnection(t *testing.T) {
 	created, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -358,7 +358,7 @@ func TestAppAuditsUpdateConnection(t *testing.T) {
 	if _, err := app.UpdateConnection(UpdateConnectionRequest{
 		ID:     created.ID,
 		Name:   "renamed",
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	}); err != nil {
 		t.Fatalf("UpdateConnection: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestUpdateConnectionRequestJSONShape(t *testing.T) {
 	req := UpdateConnectionRequest{
 		ID:     "c-1",
 		Name:   "renamed",
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"h:1"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"h:1"}}),
 	}
 	b, err := json.Marshal(req)
 	if err != nil {
@@ -528,7 +528,7 @@ func TestAppAlterTopicPartitionsDelegatesAndAudits(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -589,6 +589,64 @@ func TestAppAlterTopicPartitionsDelegatesAndAudits(t *testing.T) {
 	}
 }
 
+// TestAppReorderConnections 验证绑定方法把前端提交的完整有序 id 列表
+// 持久化为连接顺序;含未知 id 时报错且不残留半套顺序。
+func TestAppReorderConnections(t *testing.T) {
+	app := newTestApp(t)
+
+	ids := make([]string, 0, 3)
+	for _, name := range []string{"a", "b", "c"} {
+		created, err := app.CreateConnection(&model.Connection{
+			Name:   name,
+			Type:   model.ConnectionTypeKafka,
+			Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
+		})
+		if err != nil {
+			t.Fatalf("CreateConnection %s: %v", name, err)
+		}
+		ids = append(ids, created.ID)
+	}
+
+	if err := app.ReorderConnections([]string{ids[2], ids[0], ids[1]}); err != nil {
+		t.Fatalf("ReorderConnections: %v", err)
+	}
+	list, err := app.ListConnections()
+	if err != nil {
+		t.Fatalf("ListConnections: %v", err)
+	}
+	if list[0].ID != ids[2] || list[1].ID != ids[0] || list[2].ID != ids[1] {
+		t.Fatalf("unexpected persisted order: %v", []string{list[0].ID, list[1].ID, list[2].ID})
+	}
+
+	// 未知 id 必须报错,且不打乱已保存的顺序。
+	if err := app.ReorderConnections([]string{ids[0], "nope"}); err == nil {
+		t.Fatal("reorder with an unknown id must fail")
+	}
+	list, err = app.ListConnections()
+	if err != nil {
+		t.Fatalf("ListConnections after failed reorder: %v", err)
+	}
+	if list[0].ID != ids[2] || list[1].ID != ids[0] || list[2].ID != ids[1] {
+		t.Fatalf("failed reorder must not change order: %v", []string{list[0].ID, list[1].ID, list[2].ID})
+	}
+}
+
+// TestConnectionJSONExposesSortOrder 锁定连接 JSON 的 sort_order 字段
+// (snake_case),前端依赖它读写的自定义顺序。
+func TestConnectionJSONExposesSortOrder(t *testing.T) {
+	b, err := json.Marshal(model.Connection{ID: "c-1", SortOrder: 3})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got, ok := raw["sort_order"].(float64); !ok || got != 3 {
+		t.Fatalf("Connection JSON must expose numeric sort_order, got %s", b)
+	}
+}
+
 // TestAppGetTopicMessageCountsDelegates verifies the read-only counts call
 // forwards the requested topics and returns the per-topic map untouched.
 func TestAppGetTopicMessageCountsDelegates(t *testing.T) {
@@ -601,7 +659,7 @@ func TestAppGetTopicMessageCountsDelegates(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -627,7 +685,7 @@ func TestAppResetOffsetExplicitModeDelegatesOffsets(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -721,7 +779,7 @@ func TestAppAuditsDeleteTopicsFailureDetailCapped(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -770,7 +828,7 @@ func TestAppAuditsDeleteTopicsFailureDetailFull(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)
@@ -809,7 +867,7 @@ func TestAppPreviewResetOffsetDelegates(t *testing.T) {
 	conn, err := app.CreateConnection(&model.Connection{
 		Name:   "local",
 		Type:   model.ConnectionTypeKafka,
-		Config: model.MustConfigJSON(model.KafkaConfig {BootstrapServers: []string{"localhost:9092"}}),
+		Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
 	})
 	if err != nil {
 		t.Fatalf("CreateConnection: %v", err)

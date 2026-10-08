@@ -192,4 +192,48 @@ describe('UpdateDialog', () => {
       expect(api.openURL).toHaveBeenCalledWith('http://x/mac.zip')
     })
   })
+
+  it('发现新版本但没有适配当前系统的资产时,点更新直接报错且不发起下载', async () => {
+    ;(api.checkUpdate as ReturnType<typeof vi.fn>).mockResolvedValue({
+      has_update: true,
+      latest_version: 'v1.1.0',
+      notes: '',
+      // download_url 缺失 = 没有匹配当前平台/架构的安装包
+    })
+    mount(UpdateDialog, { props: { show: true } })
+    await vi.waitFor(() => {
+      expect(el('btn-update-install')).not.toBeNull()
+    })
+    click('btn-update-install')
+    await vi.waitFor(() => {
+      expect(el('update-status')?.textContent).toContain('未找到适配当前系统的安装包')
+    })
+    expect(api.downloadUpdate).not.toHaveBeenCalled()
+  })
+
+  it('下载完成后进入安装阶段提示即将重启,再调用 applyUpdate', async () => {
+    ;(api.checkUpdate as ReturnType<typeof vi.fn>).mockResolvedValue({
+      has_update: true,
+      latest_version: 'v1.1.0',
+      notes: '',
+      download_url: 'http://x/mac.zip',
+    })
+    ;(api.updateProgress as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: 'done', percent: 100 })
+    let resolveApply: () => void = () => {}
+    ;(api.applyUpdate as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<void>((r) => (resolveApply = r)),
+    )
+    mount(UpdateDialog, { props: { show: true } })
+    await vi.waitFor(() => {
+      expect(el('btn-update-install')).not.toBeNull()
+    })
+    click('btn-update-install')
+    await vi.waitFor(() => {
+      expect(el('update-status')?.textContent).toContain('正在安装，即将重启')
+    })
+    resolveApply()
+    await vi.waitFor(() => {
+      expect(api.applyUpdate).toHaveBeenCalled()
+    })
+  })
 })

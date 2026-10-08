@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"dataBasePro/backend/internal/model"
+	"sheng-shou-yun-he/backend/internal/model"
 )
 
 func sampleSavedQuery(name, consoleType, connectionID string) *model.SavedQuery {
