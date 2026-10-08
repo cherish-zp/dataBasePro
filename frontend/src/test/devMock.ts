@@ -36,7 +36,7 @@ function groups(): ConsumerGroup[] {
 export function installDevMock(): void {
   const api: Api = {
       listConnections: async () => [
-        { id: 'mock', name: 'Mock 集群', type: 'kafka', config: { bootstrap_servers: ['mock:9092'] }, created_at: 1, updated_at: 1 },
+        { id: 'mock', name: 'Mock 集群', type: 'kafka', config: { bootstrap_servers: ['mock:9092'] }, sort_order: 0, created_at: 1, updated_at: 1 },
       ],
       createConnection: async (c) => c,
       deleteConnection: async () => {},

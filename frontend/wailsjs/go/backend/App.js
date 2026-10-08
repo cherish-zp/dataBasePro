@@ -486,6 +486,10 @@ export function RedisZSetRemove(arg1) {
   return window['go']['backend']['App']['RedisZSetRemove'](arg1);
 }
 
+export function ReorderConnections(arg1) {
+  return window['go']['backend']['App']['ReorderConnections'](arg1);
+}
+
 export function ResetConsumerGroupOffset(arg1) {
   return window['go']['backend']['App']['ResetConsumerGroupOffset'](arg1);
 }

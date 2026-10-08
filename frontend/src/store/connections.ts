@@ -50,6 +50,7 @@ export const useConnectionsStore = defineStore('connections', () => {
       name: input.name,
       type: input.type,
       config: input.config,
+      sort_order: 0,
       created_at: 0,
       updated_at: 0,
     })
@@ -80,6 +81,25 @@ export const useConnectionsStore = defineStore('connections', () => {
     delete statusById.value[id]
   }
 
+  // reorderConnections 持久化侧栏连接排序:入参为重排后的完整 id 顺序。
+  // SQLite 本地调用很快,成功后直接按 ids 重排本地数组(与后端保持一致,
+  // 无需回滚逻辑);ids 遗漏的连接按原相对顺序补在末尾,避免树上丢行。
+  async function reorderConnections(ids: string[]): Promise<void> {
+    error.value = null
+    await getApi().reorderConnections?.(ids)
+    const byId = new Map(connections.value.map((c) => [c.id, c] as const))
+    const ordered: Connection[] = []
+    for (const id of ids) {
+      const c = byId.get(id)
+      if (c) {
+        ordered.push(c)
+        byId.delete(id)
+      }
+    }
+    // ids 未覆盖的连接(防御,正常路径不会发生)保持原相对顺序追加。
+    connections.value = [...ordered, ...connections.value.filter((c) => byId.has(c.id))]
+  }
+
   async function testConnection(cfg: KafkaConfig): Promise<void> {
     error.value = null
     await getApi().testConnection(cfg)
@@ -108,5 +128,5 @@ export const useConnectionsStore = defineStore('connections', () => {
     }
   }
 
-  return { connections, loading, error, statusById, setStatus, load, create, update, remove, testConnection, connect, disconnect }
+  return { connections, loading, error, statusById, setStatus, load, create, update, remove, reorderConnections, testConnection, connect, disconnect }
 })

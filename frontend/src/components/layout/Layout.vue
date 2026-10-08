@@ -30,6 +30,7 @@ import DocsDialog from '@/components/docs/DocsDialog.vue'
 import StatusBar from '@/components/layout/StatusBar.vue'
 import QueryFilesPanel, { type SqlConsoleApi } from './QueryFilesPanel.vue'
 import { useToastStore } from '@/store/toast'
+import { useConnectionsStore } from '@/store/connections'
 import HomeView from '@/views/HomeView.vue'
 import { getApi } from '@/api/client'
 import { APP_VERSION } from '@/version'
@@ -42,6 +43,13 @@ const emit = defineEmits<{
 }>()
 
 const tabs = useTabsStore()
+const connectionsStore = useConnectionsStore()
+
+// reorderConnections 接住连接树的排序 emit,转调 connections store 持久化
+// (组件只 emit,store 调用收敛在 Layout,与 tabs 打开逻辑同层)。
+function reorderConnections(ids: string[]): void {
+  void connectionsStore.reorderConnections(ids)
+}
 
 // refreshRequest drives the unified refresh: the top bar 刷新 button (and the
 // tab context menu's 刷新 item) bump the counter, and each data panel watches
@@ -597,6 +605,7 @@ function onTabDragEnd(): void {
           @open-es-monitor="(id) => tabs.openEsMonitor(id)"
           @delete="removeConnection"
           @edit-connection="editConnection"
+          @reorder="reorderConnections"
           @new="emit('new')"
         />
       </aside>

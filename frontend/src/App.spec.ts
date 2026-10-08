@@ -81,7 +81,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
 
 const conn = (id: string): Connection => ({
   id, name: `conn-${id}`, type: 'kafka',
-  config: { bootstrap_servers: ['h:1'] }, created_at: 1, updated_at: 1,
+  config: { bootstrap_servers: ['h:1'] }, sort_order: 0, created_at: 1, updated_at: 1,
 })
 
 function mountApp(overrides: Partial<Api> = {}) {

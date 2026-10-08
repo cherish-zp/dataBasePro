@@ -6,6 +6,7 @@ import { fuzzyScore } from '@/utils/fuzzy'
 import { formatCount } from '@/utils/format'
 import { formatBytes } from '@/utils/bytes'
 import { CSV_MIME, exportCsv, saveFile, type ExportColumn } from '@/utils/export'
+import { moveId, reorderIds } from './connReorder'
 import { useConnectionsStore, type ConnectionStatus } from '@/store/connections'
 import { useToastStore } from '@/store/toast'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -34,25 +35,31 @@ const emit = defineEmits<{
   (e: 'open-es-monitor', connectionId: string): void
   (e: 'delete', connectionId: string): void
   (e: 'edit-connection', conn: Connection): void
+  // 连接排序:hover ↑↓ / 右键菜单上移下移 / 拖拽共用同一出口,负载为
+  // 重排后的完整 id 顺序,由外层(Layout)转调 store.reorderConnections 持久化。
+  (e: 'reorder', ids: string[]): void
   (e: 'new'): void
 }>()
 
 const connStore = useConnectionsStore()
 
 // Per data-source type metadata so the tree can grow to ES later.
-const TYPE_META: Record<string, { label: string; icon: string }> = {
-  kafka: { label: 'Kafka', icon: '⚡' },
-  redis: { label: 'Redis', icon: '🧱' },
-  clickhouse: { label: 'ClickHouse', icon: '🗄️' },
-  mysql: { label: 'MySQL', icon: '🐬' },
-  tidb: { label: 'TiDB', icon: '🌿' },
-  es: { label: 'ES', icon: '🔎' },
-  postgres: { label: 'PostgreSQL', icon: '🐘' },
-  hive: { label: 'Hive', icon: '🐝' },
+// letter 驱动行尾「圆角小方块 + 品牌色首字母」徽标;品牌主色/柔和底色不经
+// JS,统一走 styles.css 的 --type-* CSS 变量(亮暗主题各自取值),由
+// .type-badge-<type> class 关联,保证对比度双主题都成立。
+const TYPE_META: Record<string, { label: string; letter: string }> = {
+  kafka: { label: 'Kafka', letter: 'K' },
+  mysql: { label: 'MySQL', letter: 'M' },
+  redis: { label: 'Redis', letter: 'R' },
+  clickhouse: { label: 'ClickHouse', letter: 'C' },
+  tidb: { label: 'TiDB', letter: 'T' },
+  es: { label: 'ES', letter: 'E' },
+  postgres: { label: 'PostgreSQL', letter: 'P' },
+  hive: { label: 'Hive', letter: 'H' },
 }
 
-function typeMeta(conn: Connection): { label: string; icon: string } {
-  return TYPE_META[conn.type] ?? { label: conn.type, icon: '📦' }
+function typeMeta(conn: Connection): { label: string; letter: string } {
+  return TYPE_META[conn.type] ?? { label: conn.type, letter: conn.type.charAt(0).toUpperCase() || '?' }
 }
 
 const STATUS_LABEL: Record<ConnectionStatus, string> = {
@@ -95,7 +102,8 @@ async function onToggleConnect(conn: Connection): Promise<void> {
 // here and a create/delete branch in the dispatch functions below. ES 的
 // es-index / es-template 不作为 collection 分区,但复用同一批交互状态
 // (右键菜单、删除确认),因此也纳入 ObjectKind。'connection' 承载连接节点
-// 自身的右键菜单(打开/断开、集群健康/监控、编辑、删除)。
+// 自身的右键菜单(打开/断开、集群健康/监控、上移/下移、编辑、删除);
+// 行内另保留 hover 显现的 ↑↓ 排序微调按钮与原生拖拽(见 conn-row)。
 type ObjectKind = 'topic' | 'table' | 'group' | 'redis-db' | 'es-index' | 'es-template' | 'mysql-table' | 'hive-table' | 'connection'
 interface ObjectCollection {
   key: string
@@ -796,6 +804,77 @@ const confirmText = computed(() => {
 // edit opens the drawer straight into config-editing mode (编辑配置 entry).
 const detailMeta = ref<{ connId: string; topic: string; edit: boolean } | null>(null)
 
+// --- 连接排序:hover ↑↓ 微调 / 右键菜单上移下移 / 原生拖拽 -------------------
+
+// props.connections 即侧栏的展示顺序(store 列表),所有排序入口都基于它
+// 计算完整 id 顺序,经 emit('reorder', ids) 交外层持久化。
+const connIds = computed(() => props.connections.map((c) => c.id))
+
+function isFirstConn(id: string): boolean {
+  return connIds.value[0] === id
+}
+
+function isLastConn(id: string): boolean {
+  return connIds.value.length > 0 && connIds.value[connIds.value.length - 1] === id
+}
+
+// moveConn 上移/下移一位;边界由按钮 disabled 与菜单省略项兜底,这里再守一道。
+function moveConn(conn: Connection, delta: -1 | 1): void {
+  if ((delta === -1 && isFirstConn(conn.id)) || (delta === 1 && isLastConn(conn.id))) return
+  emit('reorder', moveId(connIds.value, conn.id, delta))
+}
+
+// 原生 HTML5 拖拽:仅顶层连接行 draggable;dragstart 记录源 id(Firefox 需要
+// setData 才能发起拖拽),dragover 按鼠标在目标行的上/下半部计算插入位,
+// drop 用最后一次 dragover 的插入位重排。拖拽与点击由浏览器天然区分
+// (拖后不触发 click),无需手动抑制。
+const dragFromId = ref<string | null>(null)
+const dropHint = ref<{ targetId: string; place: 'before' | 'after' } | null>(null)
+
+function onConnDragStart(conn: Connection, e: DragEvent): void {
+  dragFromId.value = conn.id
+  dropHint.value = null
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', conn.id)
+  }
+}
+
+function onConnDragOver(conn: Connection, e: DragEvent): void {
+  if (!dragFromId.value) return
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+  // 拖回自身行不显示插入位,drop 也会被忽略。
+  if (conn.id === dragFromId.value) {
+    dropHint.value = null
+    return
+  }
+  // jsdom 无几何信息(rect 全 0),clientY 未传时按上半部处理。
+  const rect = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect()
+  const after = rect ? e.clientY > rect.top + rect.height / 2 : false
+  dropHint.value = { targetId: conn.id, place: after ? 'after' : 'before' }
+}
+
+function onConnDrop(conn: Connection, e: DragEvent): void {
+  e.preventDefault()
+  // 源 id 优先取 dragstart 记录的值,跨组件拖入时回退 dataTransfer。
+  const fromId = dragFromId.value || e.dataTransfer?.getData('text/plain') || ''
+  const place = dropHint.value?.place ?? 'before'
+  clearConnDragState()
+  if (!fromId || fromId === conn.id) return
+  const next = reorderIds(connIds.value, fromId, conn.id, place)
+  if (next.join('\u0000') !== connIds.value.join('\u0000')) emit('reorder', next)
+}
+
+function onConnDragEnd(): void {
+  clearConnDragState()
+}
+
+function clearConnDragState(): void {
+  dragFromId.value = null
+  dropHint.value = null
+}
+
 // --- Right-click context menus ----------------------------------------------
 
 // ctxMenu targets the right-clicked tree node; items differ per object kind.
@@ -808,9 +887,9 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
   if (ctxMenu.value.kind === 'connection') {
     const c = ctxMenu.value.conn
     if (!c) return []
-    // 连接行的行内操作按钮已全部收敛进右键菜单:首项随连接状态切换文案,
-    // 类型专属项(kafka 健康诊断 / es 集群监控)居中,分隔线隔开破坏性较低的
-    // 编辑与破坏性的删除。
+    // 连接节点的破坏性/低频操作收敛在右键菜单:首项随连接状态切换文案,
+    // 类型专属项(kafka 健康诊断 / es 集群监控)居中,分隔线隔开排序/编辑与
+    // 破坏性的删除。行内 hover 按钮仅保留 ↑↓ 排序微调(见 conn-row)。
     const items: ContextMenuItem[] = [{ key: 'conn-toggle', label: isConnected(c.id) ? '断开连接' : '打开连接' }]
     if (c.type === 'kafka') items.push({ key: 'conn-health', label: '集群健康' })
     if (c.type === 'es') items.push({ key: 'conn-es-monitor', label: '集群监控' })
@@ -819,6 +898,11 @@ const ctxItems = computed<ContextMenuItem[]>(() => {
       { key: 'conn-edit', label: '编辑连接' },
       { key: 'conn-delete', label: '删除连接', danger: true },
     )
+    // 上移/下移与行内 hover 按钮同一语义;ContextMenu 不支持禁用项,
+    // 边界(首行上移/末行下移/仅一个连接)时直接省略该项。
+    const editIdx = items.findIndex((it) => it.key === 'conn-edit')
+    if (!isFirstConn(c.id)) items.splice(editIdx, 0, { key: 'move-up', label: '上移' })
+    if (!isLastConn(c.id)) items.splice(items.findIndex((it) => it.key === 'conn-edit'), 0, { key: 'move-down', label: '下移' })
     return items
   }
   if (ctxMenu.value.kind === 'mysql-table') {
@@ -893,7 +977,8 @@ function openHiveTableMenu(e: MouseEvent, connId: string, db: string, name: stri
   ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'hive-table', connId, name, partitions: 0, db }
 }
 
-// openConnMenu 打开连接节点自身的右键菜单(conn-row 行内按钮已全部收敛于此)。
+// openConnMenu 打开连接节点自身的右键菜单;行内低频操作(编辑/删除/健康等)
+// 仍收敛于此,行内仅保留 ↑↓ 排序微调按钮。
 function openConnMenu(conn: Connection, e: MouseEvent): void {
   ctxMenu.value = { x: e.clientX, y: e.clientY, kind: 'connection', connId: conn.id, name: conn.name, partitions: 0, conn }
 }
@@ -909,6 +994,13 @@ function onCtxSelect(key: string): void {
     case 'conn-toggle':
       // 打开/断开连接(与原行内按钮同一入口);菜单本身在 pick 后已关闭。
       if (m.conn) void onToggleConnect(m.conn)
+      break
+    case 'move-up':
+      // 与行内 ↑ 按钮同一入口(moveConn 内部再做一次边界守卫)。
+      if (m.conn) moveConn(m.conn, -1)
+      break
+    case 'move-down':
+      if (m.conn) moveConn(m.conn, 1)
       break
     case 'conn-health':
       emit('open-health', m.connId)
@@ -1309,7 +1401,22 @@ function exportTopics(conn: Connection): void {
     <button class="tree-new" type="button" data-test="btn-new" @click="emit('new')">＋ 新建连接</button>
     <div v-if="connections.length === 0" class="tree-empty" data-test="tree-empty">暂无连接</div>
     <div v-for="conn in connections" :key="conn.id" class="conn" data-test="connection">
-      <div class="conn-row" data-test="conn-row" @click="toggle(conn)" @contextmenu.prevent.stop="openConnMenu(conn, $event)">
+      <div
+        class="conn-row"
+        data-test="conn-row"
+        draggable="true"
+        :class="{
+          active: isExpanded(conn.id),
+          'drop-before': dropHint?.targetId === conn.id && dropHint.place === 'before',
+          'drop-after': dropHint?.targetId === conn.id && dropHint.place === 'after',
+        }"
+        @click="toggle(conn)"
+        @contextmenu.prevent.stop="openConnMenu(conn, $event)"
+        @dragstart="onConnDragStart(conn, $event)"
+        @dragover="onConnDragOver(conn, $event)"
+        @drop="onConnDrop(conn, $event)"
+        @dragend="onConnDragEnd"
+      >
         <span class="caret" data-test="conn-caret" :class="{ open: isExpanded(conn.id) }">
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
             <path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
@@ -1323,7 +1430,44 @@ function exportTopics(conn: Connection): void {
           :title="STATUS_LABEL[statusOf(conn.id)]"
         ></span>
         <span class="conn-name" data-test="conn-name">{{ conn.name }}</span>
+        <!-- 圆角小方块 + 品牌色首字母:主色/字色走 --type-* 变量(亮暗两套)。 -->
+        <span
+          class="conn-type-badge"
+          :class="`type-badge-${conn.type}`"
+          data-test="conn-type-badge"
+          aria-hidden="true"
+        >{{ typeMeta(conn).letter }}</span>
         <span class="conn-type" :class="`conn-type-${conn.type}`" data-test="conn-type">{{ typeMeta(conn).label }}</span>
+        <!-- ↑↓ 排序微调:hover 显现(与 leaf-del 同范式),边界 disabled 置灰;
+             click.stop 防止触发行的展开/收起。 -->
+        <span class="conn-actions">
+          <button
+            class="conn-move"
+            type="button"
+            data-test="btn-move-up"
+            title="上移"
+            aria-label="上移"
+            :disabled="isFirstConn(conn.id)"
+            @click.stop="moveConn(conn, -1)"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M4 10 8 6l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <button
+            class="conn-move"
+            type="button"
+            data-test="btn-move-down"
+            title="下移"
+            aria-label="下移"
+            :disabled="isLastConn(conn.id)"
+            @click.stop="moveConn(conn, 1)"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </span>
       </div>
 
       <div v-if="isExpanded(conn.id) && (conn.type === 'kafka' || conn.type === 'redis')" class="conn-children">
@@ -2095,24 +2239,62 @@ function exportTopics(conn: Connection): void {
 </template>
 
 <style scoped>
-.tree { padding: 8px; font-size: 13px; color: var(--text); font-family: var(--font); }
+.tree { padding: 10px 8px 12px; font-size: 13px; color: var(--text); font-family: var(--font); }
 .tree-new {
   width: 100%; box-sizing: border-box;
   background: var(--accent); color: #fff; border: none;
-  border-radius: 8px; padding: 8px; cursor: pointer; margin-bottom: 10px; font-size: 13px;
-  box-shadow: 0 1px 2px rgba(0, 113, 227, 0.3);
-  transition: background 0.15s ease;
+  border-radius: 9px; padding: 8px 10px; cursor: pointer; margin-bottom: 10px; font-size: 13px; font-weight: 500;
+  /* 层次:投影 + 顶部内高光;按下轻微缩放反馈。 */
+  box-shadow: 0 1px 2px rgba(0, 113, 227, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  transition: background 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
 }
 .tree-new:hover { background: var(--accent-hover); }
-.tree-empty { color: var(--text-tertiary); padding: 10px 8px; }
-.conn { margin-bottom: 2px; }
+.tree-new:active { transform: scale(0.98); box-shadow: 0 1px 1px rgba(0, 113, 227, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.1); }
+.tree-new:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft), 0 1px 2px rgba(0, 113, 227, 0.3); }
+.tree-empty {
+  color: var(--text-tertiary); font-size: 12.5px; text-align: center;
+  padding: 26px 12px; margin: 2px 2px 8px;
+  border: 1px dashed var(--border-strong); border-radius: 10px;
+}
+.conn { margin-bottom: 1px; }
 .conn-row {
   display: flex; align-items: center; gap: 8px;
-  padding: 7px 8px; border-radius: 8px; cursor: pointer;
+  padding: 8px 9px; border-radius: 8px; cursor: pointer;
   transition: background 0.12s ease;
   user-select: none;
 }
 .conn-row:hover { background: var(--bg-hover); }
+/* 选中(展开)态:与 hover 区分的轻底色,常驻标识当前浏览的连接。 */
+.conn-row.active { background: var(--bg-active); }
+/* ↑↓ 排序微调按钮:hover 显现(范式同 leaf-del);disabled 置灰。 */
+.conn-actions { display: inline-flex; align-items: center; gap: 1px; flex: none; margin-left: 2px; }
+.conn-move {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; box-sizing: border-box;
+  background: none; border: none; color: var(--text-tertiary); cursor: pointer;
+  border-radius: 5px; padding: 0; flex: none; opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.conn-row:hover .conn-move { opacity: 1; }
+.conn-move:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); }
+.conn-move:active:not(:disabled) { transform: scale(0.92); }
+.conn-move:disabled { opacity: 0; cursor: default; }
+.conn-row:hover .conn-move:disabled { opacity: 0.35; }
+/* 拖拽插入位置指示线:accent 色 2px 横线压在目标行的上/下边缘。 */
+.conn-row.drop-before, .conn-row.drop-after { position: relative; }
+.conn-row.drop-before::before,
+.conn-row.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.conn-row.drop-before::before { top: -2px; }
+.conn-row.drop-after::after { bottom: -2px; }
 .caret {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; color: var(--text-tertiary);
@@ -2122,13 +2304,32 @@ function exportTopics(conn: Connection): void {
 .caret.open { transform: rotate(90deg); color: var(--text-secondary); }
 .conn-name { font-weight: 600; flex: 1; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn-type { font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 5px; flex: none; }
-.conn-type-kafka { color: var(--info); background: var(--info-soft); }
-.conn-type-mysql { color: var(--warn); background: var(--warn-soft); }
-.conn-type-es { color: var(--ok); background: var(--ok-soft); }
-.conn-type-redis { color: var(--danger); background: var(--danger-soft); }
-.conn-type-clickhouse { color: var(--warn); background: var(--warn-soft); }
-.conn-type-tidb { color: var(--ok); background: var(--ok-soft); }
-.conn-type-hive { color: var(--warn); background: var(--warn-soft); }
+/* 品牌色首字母徽标:实底主色圆角方块,字色按类型配白/深保证对比;
+   颜色变量(含 dark 覆盖)统一在 styles.css 定义。 */
+.conn-type-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; flex: none;
+  border-radius: 5px;
+  font-size: 10px; font-weight: 700; line-height: 1;
+  font-family: var(--mono);
+  background: var(--bg-active); color: var(--text-secondary);
+}
+.type-badge-kafka { background: var(--type-kafka); color: var(--type-kafka-contrast); }
+.type-badge-mysql { background: var(--type-mysql); color: var(--type-mysql-contrast); }
+.type-badge-redis { background: var(--type-redis); color: var(--type-redis-contrast); }
+.type-badge-es { background: var(--type-es); color: var(--type-es-contrast); }
+.type-badge-tidb { background: var(--type-tidb); color: var(--type-tidb-contrast); }
+.type-badge-clickhouse { background: var(--type-clickhouse); color: var(--type-clickhouse-contrast); }
+.type-badge-postgres { background: var(--type-postgres); color: var(--type-postgres-contrast); }
+.type-badge-hive { background: var(--type-hive); color: var(--type-hive-contrast); }
+/* 类型文字徽标:品牌主色文字 + 柔和底色(替代共享的语义色)。 */
+.conn-type-kafka { color: var(--type-kafka); background: var(--type-kafka-soft); }
+.conn-type-mysql { color: var(--type-mysql); background: var(--type-mysql-soft); }
+.conn-type-es { color: var(--type-es); background: var(--type-es-soft); }
+.conn-type-redis { color: var(--type-redis); background: var(--type-redis-soft); }
+.conn-type-clickhouse { color: var(--type-clickhouse); background: var(--type-clickhouse-soft); }
+.conn-type-tidb { color: var(--type-tidb); background: var(--type-tidb-soft); }
+.conn-type-hive { color: var(--type-hive); background: var(--type-hive-soft); }
 .conn-status {
   width: 8px; height: 8px; border-radius: 50%; flex: none; margin: 0 6px;
   background: var(--text-tertiary);
@@ -2197,7 +2398,7 @@ function exportTopics(conn: Connection): void {
 .group-label.clickable:active .group-add { transform: scale(0.92); }
 .leaf {
   display: flex; align-items: center; gap: 6px;
-  padding: 4px 7px; border-radius: 6px; cursor: pointer;
+  padding: 5px 7px; border-radius: 6px; cursor: pointer;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transition: background 0.12s ease, color 0.12s ease;
 }

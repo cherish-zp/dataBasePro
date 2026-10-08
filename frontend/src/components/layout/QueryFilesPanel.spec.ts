@@ -57,6 +57,7 @@ const conn = (id: string, name: string, type: Connection['type'] = 'kafka'): Con
   name,
   type,
   config: (type === 'kafka' ? { bootstrap_servers: ['h:1'] } : {}) as Connection['config'],
+  sort_order: 0,
   created_at: 0,
   updated_at: 0,
 })

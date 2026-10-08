@@ -589,6 +589,64 @@ func TestAppAlterTopicPartitionsDelegatesAndAudits(t *testing.T) {
 	}
 }
 
+// TestAppReorderConnections 验证绑定方法把前端提交的完整有序 id 列表
+// 持久化为连接顺序;含未知 id 时报错且不残留半套顺序。
+func TestAppReorderConnections(t *testing.T) {
+	app := newTestApp(t)
+
+	ids := make([]string, 0, 3)
+	for _, name := range []string{"a", "b", "c"} {
+		created, err := app.CreateConnection(&model.Connection{
+			Name:   name,
+			Type:   model.ConnectionTypeKafka,
+			Config: model.MustConfigJSON(model.KafkaConfig{BootstrapServers: []string{"localhost:9092"}}),
+		})
+		if err != nil {
+			t.Fatalf("CreateConnection %s: %v", name, err)
+		}
+		ids = append(ids, created.ID)
+	}
+
+	if err := app.ReorderConnections([]string{ids[2], ids[0], ids[1]}); err != nil {
+		t.Fatalf("ReorderConnections: %v", err)
+	}
+	list, err := app.ListConnections()
+	if err != nil {
+		t.Fatalf("ListConnections: %v", err)
+	}
+	if list[0].ID != ids[2] || list[1].ID != ids[0] || list[2].ID != ids[1] {
+		t.Fatalf("unexpected persisted order: %v", []string{list[0].ID, list[1].ID, list[2].ID})
+	}
+
+	// 未知 id 必须报错,且不打乱已保存的顺序。
+	if err := app.ReorderConnections([]string{ids[0], "nope"}); err == nil {
+		t.Fatal("reorder with an unknown id must fail")
+	}
+	list, err = app.ListConnections()
+	if err != nil {
+		t.Fatalf("ListConnections after failed reorder: %v", err)
+	}
+	if list[0].ID != ids[2] || list[1].ID != ids[0] || list[2].ID != ids[1] {
+		t.Fatalf("failed reorder must not change order: %v", []string{list[0].ID, list[1].ID, list[2].ID})
+	}
+}
+
+// TestConnectionJSONExposesSortOrder 锁定连接 JSON 的 sort_order 字段
+// (snake_case),前端依赖它读写的自定义顺序。
+func TestConnectionJSONExposesSortOrder(t *testing.T) {
+	b, err := json.Marshal(model.Connection{ID: "c-1", SortOrder: 3})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got, ok := raw["sort_order"].(float64); !ok || got != 3 {
+		t.Fatalf("Connection JSON must expose numeric sort_order, got %s", b)
+	}
+}
+
 // TestAppGetTopicMessageCountsDelegates verifies the read-only counts call
 // forwards the requested topics and returns the per-topic map untouched.
 func TestAppGetTopicMessageCountsDelegates(t *testing.T) {

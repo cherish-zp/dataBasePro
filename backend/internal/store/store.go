@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS connections (
     type        TEXT NOT NULL,
     config_json TEXT NOT NULL,
     created_at  INTEGER,
-    updated_at  INTEGER
+    updated_at  INTEGER,
+    sort_order  INTEGER
 );
 CREATE TABLE IF NOT EXISTS audit_log (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,7 +77,62 @@ func Open(path string, masterPassword string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
+	if err := migrateConnectionSortOrder(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate connections sort_order: %w", err)
+	}
 	return &Store{db: db, crypto: crypto}, nil
+}
+
+// migrateConnectionSortOrder 为存量库补齐 connections.sort_order 列,并按
+// created_at(次级键 id)回填 0..n-1 的连续序号,保证升级后列表顺序与升级前
+// 一致。幂等:列已存在时直接跳过,不重复回填,避免覆盖用户已保存的自定义
+// 顺序。
+func migrateConnectionSortOrder(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(connections)`)
+	if err != nil {
+		return fmt.Errorf("inspect connections columns: %w", err)
+	}
+	hasSortOrder := false
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			typ     string
+			notNull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan connections columns: %w", err)
+		}
+		if name == "sort_order" {
+			hasSortOrder = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("iterate connections columns: %w", err)
+	}
+	rows.Close()
+	if hasSortOrder {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE connections ADD COLUMN sort_order INTEGER`); err != nil {
+		return fmt.Errorf("add sort_order column: %w", err)
+	}
+	// 单条 UPDATE 关联子查询:sort_order = 按 (created_at, id) 升序的排名,
+	// 即 0..n-1。
+	if _, err := db.Exec(`
+UPDATE connections SET sort_order = (
+    SELECT COUNT(*) FROM connections c2
+    WHERE c2.created_at < connections.created_at
+       OR (c2.created_at = connections.created_at AND c2.id < connections.id)
+)`); err != nil {
+		return fmt.Errorf("backfill sort_order: %w", err)
+	}
+	return nil
 }
 
 // Close releases the underlying database handle.
@@ -96,12 +152,16 @@ func (s *Store) CreateConnection(c *model.Connection) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(
-		`INSERT INTO connections (id, name, type, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+	if _, err := s.db.Exec(
+		// sort_order 取 COALESCE(MAX(sort_order), -1) + 1:新连接始终追加到列表末尾。
+		`INSERT INTO connections (id, name, type, config_json, created_at, updated_at, sort_order) VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM connections))`,
 		c.ID, c.Name, string(c.Type), raw, c.CreatedAt, c.UpdatedAt,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("insert connection: %w", err)
+	}
+	// 回读落盘的 sort_order,让调用方拿到与存储一致的新顺序。
+	if err := s.db.QueryRow(`SELECT sort_order FROM connections WHERE id = ?`, c.ID).Scan(&c.SortOrder); err != nil {
+		return fmt.Errorf("read back sort_order: %w", err)
 	}
 	return nil
 }
@@ -141,10 +201,34 @@ func (s *Store) DeleteConnection(id string) error {
 	return nil
 }
 
+// ReorderConnections 按给定 id 顺序整体重写 sort_order(切片下标即新顺序)。
+// 事务内执行:任一 id 不存在则整体回滚并返回包装 ErrNotFound 的错误,避免
+// 残留半套顺序。
+func (s *Store) ReorderConnections(ids []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin reorder: %w", err)
+	}
+	defer tx.Rollback() // 提交后回滚是无操作,错误可安全忽略
+	for i, id := range ids {
+		res, err := tx.Exec(`UPDATE connections SET sort_order = ? WHERE id = ?`, int64(i), id)
+		if err != nil {
+			return fmt.Errorf("reorder connection %s: %w", id, err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("reorder connection %s: %w", id, ErrNotFound)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit reorder: %w", err)
+	}
+	return nil
+}
+
 // GetConnection loads a single connection by id.
 func (s *Store) GetConnection(id string) (*model.Connection, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, type, config_json, created_at, updated_at FROM connections WHERE id = ?`, id,
+		`SELECT id, name, type, config_json, created_at, updated_at, sort_order FROM connections WHERE id = ?`, id,
 	)
 	return s.scanConnection(row)
 }
@@ -152,7 +236,8 @@ func (s *Store) GetConnection(id string) (*model.Connection, error) {
 // ListConnections returns every stored connection.
 func (s *Store) ListConnections() ([]*model.Connection, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, type, config_json, created_at, updated_at FROM connections ORDER BY created_at`,
+		// 用户自定义顺序优先;created_at 仅作为缺失序号时的稳定回退。
+		`SELECT id, name, type, config_json, created_at, updated_at, sort_order FROM connections ORDER BY sort_order, created_at`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list connections: %w", err)
@@ -180,7 +265,7 @@ func (s *Store) scanConnection(row scanner) (*model.Connection, error) {
 		raw     string
 		rawType string
 	)
-	if err := row.Scan(&c.ID, &c.Name, &rawType, &raw, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	if err := row.Scan(&c.ID, &c.Name, &rawType, &raw, &c.CreatedAt, &c.UpdatedAt, &c.SortOrder); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}

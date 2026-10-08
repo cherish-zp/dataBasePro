@@ -81,7 +81,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
 const conn = (id: string, name = 'local'): Connection => ({
   id, name, type: 'kafka',
   config: { bootstrap_servers: ['localhost:9092'] },
-  created_at: 1, updated_at: 1,
+  sort_order: 0, created_at: 1, updated_at: 1,
 })
 
 describe('connections store', () => {
@@ -217,5 +217,27 @@ describe('connections store', () => {
     const cfg = { bootstrap_servers: ['localhost:9092'] }
     await store.testConnection(cfg)
     expect(api.testConnection).toHaveBeenCalledWith(cfg)
+  })
+
+  it('reorderConnections delegates to the api and reorders the local list', async () => {
+    api = fakeApi({ reorderConnections: vi.fn(async () => {}) })
+    setApi(api)
+    ;(api.listConnections as ReturnType<typeof vi.fn>).mockResolvedValue([conn('a'), conn('b'), conn('c')])
+    const store = useConnectionsStore()
+    await store.load()
+    await store.reorderConnections(['c', 'a', 'b'])
+    expect(api.reorderConnections).toHaveBeenCalledWith(['c', 'a', 'b'])
+    expect(store.connections.map((c) => c.id)).toEqual(['c', 'a', 'b'])
+  })
+
+  it('reorderConnections keeps every connection even when ids omit one', async () => {
+    api = fakeApi({ reorderConnections: vi.fn(async () => {}) })
+    setApi(api)
+    ;(api.listConnections as ReturnType<typeof vi.fn>).mockResolvedValue([conn('a'), conn('b'), conn('c')])
+    const store = useConnectionsStore()
+    await store.load()
+    // 防御:ids 遗漏的连接按原相对顺序补在末尾,不让连接从树上消失。
+    await store.reorderConnections(['b', 'a'])
+    expect(store.connections.map((c) => c.id)).toEqual(['b', 'a', 'c'])
   })
 })

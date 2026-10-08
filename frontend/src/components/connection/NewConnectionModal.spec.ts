@@ -300,6 +300,7 @@ describe('NewConnectionModal', () => {
       name: 'redis-old',
       type: 'redis',
       config: { addr: 'r.internal:6380', password: 'pw', db: 3 },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -355,6 +356,7 @@ describe('NewConnectionModal', () => {
     id: 'c-1',
     name: 'kerb-old',
     type: 'kafka',
+    sort_order: 0,
     created_at: 1,
     updated_at: 2,
     config: {
@@ -423,7 +425,7 @@ describe('NewConnectionModal', () => {
       props: {
         show: true,
         connection: {
-          id: 'c-2', name: 'plain-old', type: 'kafka', created_at: 1, updated_at: 1,
+          id: 'c-2', name: 'plain-old', type: 'kafka', sort_order: 0, created_at: 1, updated_at: 1,
           config: {
             bootstrap_servers: ['h:9092'],
             security_protocol: 'SASL_SSL',
@@ -442,7 +444,7 @@ describe('NewConnectionModal', () => {
   })
 
   it('derives the security protocol from legacy sasl/tls booleans when the field is missing', () => {
-    const base = { id: 'c-3', name: 'legacy', type: 'kafka' as const, created_at: 1, updated_at: 1 }
+    const base = { id: 'c-3', name: 'legacy', type: 'kafka' as const, sort_order: 0, created_at: 1, updated_at: 1 }
     const mountWith = async (cfg: Connection['config']) => {
       const w = mount(NewConnectionModal, {
         props: { show: true, connection: { ...base, config: cfg } },
@@ -586,6 +588,7 @@ describe('NewConnectionModal', () => {
       name: 'my-old',
       type: 'mysql',
       config: { host: 'h.internal', port: 3307, username: 'app', password: 'pw', database: 'orders', tls_mode: 'verify-full' },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -618,6 +621,7 @@ describe('NewConnectionModal', () => {
       name: 'ti-old',
       type: 'tidb',
       config: { host: 'ti.internal', port: 4000, username: 'root', password: '', database: 'sales', tls_mode: 'skip-verify' },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -733,6 +737,7 @@ describe('NewConnectionModal', () => {
       name: 'ch-old',
       type: 'clickhouse',
       config: { hosts: ['a:9000', 'b:9000'], username: 'default', password: 'pw', database: 'default', tls: true },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -818,6 +823,7 @@ describe('NewConnectionModal', () => {
       name: 'ch-old',
       type: 'clickhouse',
       config: { hosts: ['h:9000'], username: 'default', database: 'default' },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -957,6 +963,7 @@ describe('NewConnectionModal', () => {
         auth_mode: 'apikey',
         tls_mode: 'skip-verify',
       },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }
@@ -1255,6 +1262,7 @@ describe('Hive 连接卡片', () => {
         database: 'warehouse',
         kerberos: { principal: 'hive/_HOST@EXAMPLE.COM', keytab: '/kt/hive.keytab', krb5_conf: '/etc/krb5.conf' },
       },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     }

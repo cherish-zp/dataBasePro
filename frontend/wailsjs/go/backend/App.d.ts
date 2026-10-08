@@ -247,6 +247,8 @@ export function RedisZSetAdd(arg1:backend.RedisZSetMemberRequest):Promise<void>;
 
 export function RedisZSetRemove(arg1:backend.RedisZSetMemberRequest):Promise<void>;
 
+export function ReorderConnections(arg1:Array<string>):Promise<void>;
+
 export function ResetConsumerGroupOffset(arg1:backend.ResetOffsetRequest):Promise<void>;
 
 export function SaveSavedQuery(arg1:backend.SaveSavedQueryRequest):Promise<model.SavedQuery>;

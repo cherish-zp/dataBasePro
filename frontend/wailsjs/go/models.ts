@@ -1827,6 +1827,7 @@ export namespace model {
 	    config: number[];
 	    created_at: number;
 	    updated_at: number;
+	    sort_order: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Connection(source);
@@ -1840,6 +1841,7 @@ export namespace model {
 	        this.config = source["config"];
 	        this.created_at = source["created_at"];
 	        this.updated_at = source["updated_at"];
+	        this.sort_order = source["sort_order"];
 	    }
 	}
 	export class ConsumerGroup {

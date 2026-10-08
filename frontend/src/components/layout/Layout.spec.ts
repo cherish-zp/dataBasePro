@@ -128,7 +128,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
 
 const conn = (id: string): Connection => ({
   id, name: `conn-${id}`, type: 'kafka',
-  config: { bootstrap_servers: ['h:1'] }, created_at: 1, updated_at: 1,
+  config: { bootstrap_servers: ['h:1'] }, sort_order: 0, created_at: 1, updated_at: 1,
 })
 const chConn = (id: string): Connection => ({
   ...conn(id), type: 'clickhouse', config: {} as Connection['config'],
@@ -205,6 +205,17 @@ describe('Layout', () => {
     const { wrapper } = mountLayout([conn('a')])
     expect(wrapper.find('[data-test="home-view"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="connection-tree"]').exists()).toBe(true)
+  })
+
+  it('forwards the tree reorder event to the connections store api', async () => {
+    const { wrapper, api } = mountLayout([], { reorderConnections: vi.fn(async () => {}) })
+    const store = useConnectionsStore()
+    store.connections.push(conn('a'), conn('b'))
+    emitTree(wrapper, 'reorder', ['b', 'a'])
+    await flushPromises()
+    expect(api.reorderConnections).toHaveBeenCalledWith(['b', 'a'])
+    // store 本地顺序同步重排(树随后随 store 重渲染)。
+    expect(store.connections.map((c) => c.id)).toEqual(['b', 'a'])
   })
 
   it('mounts the bottom status bar and live-updates from the connections store', async () => {

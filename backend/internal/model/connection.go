@@ -193,6 +193,9 @@ type Connection struct {
 	Config    json.RawMessage `json:"config"`
 	CreatedAt int64           `json:"created_at"`
 	UpdatedAt int64           `json:"updated_at"`
+	// SortOrder 是用户自定义的列表顺序(0..n-1),持久化于 connections 表;
+	// 新建连接追加到末尾,编辑连接不改变该值。
+	SortOrder int64 `json:"sort_order"`
 }
 
 // Validate checks the connection definition, dispatching config validation

@@ -158,6 +158,10 @@ export interface Api {
   listConnections(): Promise<Connection[]>
   getConnection(id: string): Promise<Connection>
   deleteConnection(id: string): Promise<void>
+  // 侧栏连接排序持久化(镜像后端 ReorderConnections):入参为重排后的完整
+  // id 顺序。绑定尚未由 wails generate 生成,声明为可选成员(既有 fake 零
+  // 改动);调用方用可选链(?.)访问。
+  reorderConnections?(ids: string[]): Promise<void>
   testConnection(cfg: KafkaConfig): Promise<void>
   connect(id: string): Promise<void>
   disconnect(id: string): Promise<void>
@@ -322,6 +326,11 @@ export class WailsApi implements Api {
   }
   deleteConnection(id: string): Promise<void> {
     return App.DeleteConnection(id)
+  }
+  // 侧栏连接排序持久化:Wails 绑定 ReorderConnections 由主会话稍后重生成,
+  // 先对模块形状断言,生成后签名一致无需改动。
+  reorderConnections(ids: string[]): Promise<void> {
+    return (App as unknown as { ReorderConnections: (ids: string[]) => Promise<void> }).ReorderConnections(ids)
   }
   testConnection(cfg: KafkaConfig): Promise<void> {
     return App.TestConnection(cfg as unknown as never) as unknown as Promise<void>

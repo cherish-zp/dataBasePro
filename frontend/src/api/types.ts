@@ -38,6 +38,9 @@ export interface Connection {
   // clickhouse → CHConfigShape,mysql/tidb → MysqlConfigShape,es → EsConfigShape,
   // hive → HiveConfigShape
   config: KafkaConfig | RedisConfigShape | CHConfigShape | MysqlConfigShape | EsConfigShape | PostgresConfigShape | HiveConfigShape
+  // 侧栏连接的排序序号(镜像 model.Connection.SortOrder):数值小者在前,
+  // 新建连接由后端追加末尾。树内拖拽/上移下移经 ReorderConnections 持久化。
+  sort_order: number
   created_at: number
   updated_at: number
 }

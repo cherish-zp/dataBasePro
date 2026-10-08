@@ -109,7 +109,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
 
 const conn = (id: string, type: Connection['type'] = 'kafka'): Connection => ({
   id, name: `conn-${id}`, type,
-  config: { bootstrap_servers: ['h:1'] }, created_at: 1, updated_at: 1,
+  config: { bootstrap_servers: ['h:1'] }, sort_order: 0, created_at: 1, updated_at: 1,
 })
 
 async function expand(wrapper: VueWrapper, index = 0): Promise<void> {
@@ -132,8 +132,9 @@ function clickConfirmDialog(testId: string): void {
   document.body.querySelector(`[data-test="${testId}"]`)?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 }
 
-// 连接行内联操作按钮已收敛进右键菜单:右键 conn-row 打开菜单(teleport 到
-// body),再从 document.body 点击菜单项(与 ConfirmDialog 同一查询惯例)。
+// 连接行的低频操作(编辑/删除/健康等)收敛在右键菜单,行内仅保留 ↑↓ 排序
+// 微调按钮:右键 conn-row 打开菜单(teleport 到 body),再从 document.body
+// 点击菜单项(与 ConfirmDialog 同一查询惯例)。
 async function openConnMenu(wrapper: VueWrapper, name: string): Promise<void> {
   const row = wrapper.findAll('[data-test="conn-row"]').find((n) => n.text().includes(name))
   if (!row) throw new Error(`conn-row not found: ${name}`)
@@ -566,7 +567,7 @@ describe('ConnectionTree', () => {
     ])
     const redisConn = (): Connection => ({
       id: 'r1', name: 'redis-local', type: 'redis',
-      config: { addr: 'h:6379' } as RedisConfigShape, created_at: 1, updated_at: 1,
+      config: { addr: 'h:6379' } as RedisConfigShape, sort_order: 0, created_at: 1, updated_at: 1,
     })
     const wrapper = mount(ConnectionTree, { props: { connections: [redisConn()] } })
     await expand(wrapper)
@@ -1230,7 +1231,7 @@ describe('ConnectionTree', () => {
   const mysqlConn = (id: string, type: 'mysql' | 'tidb' = 'mysql'): Connection => ({
     id, name: `conn-${id}`, type,
     config: { host: 'h.internal', port: 3306, username: 'app', password: '', database: '', tls_mode: 'disabled' },
-    created_at: 1, updated_at: 1,
+    sort_order: 0, created_at: 1, updated_at: 1,
   })
 
   it('lists mysql databases when a mysql connection expands', async () => {
@@ -1532,7 +1533,7 @@ describe('ConnectionTree', () => {
   const hiveConn = (id: string): Connection => ({
     id, name: `conn-${id}`, type: 'hive',
     config: { host: 'h.internal', port: 10000, auth_mode: 'nosasl' } as Connection['config'],
-    created_at: 1, updated_at: 1,
+    sort_order: 0, created_at: 1, updated_at: 1,
   })
 
   async function expandOneHiveTable(wrapper: VueWrapper): Promise<void> {
@@ -1911,7 +1912,7 @@ describe('ConnectionTree', () => {
   const esConn = (id: string): Connection => ({
     id, name: `conn-${id}`, type: 'es',
     config: { hosts: ['127.0.0.1:9200'], username: '', password: '', api_key: '', auth_mode: 'none', tls_mode: 'disabled' },
-    created_at: 1, updated_at: 1,
+    sort_order: 0, created_at: 1, updated_at: 1,
   })
 
   it('lists es indices with doc-count badges when an es connection expands', async () => {
@@ -2521,6 +2522,118 @@ describe('ConnectionTree', () => {
       expect(listEsTemplates.mock.calls.length).toBeGreaterThan(fetchesBefore)
     })
   })
+
+  // --- 连接排序:hover ↑↓ 微调按钮 / 右键菜单上移下移 / 原生拖拽 ---
+
+  it('renders hover move buttons for every connection row', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    expect(wrapper.findAll('[data-test="btn-move-up"]')).toHaveLength(3)
+    expect(wrapper.findAll('[data-test="btn-move-down"]')).toHaveLength(3)
+  })
+
+  it('disables the move buttons at the list boundaries', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    const rows = wrapper.findAll('[data-test="connection"]')
+    expect(rows[0].find('[data-test="btn-move-up"]').attributes('disabled')).toBeDefined()
+    expect(rows[0].find('[data-test="btn-move-down"]').attributes('disabled')).toBeUndefined()
+    expect(rows[2].find('[data-test="btn-move-up"]').attributes('disabled')).toBeUndefined()
+    expect(rows[2].find('[data-test="btn-move-down"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('emits reorder on move-up without toggling the row (click.stop)', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    const rows = wrapper.findAll('[data-test="connection"]')
+    await rows[1].find('[data-test="btn-move-up"]').trigger('click')
+    expect(wrapper.emitted('reorder')?.[0]).toEqual([['b', 'a', 'c']])
+    // click.stop:不触发行点击展开(否则会调 listTopics)。
+    expect(api.listTopics).not.toHaveBeenCalled()
+  })
+
+  it('emits reorder on move-down', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    const rows = wrapper.findAll('[data-test="connection"]')
+    await rows[1].find('[data-test="btn-move-down"]').trigger('click')
+    expect(wrapper.emitted('reorder')?.[0]).toEqual([['a', 'c', 'b']])
+  })
+
+  it('offers 上移/下移 in the connection context menu and emits reorder', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    await openConnMenu(wrapper, 'conn-b')
+    expect(document.body.querySelector('[data-test="context-item-move-up"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-test="context-item-move-down"]')).not.toBeNull()
+    clickCtxItem('move-up')
+    expect(wrapper.emitted('reorder')?.[0]).toEqual([['b', 'a', 'c']])
+  })
+
+  it('omits the move-up entry for the first connection in the context menu', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b')] } })
+    await openConnMenu(wrapper, 'conn-a')
+    expect(document.body.querySelector('[data-test="context-item-move-up"]')).toBeNull()
+    expect(document.body.querySelector('[data-test="context-item-move-down"]')).not.toBeNull()
+  })
+
+  it('omits the move-down entry for the last connection in the context menu', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b')] } })
+    await openConnMenu(wrapper, 'conn-b')
+    expect(document.body.querySelector('[data-test="context-item-move-down"]')).toBeNull()
+    expect(document.body.querySelector('[data-test="context-item-move-up"]')).not.toBeNull()
+  })
+
+  it('omits both move entries for a single connection', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a')] } })
+    await openConnMenu(wrapper, 'conn-a')
+    expect(document.body.querySelector('[data-test="context-item-move-up"]')).toBeNull()
+    expect(document.body.querySelector('[data-test="context-item-move-down"]')).toBeNull()
+  })
+
+  it('drags a connection row onto another row and emits the new order', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    const rows = wrapper.findAll('[data-test="conn-row"]')
+    const setData = vi.fn()
+    await rows[0].trigger('dragstart', { dataTransfer: { setData, effectAllowed: '', dropEffect: '' } })
+    expect(setData).toHaveBeenCalledWith('text/plain', 'a')
+    // 悬停在行 c 下半部(jsdom 无几何信息,clientY>中点)→ 插入其后。
+    await rows[2].trigger('dragover', { clientY: 10, dataTransfer: { dropEffect: '' } })
+    await rows[2].trigger('drop', { dataTransfer: { getData: vi.fn(() => 'a') } })
+    expect(wrapper.emitted('reorder')?.[0]).toEqual([['b', 'c', 'a']])
+  })
+
+  it('marks the insertion point while hovering and clears it on dragend', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b'), conn('c')] } })
+    const rows = wrapper.findAll('[data-test="conn-row"]')
+    await rows[0].trigger('dragstart', { dataTransfer: { setData: vi.fn(), effectAllowed: '', dropEffect: '' } })
+    await rows[2].trigger('dragover', { clientY: 0, dataTransfer: { dropEffect: '' } })
+    expect(rows[2].classes()).toContain('drop-before')
+    await rows[0].trigger('dragend')
+    expect(rows[2].classes()).not.toContain('drop-before')
+  })
+
+  it('does not emit reorder when dropping onto itself', async () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [conn('a'), conn('b')] } })
+    const rows = wrapper.findAll('[data-test="conn-row"]')
+    await rows[0].trigger('dragstart', { dataTransfer: { setData: vi.fn(), effectAllowed: '', dropEffect: '' } })
+    await rows[0].trigger('dragover', { clientY: 10, dataTransfer: { dropEffect: '' } })
+    expect(rows[0].classes()).not.toContain('drop-after')
+    await rows[0].trigger('drop', { dataTransfer: { getData: vi.fn(() => 'a') } })
+    expect(wrapper.emitted('reorder')).toBeUndefined()
+  })
+
+  it('renders a rounded letter badge with the brand letter per type', () => {
+    const wrapper = mount(ConnectionTree, {
+      props: { connections: [conn('k'), { ...conn('m'), type: 'mysql' }, { ...conn('r'), type: 'redis' }, { ...conn('h'), type: 'hive' }] },
+    })
+    const badges = wrapper.findAll('[data-test="conn-type-badge"]')
+    expect(badges.map((b) => b.text())).toEqual(['K', 'M', 'R', 'H'])
+    // 品牌色经类型 class 接 CSS 变量(亮暗主题在 styles.css 各自取值)。
+    expect(badges[0].classes()).toContain('type-badge-kafka')
+    expect(badges[1].classes()).toContain('type-badge-mysql')
+    expect(badges[3].classes()).toContain('type-badge-hive')
+  })
+
+  it('falls back to the capitalized first letter for unknown types', () => {
+    const wrapper = mount(ConnectionTree, { props: { connections: [{ ...conn('x'), type: 'weird' as Connection['type'] }] } })
+    expect(wrapper.find('[data-test="conn-type-badge"]').text()).toBe('W')
+  })
 })
 
 // --- client 层:ES 模板/监控 API 必须路由到正确的 wailsjs 绑定 ---
@@ -2556,7 +2669,7 @@ describe('PostgreSQL 数据库 → schema → relation 树', () => {
   const pgConn = (id: string): Connection => ({
     id, name: `conn-${id}`, type: 'postgres',
     config: { host: 'h', port: 5432, username: 'u', password: '', database: 'postgres', tls_mode: 'disable' },
-    created_at: 1, updated_at: 1,
+    sort_order: 0, created_at: 1, updated_at: 1,
   })
 
   function fakePg(overrides: Partial<Api> = {}): Api {
@@ -2666,4 +2779,5 @@ describe('PostgreSQL 数据库 → schema → relation 树', () => {
     await node.trigger('keydown.space')
     expect(wrapper.emitted('open-postgres-table')?.[1]).toEqual(['pg', 'shop', 'public', 'users', 'table'])
   })
+
 })

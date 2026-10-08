@@ -22,6 +22,7 @@ function fakeApi(overrides: Partial<Api> = {}): Api {
       name: 'local',
       type: 'kafka',
       config: { bootstrap_servers: ['localhost:9092'] },
+      sort_order: 0,
       created_at: 1,
       updated_at: 1,
     })),

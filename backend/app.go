@@ -331,6 +331,14 @@ func (a *App) ListConnections() ([]*model.Connection, error) {
 	return a.svc.ListConnections(ctx)
 }
 
+// ReorderConnections 按前端提交的完整有序 id 列表持久化连接顺序;列表
+// 顺序保存到 SQLite,重启后保留。
+func (a *App) ReorderConnections(ids []string) error {
+	ctx, cancel := a.newContext()
+	defer cancel()
+	return a.svc.ReorderConnections(ctx, ids)
+}
+
 // GetConnection returns a single saved connection.
 func (a *App) GetConnection(id string) (*model.Connection, error) {
 	ctx, cancel := a.newContext()

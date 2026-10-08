@@ -64,6 +64,11 @@ func (s *Service) ListConnections(ctx context.Context) ([]*model.Connection, err
 	return s.store.ListConnections()
 }
 
+// ReorderConnections 按前端提交的完整有序 id 列表持久化连接顺序。
+func (s *Service) ReorderConnections(ctx context.Context, ids []string) error {
+	return s.store.ReorderConnections(ids)
+}
+
 // GetConnection returns a single stored connection definition.
 func (s *Service) GetConnection(ctx context.Context, id string) (*model.Connection, error) {
 	return s.store.GetConnection(id)
