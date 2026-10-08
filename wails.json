@@ -12,10 +12,10 @@
   },
   "info": {
     "productName": "圣手运河",
-    "productVersion": "1.7.0",
+    "productVersion": "1.7.1",
     "companyName": "zhangpeng",
     "comments": "圣手运河（Canal）— Kafka 多数据源管理客户端",
     "copyright": "Copyright © 2026 zhangpeng"
   },
-  "productVersion": "1.7.0"
+  "productVersion": "1.7.1"
 }
